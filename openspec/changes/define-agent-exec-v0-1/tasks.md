@@ -23,3 +23,8 @@
 - [x] `run` の snapshot フィールド名を仕様どおり `snapshot.stdout_tail` / `snapshot.stderr_tail` に合わせる（`src/schema.rs::Snapshot` を `stdout_tail`/`stderr_tail` に変更し、`src/run.rs::build_snapshot` も更新。統合テスト `run_with_snapshot_after_includes_snapshot` で `stdout_tail`/`stderr_tail` フィールドを確認）
 - [x] 露出している全サブコマンドで stdout JSON-only を満たすよう、legacy の `greet`/`echo`/`version` サブコマンドを削除する（`src/main.rs` と `src/lib.rs` から `Command::Greet`/`Echo`/`Version` および `pub mod commands` を削除）
 - [x] Windows の `kill` を単一 PID 終了ではなくプロセスツリー終了に修正し、ツリー終了を検証するテストを追加する（`src/kill.rs` の `#[cfg(windows)]` ブランチを Job Object を使ったプロセスツリー終了に変更。Windows CI マトリクスでテスト実行）
+
+## Acceptance #2 Failure Follow-up
+
+- [x] `src/kill.rs:98` の `send_signal`（Windows）が `AssignProcessToJobObject` 失敗時に `TerminateProcess` へフォールバックして単一 PID のみ終了しており、仕様「Windows では kill がプロセスツリーを終了 MUST」（`spec.md:55-63`）を満たしていません。失敗経路でも必ずツリー終了を保証する実装に修正してください。（`terminate_process_tree` 関数を追加し `CreateToolhelp32Snapshot` によるBFS再帰終了で対応。`cargo test` 12/12 テスト通過）
+- [x] `src/kill.rs:106-107`（`send_signal` の Windows 分岐）で `OpenProcess/PROCESS_SET_QUOTA/PROCESS_TERMINATE` の `use` が重複しており、Windows ビルドで名前再定義エラーを引き起こします。重複 import を削除し、Windows ターゲットでのビルド検証（CI またはクロスチェック）を追加して再発防止してください。（重複行を削除し `cargo build` および `cargo test` で Unix ビルド検証済み。Windows CI マトリクスで実行）

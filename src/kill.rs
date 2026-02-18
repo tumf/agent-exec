@@ -104,7 +104,6 @@ fn send_signal(pid: u32, _signal: &str) -> Result<()> {
         AssignProcessToJobObject, CreateJobObjectW, TerminateJobObject,
     };
     use windows::Win32::System::Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE};
-    use windows::Win32::System::Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE};
 
     unsafe {
         // Open the target process.
@@ -115,13 +114,18 @@ fn send_signal(pid: u32, _signal: &str) -> Result<()> {
         // has already spawned).
         let job: HANDLE = CreateJobObjectW(None, None)?;
 
-        // Assign process to the job (if it is already in a job this may fail;
-        // in that case fall back to single-process termination).
+        // Assign process to the job (if it is already in a job this may fail,
+        // e.g. when the process is already a member of another job object).
+        // In either case, we must guarantee process-tree termination per spec.
         if AssignProcessToJobObject(job, proc_handle).is_err() {
-            // Fall back: terminate just the single process.
-            let _ = windows::Win32::System::Threading::TerminateProcess(proc_handle, 1);
-            let _ = CloseHandle(proc_handle);
+            // The process belongs to an existing job object (common when the
+            // supervisor itself runs inside a job, e.g. CI environments).
+            // Fall back to recursive tree termination via snapshot enumeration
+            // so that child processes are also killed, fulfilling the MUST
+            // requirement from spec.md:55-63.
             let _ = CloseHandle(job);
+            let _ = CloseHandle(proc_handle);
+            terminate_process_tree(pid);
             return Ok(());
         }
 
@@ -132,6 +136,74 @@ fn send_signal(pid: u32, _signal: &str) -> Result<()> {
         let _ = CloseHandle(job);
     }
     Ok(())
+}
+
+/// Recursively terminate a process and all its descendants using
+/// CreateToolhelp32Snapshot. This is the fallback path when Job Object
+/// assignment fails (e.g., nested job objects on older Windows or CI).
+#[cfg(windows)]
+fn terminate_process_tree(root_pid: u32) {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32First, Process32Next, PROCESSENTRY32, TH32CS_SNAPPROCESS,
+    };
+    use windows::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+
+    unsafe {
+        // Build a list of (pid, parent_pid) for all running processes.
+        let snapshot = match CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) {
+            Ok(h) => h,
+            Err(_) => {
+                // Cannot enumerate processes; terminate root PID directly.
+                if let Ok(h) = OpenProcess(PROCESS_TERMINATE, false, root_pid) {
+                    let _ = TerminateProcess(h, 1);
+                    let _ = CloseHandle(h);
+                }
+                return;
+            }
+        };
+
+        let mut entries: Vec<(u32, u32)> = Vec::new();
+        let mut entry = PROCESSENTRY32 {
+            dwSize: std::mem::size_of::<PROCESSENTRY32>() as u32,
+            ..Default::default()
+        };
+
+        if Process32First(snapshot, &mut entry).is_ok() {
+            loop {
+                entries.push((entry.th32ProcessID, entry.th32ParentProcessID));
+                entry = PROCESSENTRY32 {
+                    dwSize: std::mem::size_of::<PROCESSENTRY32>() as u32,
+                    ..Default::default()
+                };
+                if Process32Next(snapshot, &mut entry).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = CloseHandle(snapshot);
+
+        // Collect all pids in the subtree rooted at root_pid (BFS).
+        let mut to_kill: Vec<u32> = vec![root_pid];
+        let mut i = 0;
+        while i < to_kill.len() {
+            let parent = to_kill[i];
+            for &(child_pid, parent_pid) in &entries {
+                if parent_pid == parent && !to_kill.contains(&child_pid) {
+                    to_kill.push(child_pid);
+                }
+            }
+            i += 1;
+        }
+
+        // Terminate all collected processes (children first, then root).
+        for &target_pid in to_kill.iter().rev() {
+            if let Ok(h) = OpenProcess(PROCESS_TERMINATE, false, target_pid) {
+                let _ = TerminateProcess(h, 1);
+                let _ = CloseHandle(h);
+            }
+        }
+    }
 }
 
 #[cfg(not(any(unix, windows)))]
