@@ -5,12 +5,12 @@ TBD - created by archiving change define-agent-exec-contract-v0-1. Update Purpos
 ## Requirements
 ### Requirement: CLI サブコマンド構成
 
-`agent-exec` は `run`/`status`/`tail`/`wait`/`kill` の 5 サブコマンドを提供しなければならない（MUST）。`run` は `agent-exec run [options] -- <cmd> [args...]` の形でコマンド本体を受け取らなければならない（MUST）。
+`agent-exec` は `run`/`status`/`tail`/`wait`/`kill`/`list` の 6 サブコマンドを提供しなければならない（MUST）。`list` はジョブ一覧を JSON で返さなければならない（MUST）。
 
-#### Scenario: run の呼び出し形
-Given `agent-exec run -- echo hello` を実行する
-When コマンドが実行される
-Then `echo hello` は `run` のターゲットコマンドとして扱われる
+#### Scenario: list の呼び出し形
+Given `agent-exec list --root /tmp/jobs` を実行する
+When コマンドが完了する
+Then stdout は `type="list"` の JSON を 1 つ出力する
 
 ### Requirement: ヘルプは英語
 
