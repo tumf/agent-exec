@@ -1046,6 +1046,135 @@ fn tail_includes_log_paths_and_bytes_metrics() {
     );
 }
 
+// ── list ───────────────────────────────────────────────────────────────────────
+
+/// Spec: `list` on an empty (non-existent) root returns jobs=[].
+#[test]
+fn list_returns_empty_when_root_does_not_exist() {
+    // Use a path that does not exist.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("does_not_exist");
+    let root_str = root.to_str().unwrap();
+    let v = run_cmd_with_root(&["list"], Some(root_str));
+    assert_envelope(&v, "list", true);
+    let jobs = v["jobs"].as_array().expect("jobs missing");
+    assert!(jobs.is_empty(), "expected empty jobs list; got: {v}");
+    assert!(
+        !v["truncated"].as_bool().unwrap_or(true),
+        "truncated must be false for empty list"
+    );
+}
+
+/// Spec: `list` returns all jobs, sorted by started_at descending.
+#[test]
+fn list_returns_jobs_sorted_by_started_at_desc() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+
+    // Run two jobs; both should appear in list.
+    let _r1 = run_cmd_with_root(&["run", "echo", "job1"], Some(root));
+    // Small sleep to ensure distinct timestamps.
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    let r2 = run_cmd_with_root(&["run", "echo", "job2"], Some(root));
+    let job2_id = r2["job_id"].as_str().unwrap().to_string();
+
+    let v = run_cmd_with_root(&["list"], Some(root));
+    assert_envelope(&v, "list", true);
+
+    let jobs = v["jobs"].as_array().expect("jobs missing");
+    assert!(jobs.len() >= 2, "expected at least 2 jobs; got: {v}");
+
+    // First job in the list must be the most recent one (job2).
+    let first_id = jobs[0]["job_id"].as_str().unwrap_or("");
+    assert_eq!(
+        first_id, job2_id,
+        "expected most recent job first; got: {v}"
+    );
+
+    // Verify required fields exist in each job summary.
+    for job in jobs {
+        assert!(job.get("job_id").is_some(), "job_id missing in job summary");
+        assert!(job.get("state").is_some(), "state missing in job summary");
+        assert!(
+            job.get("started_at").is_some(),
+            "started_at missing in job summary"
+        );
+    }
+}
+
+/// Spec: `--limit` truncates the result and sets truncated=true.
+#[test]
+fn list_limit_truncates_result() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+
+    // Run 3 jobs.
+    run_cmd_with_root(&["run", "echo", "j1"], Some(root));
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    run_cmd_with_root(&["run", "echo", "j2"], Some(root));
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    run_cmd_with_root(&["run", "echo", "j3"], Some(root));
+
+    // Request only 2.
+    let v = run_cmd_with_root(&["list", "--limit", "2"], Some(root));
+    assert_envelope(&v, "list", true);
+
+    let jobs = v["jobs"].as_array().expect("jobs missing");
+    assert_eq!(jobs.len(), 2, "expected 2 jobs due to --limit 2; got: {v}");
+    assert!(
+        v["truncated"].as_bool().unwrap_or(false),
+        "truncated must be true when result is truncated; got: {v}"
+    );
+}
+
+/// Spec: `list` root field contains the resolved root path.
+#[test]
+fn list_response_contains_root_field() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+
+    let v = run_cmd_with_root(&["list"], Some(root));
+    assert_envelope(&v, "list", true);
+
+    let resp_root = v["root"].as_str().expect("root missing in list response");
+    assert!(!resp_root.is_empty(), "root field is empty");
+}
+
+/// Spec: directories without valid meta.json are counted in skipped, not returned as jobs.
+#[test]
+fn list_skips_invalid_directories() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root_path = tmp.path();
+    let root = root_path.to_str().unwrap();
+
+    // Run a valid job first.
+    let r = run_cmd_with_root(&["run", "echo", "valid"], Some(root));
+    let valid_job_id = r["job_id"].as_str().unwrap().to_string();
+
+    // Create a "broken" directory (no meta.json inside).
+    let broken_dir = root_path.join("broken_job_dir");
+    std::fs::create_dir_all(&broken_dir).unwrap();
+
+    let v = run_cmd_with_root(&["list"], Some(root));
+    assert_envelope(&v, "list", true);
+
+    // The valid job must appear.
+    let jobs = v["jobs"].as_array().expect("jobs missing");
+    let has_valid = jobs
+        .iter()
+        .any(|j| j["job_id"].as_str() == Some(&valid_job_id));
+    assert!(has_valid, "valid job not found in list; got: {v}");
+
+    // The skipped count must be >= 1 (from the broken directory).
+    let skipped = v["skipped"]
+        .as_u64()
+        .expect("skipped missing in list response");
+    assert!(
+        skipped >= 1,
+        "expected skipped >= 1 for broken directory; got: {v}"
+    );
+}
+
 /// Task 3.3: snapshot-after is clamped to 10,000ms (waited_ms <= 10000).
 #[test]
 fn run_snapshot_after_is_clamped_to_10_seconds() {

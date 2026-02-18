@@ -5,12 +5,12 @@ TBD - created by archiving change define-agent-exec-tests-ci-v0-1. Update Purpos
 ## Requirements
 ### Requirement: CLI 統合テスト
 
-`run`/`status`/`tail`/`wait`/`kill` の各コマンドについて、stdout が JSON のみであることと必須フィールドの存在を検証する統合テストを用意しなければならない（MUST）。
+`run`/`status`/`tail`/`wait`/`kill`/`list` の各コマンドについて、stdout が JSON のみであることと必須フィールドの存在を検証する統合テストを用意しなければならない（MUST）。
 
-#### Scenario: run の JSON 検証
-Given `agent-exec run -- <cmd>` の統合テストを実行する
+#### Scenario: list の JSON 検証
+Given `agent-exec list` の統合テストを実行する
 When コマンドが完了する
-Then stdout の JSON に `schema_version`, `ok`, `type` が含まれる
+Then stdout の JSON に `schema_version`, `ok`, `type`, `jobs` が含まれる
 
 ### Requirement: Windows CI
 
