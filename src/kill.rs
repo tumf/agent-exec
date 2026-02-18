@@ -202,34 +202,37 @@ fn terminate_process_tree(root_pid: u32) -> Result<()> {
         }
 
         // Terminate all collected processes (children first, then root).
-        // Track whether the root process was successfully terminated — failing
-        // to terminate the root means tree termination cannot be confirmed.
-        let mut root_terminated = false;
-        for &target_pid in to_kill.iter().rev() {
-            if let Ok(h) = OpenProcess(PROCESS_TERMINATE, false, target_pid) {
-                let result = TerminateProcess(h, 1);
-                let _ = CloseHandle(h);
-                if target_pid == root_pid {
-                    // Surface root-process termination error.
-                    result.map_err(|e| {
-                        anyhow::anyhow!("TerminateProcess for root pid {} failed: {}", root_pid, e)
-                    })?;
-                    root_terminated = true;
-                }
-                // Child-process termination failures are best-effort; the
-                // important guarantee is that the root (and thus its future
-                // children) is gone.
-            }
-        }
+        // Per spec.md:55-63, tree-wide termination is a MUST.  Every process
+        // in the subtree must be confirmed terminated; failure to terminate
+        // any process (root or child) returns an error unless the process no
+        // longer exists (already terminated, which is a success condition).
+        use windows::Win32::Foundation::ERROR_INVALID_PARAMETER;
 
-        if !root_terminated {
-            // OpenProcess succeeded for the root PID but we never called
-            // TerminateProcess — or OpenProcess itself failed for the root.
-            // In either case we cannot guarantee tree termination.
-            return Err(anyhow::anyhow!(
-                "could not open or terminate root process (pid {})",
-                root_pid
-            ));
+        for &target_pid in to_kill.iter().rev() {
+            match OpenProcess(PROCESS_TERMINATE, false, target_pid) {
+                Ok(h) => {
+                    let result = TerminateProcess(h, 1);
+                    let _ = CloseHandle(h);
+                    result.map_err(|e| {
+                        anyhow::anyhow!("TerminateProcess for pid {} failed: {}", target_pid, e)
+                    })?;
+                }
+                Err(e) => {
+                    // ERROR_INVALID_PARAMETER (87) means the process no longer
+                    // exists — it has already exited, which is a success
+                    // condition (the process is gone).  Any other error means
+                    // we could not open the process handle and therefore cannot
+                    // confirm or perform termination, which violates the MUST.
+                    if e.code() != ERROR_INVALID_PARAMETER.to_hresult() {
+                        return Err(anyhow::anyhow!(
+                            "OpenProcess for pid {} failed (process may still be running): {}",
+                            target_pid,
+                            e
+                        ));
+                    }
+                    // Process already gone — treat as success.
+                }
+            }
         }
     }
     Ok(())

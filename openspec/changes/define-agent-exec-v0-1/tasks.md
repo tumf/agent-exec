@@ -33,3 +33,7 @@
 
 - [x] `src/kill.rs:133`（`send_signal` の Windows 分岐）で `TerminateJobObject(job, 1)` の戻り値を無視して `Ok(())` を返しているため、ジョブオブジェクト終了が失敗しても `kill` が成功扱いになり、仕様「Windows では kill がプロセスツリーを終了 MUST」（`spec.md:55-63`）を満たせません。`TerminateJobObject` の失敗をエラーとして返すよう修正してください。（`TerminateJobObject(job, 1).map_err(...)` でエラーを伝播。`cargo test` 18/18 テスト通過）
 - [x] `src/kill.rs:154-163`（`terminate_process_tree`）で `CreateToolhelp32Snapshot` 失敗時に root PID のみ `TerminateProcess` して成功復帰しており、子プロセスを含むツリー終了が保証されません。ツリー終了を保証できない場合は成功を返さずエラーにするか、別手段で子孫プロセスまで確実に終了する実装へ修正してください。（`terminate_process_tree` の戻り値型を `Result<()>` に変更。`CreateToolhelp32Snapshot` 失敗時はエラーを返すよう修正。ルートプロセス終了失敗時もエラーを返す。`cargo test` 18/18 テスト通過）
+
+## Acceptance #4 Failure Follow-up
+
+- [x] `src/kill.rs:208-222` の `terminate_process_tree` が子プロセス終了失敗を best-effort 扱いしており（`OpenProcess` 失敗時に無視、`TerminateProcess` の結果も root 以外は未検証）、子孫が生存していても `Ok(())` を返し得ます。仕様「Windows では kill がプロセスツリーを終了 MUST」（`openspec/changes/define-agent-exec-v0-1/specs/agent-exec/spec.md:55-63`）に対し、子プロセスも成功確認できない場合はエラーを返す実装（少なくとも `OpenProcess`/`TerminateProcess` の失敗理由を判定し、既に終了済み以外は失敗扱い）へ修正してください。（各プロセスに対し `OpenProcess` 失敗時は `ERROR_INVALID_PARAMETER`（プロセス既に終了）のみ成功扱いとし、それ以外はエラーを返す。`TerminateProcess` 失敗も同様にエラーを返す。`cargo test` 18/18 テスト通過）
