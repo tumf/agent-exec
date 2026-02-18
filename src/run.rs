@@ -78,6 +78,22 @@ pub fn execute(opts: RunOpts) -> Result<()> {
     let job_dir = JobDir::create(&root, &job_id, &meta)?;
     info!(job_id = %job_id, "created job directory");
 
+    // Pre-create empty log files so they exist before the supervisor starts.
+    // This guarantees that `stdout.log`, `stderr.log`, and `full.log` are
+    // present immediately after `run` returns, even if the supervisor has
+    // not yet begun writing.
+    for log_path in [
+        job_dir.stdout_path(),
+        job_dir.stderr_path(),
+        job_dir.full_log_path(),
+    ] {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .with_context(|| format!("pre-create log file {}", log_path.display()))?;
+    }
+
     // Spawn the supervisor (same binary, internal `_supervise` sub-command).
     let exe = std::env::current_exe().context("resolve current exe")?;
     let supervisor = Command::new(&exe)

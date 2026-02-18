@@ -150,6 +150,11 @@ pub struct JobMeta {
 }
 
 /// Persisted in `state.json`, updated as the job progresses.
+///
+/// Required fields per spec: `job.id`, `job.status`, `job.started_at`,
+/// `result.exit_code`, `result.signal`, `result.duration_ms`, `updated_at`.
+/// Option fields MUST be serialized as `null` (not omitted) so callers always
+/// see consistent keys regardless of job lifecycle stage.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct JobState {
     pub job_id: String,
@@ -157,11 +162,11 @@ pub struct JobState {
     pub started_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// `null` while running; set to exit code when process ends.
     pub exit_code: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// `null` unless the process was killed by a signal.
     pub signal: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// `null` while running; set to elapsed milliseconds when process ends.
     pub duration_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<String>,

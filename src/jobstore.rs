@@ -198,15 +198,24 @@ fn write_atomic(dir: &std::path::Path, target: &std::path::Path, contents: &[u8]
 mod tests {
     use super::*;
 
+    /// Global mutex to serialize tests that mutate process-wide environment variables.
+    ///
+    /// Rust runs tests in parallel by default; any test that calls `set_var` /
+    /// `remove_var` must hold this lock for the duration of the test so that
+    /// other env-reading tests do not observe a half-mutated environment.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn resolve_root_cli_flag_wins() {
+        // CLI flag does not depend on environment variables; no lock needed.
         let root = resolve_root(Some("/tmp/my-root"));
         assert_eq!(root, PathBuf::from("/tmp/my-root"));
     }
 
     #[test]
     fn resolve_root_env_var() {
-        // SAFETY: test-only; not running in parallel with other env-mutating tests.
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: guarded by ENV_LOCK; no other env-mutating test runs concurrently.
         unsafe {
             std::env::set_var("AGENT_EXEC_ROOT", "/tmp/env-root");
             // Also clear XDG to avoid interference.
@@ -223,7 +232,8 @@ mod tests {
 
     #[test]
     fn resolve_root_xdg() {
-        // SAFETY: test-only; not running in parallel with other env-mutating tests.
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: guarded by ENV_LOCK; no other env-mutating test runs concurrently.
         unsafe {
             std::env::remove_var("AGENT_EXEC_ROOT");
             std::env::set_var("XDG_DATA_HOME", "/tmp/xdg");
@@ -237,7 +247,8 @@ mod tests {
 
     #[test]
     fn resolve_root_default_contains_agent_exec() {
-        // SAFETY: test-only; not running in parallel with other env-mutating tests.
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: guarded by ENV_LOCK; no other env-mutating test runs concurrently.
         unsafe {
             std::env::remove_var("AGENT_EXEC_ROOT");
             std::env::remove_var("XDG_DATA_HOME");

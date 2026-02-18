@@ -8,3 +8,9 @@
 - [x] 2.1 `meta.json` の必須フィールドと env_keys のみ保存を実装する（検証: `meta.json` に env 値が含まれない）
 - [x] 2.2 `state.json` の必須フィールドと更新を実装する（検証: `state.json` に `updated_at` が含まれる）
 - [x] 2.3 `meta.json` と `state.json` の原子的な書き込みを実装する（検証: 一時ファイル経由の書き込みが行われる）
+
+## Acceptance #1 Failure Follow-up
+
+- [x] `meta.json` / `state.json` を仕様どおりの必須フィールド構造（`job.id`, `job.status`, `job.started_at`, `result.exit_code`, `result.signal`, `result.duration_ms`, `updated_at`）で永続化する。`Option` 値でもキーを省略せず `null` で出力する。（`schema.rs` の `JobState` から `exit_code`/`signal`/`duration_ms` の `skip_serializing_if` を削除）
+- [x] `run` 実行直後にジョブディレクトリへ `stdout.log` / `stderr.log` / `full.log` が必ず存在するようにする（`run.rs` でジョブディレクトリ作成直後に空ファイルを事前作成）。統合テスト `run_creates_all_log_files_immediately` で検証済み。
+- [x] `cargo test` が安定して通るように、環境変数を変更する `jobstore` テストを直列化する（`ENV_LOCK: Mutex<()>` をモジュールレベルで定義し、各環境変数変更テストがロックを保持してから操作するようリファクタリング）。`resolve_root_env_var` の失敗を解消済み。
