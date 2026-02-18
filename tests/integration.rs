@@ -954,13 +954,17 @@ fn run_includes_waited_ms_elapsed_ms_and_log_paths() {
     );
 }
 
-/// Task 3.1: run without snapshot-after has waited_ms=0 and no snapshot.
+/// Task 3.1: run with explicit --snapshot-after 0 has waited_ms=0 and no snapshot.
 #[test]
 fn run_without_snapshot_after_has_waited_ms_zero() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().to_str().unwrap();
 
-    let v = run_cmd_with_root(&["run", "echo", "no_snapshot"], Some(root));
+    // Explicitly pass --snapshot-after 0 to opt out of the default 200ms wait.
+    let v = run_cmd_with_root(
+        &["run", "--snapshot-after", "0", "echo", "no_snapshot"],
+        Some(root),
+    );
     assert_envelope(&v, "run", true);
 
     let waited_ms = v["waited_ms"].as_u64().expect("waited_ms missing");
@@ -1198,5 +1202,83 @@ fn run_snapshot_after_is_clamped_to_10_seconds() {
     assert!(
         waited_ms < 15_000,
         "waited_ms ({waited_ms}) indicates snapshot-after was NOT clamped (expected < 15,000ms)"
+    );
+}
+
+// ── include-run-output-default: default snapshot ───────────────────────────────
+
+/// Task 5.1: default run (no --snapshot-after flag) returns a snapshot.
+/// With the new default of 200ms, snapshot should be present in every run response.
+#[test]
+fn run_default_includes_snapshot() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+
+    // Run without any --snapshot-after flag; default is now 200ms.
+    let v = run_cmd_with_root(&["run", "echo", "default_snapshot_test"], Some(root));
+    assert_envelope(&v, "run", true);
+
+    // snapshot must be present with the default 200ms wait.
+    assert!(
+        v.get("snapshot").is_some() && !v["snapshot"].is_null(),
+        "snapshot should be present in default run response: {v}"
+    );
+    let snapshot = &v["snapshot"];
+    assert_eq!(
+        snapshot["encoding"].as_str().unwrap_or(""),
+        "utf-8-lossy",
+        "snapshot encoding must be utf-8-lossy"
+    );
+    assert!(
+        snapshot.get("stdout_tail").is_some(),
+        "snapshot.stdout_tail must be present"
+    );
+    assert!(
+        snapshot.get("stderr_tail").is_some(),
+        "snapshot.stderr_tail must be present"
+    );
+
+    // waited_ms must be > 0 (we waited at least one poll cycle).
+    let waited_ms = v["waited_ms"].as_u64().expect("waited_ms missing");
+    assert!(
+        waited_ms > 0,
+        "waited_ms must be > 0 with default snapshot_after=200: {waited_ms}"
+    );
+
+    // stdout_tail should contain the echo output.
+    let stdout_tail = snapshot["stdout_tail"].as_str().unwrap_or("");
+    assert!(
+        stdout_tail.contains("default_snapshot_test"),
+        "snapshot.stdout_tail should contain 'default_snapshot_test'; got: {stdout_tail:?}"
+    );
+}
+
+/// Task 5.2: output without a trailing newline is captured in snapshot.stdout_tail.
+#[test]
+fn run_snapshot_captures_output_without_newline() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+
+    // Use printf to emit output without a trailing newline.
+    let v = run_cmd_with_root(
+        &[
+            "run",
+            "--snapshot-after",
+            "400",
+            "--max-bytes",
+            "256",
+            "sh",
+            "-c",
+            "printf 'no-newline-output'",
+        ],
+        Some(root),
+    );
+    assert_envelope(&v, "run", true);
+
+    let snapshot = v.get("snapshot").expect("snapshot must be present");
+    let stdout_tail = snapshot["stdout_tail"].as_str().unwrap_or("");
+    assert!(
+        stdout_tail.contains("no-newline-output"),
+        "snapshot.stdout_tail should contain 'no-newline-output' even without trailing newline; got: {stdout_tail:?}"
     );
 }

@@ -32,3 +32,15 @@
 - `agent-exec run -- <cmd>` のデフォルト実行で `snapshot` が返る
 - 短命コマンドの `stdout` が `snapshot.stdout_tail` に含まれる
 - 改行なしの出力でも `snapshot.stdout_tail` に反映される
+
+## Why
+
+短命コマンドの実行結果が `run` の JSON に含まれず、エージェントが出力を確認するために別途 `tail` を呼び出す必要があったため。`snapshot_after` のデフォルトを 200ms にし、バイト単位の読み取りを採用することで、ほぼすべてのコマンドの出力が `run` の一度の呼び出しで取得できるようになる。
+
+## What Changes
+
+- `run` の `snapshot_after` デフォルト値を 0 → 200ms に変更（`src/main.rs`）
+- スナップショット待機ロジックをポーリング方式に変更し、出力があれば早期終了（`src/run.rs`）
+- stdout/stderr の読み取りを行単位（`BufRead::lines`）からバイト単位（`Read::read`）に変更（`src/run.rs`）
+- `full.log` の行フォーマット維持のため未完了行バッファを追加（`src/run.rs`）
+- 統合テストを追加・更新（`tests/integration.rs`）
