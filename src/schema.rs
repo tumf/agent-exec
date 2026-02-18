@@ -233,6 +233,12 @@ pub struct JobState {
     pub finished_at: Option<String>,
     /// Last time this state was written to disk (RFC 3339).
     pub updated_at: String,
+    /// Windows-only: name of the Job Object used to manage the process tree.
+    /// Present only when the supervisor successfully created and assigned a
+    /// named Job Object; absent on non-Windows platforms and when creation
+    /// fails (in which case tree management falls back to snapshot enumeration).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub windows_job_name: Option<String>,
 }
 
 impl JobState {

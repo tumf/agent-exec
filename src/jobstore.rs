@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use directories::BaseDirs;
 use std::path::PathBuf;
 
-use crate::schema::{JobMeta, JobState};
+use crate::schema::{JobMeta, JobState, JobStatus};
 
 /// Sentinel error type to distinguish "job not found" from other I/O errors.
 /// Used by callers to emit `error.code = "job_not_found"` instead of `internal_error`.
@@ -165,6 +165,45 @@ impl JobDir {
         let lines: Vec<&str> = text.lines().collect();
         let skip = lines.len().saturating_sub(tail_lines as usize);
         lines[skip..].join("\n")
+    }
+
+    /// Write the initial JobState (running, supervisor PID) to disk.
+    ///
+    /// This is called by the `run` command immediately after the supervisor
+    /// process is spawned, so `pid` is the supervisor's PID. The child process
+    /// PID and, on Windows, the Job Object name are not yet known at this point.
+    ///
+    /// On Windows, the Job Object name is derived deterministically from the
+    /// job_id as `"AgentExec-{job_id}"`. This name is written immediately to
+    /// `state.json` so that callers reading state after `run` returns can
+    /// always find the Job Object identifier, without waiting for the supervisor
+    /// to perform its first `write_state` call. The supervisor will confirm the
+    /// same name (or update to `failed`) after it successfully assigns the child
+    /// process to the named Job Object.
+    pub fn init_state(&self, pid: u32, started_at: &str) -> Result<JobState> {
+        #[cfg(windows)]
+        let windows_job_name = Some(format!("AgentExec-{}", self.job_id));
+        #[cfg(not(windows))]
+        let windows_job_name: Option<String> = None;
+
+        let state = JobState {
+            job: crate::schema::JobStateJob {
+                id: self.job_id.clone(),
+                status: JobStatus::Running,
+                started_at: started_at.to_string(),
+            },
+            result: crate::schema::JobStateResult {
+                exit_code: None,
+                signal: None,
+                duration_ms: None,
+            },
+            pid: Some(pid),
+            finished_at: None,
+            updated_at: crate::run::now_rfc3339_pub(),
+            windows_job_name,
+        };
+        self.write_state(&state)?;
+        Ok(state)
     }
 }
 
@@ -339,6 +378,7 @@ mod tests {
             pid: Some(12345),
             finished_at: None,
             updated_at: "2024-01-01T00:00:01Z".to_string(),
+            windows_job_name: None,
         };
         job_dir.write_state(&state).unwrap();
 
@@ -381,6 +421,7 @@ mod tests {
                 pid: Some(100 + i),
                 finished_at: None,
                 updated_at: format!("2024-01-01T00:00:{:02}Z", i),
+                windows_job_name: None,
             };
             job_dir.write_state(&state).unwrap();
 
@@ -418,5 +459,47 @@ mod tests {
         let loaded = job_dir.read_meta().unwrap();
         assert_eq!(loaded.command, vec!["ls"]);
         assert_eq!(loaded.created_at, "2024-06-01T12:00:00Z");
+    }
+
+    /// On non-Windows platforms, `init_state` must write `windows_job_name: None`
+    /// (the field is omitted from JSON via `skip_serializing_if`).
+    /// On Windows, `init_state` must write the deterministic Job Object name
+    /// `"AgentExec-{job_id}"` so that `state.json` always contains the identifier
+    /// immediately after `run` returns, without waiting for the supervisor update.
+    #[test]
+    fn init_state_writes_deterministic_job_name_on_windows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let job_id = "01TESTJOBID0000000000000";
+        let meta = make_meta(job_id, root);
+        let job_dir = JobDir::create(root, job_id, &meta).unwrap();
+        let state = job_dir.init_state(1234, "2024-01-01T00:00:00Z").unwrap();
+
+        // Verify in-memory state.
+        #[cfg(windows)]
+        assert_eq!(
+            state.windows_job_name.as_deref(),
+            Some("AgentExec-01TESTJOBID0000000000000"),
+            "Windows: init_state must set deterministic job name immediately"
+        );
+        #[cfg(not(windows))]
+        assert_eq!(
+            state.windows_job_name, None,
+            "non-Windows: init_state must not set windows_job_name"
+        );
+
+        // Verify persisted state on disk.
+        let persisted = job_dir.read_state().unwrap();
+        #[cfg(windows)]
+        assert_eq!(
+            persisted.windows_job_name.as_deref(),
+            Some("AgentExec-01TESTJOBID0000000000000"),
+            "Windows: persisted state.json must contain windows_job_name"
+        );
+        #[cfg(not(windows))]
+        assert_eq!(
+            persisted.windows_job_name, None,
+            "non-Windows: persisted state.json must not contain windows_job_name"
+        );
     }
 }

@@ -1,7 +1,19 @@
 //! Implementation of the `kill` sub-command.
 //!
 //! Signals supported: TERM, INT, KILL (case-insensitive).
-//! On Windows, all signals map to TerminateProcess (Job Object termination).
+//!
+//! Signal mapping on Windows:
+//!   TERM → TerminateJobObject (graceful intent; Windows has no SIGTERM, so
+//!           tree termination is the closest equivalent)
+//!   INT  → TerminateJobObject (same; Windows has no SIGINT for arbitrary PIDs)
+//!   KILL → TerminateJobObject (forced; semantically the same on Windows)
+//!   *    → TerminateJobObject (unknown signals treated as KILL per design.md)
+//!
+//! On Windows the supervisor records a `windows_job_name` in `state.json`.
+//! When present, `kill` opens that named Job Object directly and terminates
+//! it, which stops the entire process tree.  If absent (e.g. the supervisor
+//! could not assign the process to a job), a snapshot-based tree enumeration
+//! fallback is used instead.
 
 use anyhow::Result;
 use tracing::info;
@@ -50,7 +62,13 @@ pub fn execute(opts: KillOpts) -> Result<()> {
     }
 
     if let Some(pid) = state.pid {
+        // On Windows, pass the job name from state.json so kill can use the
+        // named Job Object created by the supervisor for reliable tree termination.
+        #[cfg(windows)]
+        send_signal(pid, &signal_upper, state.windows_job_name.as_deref())?;
+        #[cfg(not(windows))]
         send_signal(pid, &signal_upper)?;
+
         info!(job_id = %opts.job_id, pid, signal = %signal_upper, "signal sent");
 
         // Mark state as killed.
@@ -69,6 +87,7 @@ pub fn execute(opts: KillOpts) -> Result<()> {
             pid: Some(pid),
             finished_at: Some(now.clone()),
             updated_at: now,
+            windows_job_name: None,
         };
         job_dir.write_state(&new_state)?;
     }
@@ -90,7 +109,7 @@ fn send_signal(pid: u32, signal: &str) -> Result<()> {
         "TERM" => libc::SIGTERM,
         "INT" => libc::SIGINT,
         "KILL" => libc::SIGKILL,
-        _ => libc::SIGKILL, // Unknown → KILL
+        _ => libc::SIGKILL, // Unknown → KILL (per design.md)
     };
     // SAFETY: kill(2) is safe to call with any pid and valid signal number.
     let ret = unsafe { libc::kill(pid as libc::pid_t, signum) };
@@ -104,11 +123,62 @@ fn send_signal(pid: u32, signal: &str) -> Result<()> {
     Ok(())
 }
 
+/// Windows signal dispatch.
+///
+/// Signal mapping (per design.md):
+/// - TERM/INT/KILL all map to Job Object termination (process tree termination).
+/// - Unknown signals are treated as KILL (same as design.md specifies).
+///
+/// Strategy:
+/// 1. If `job_name` is Some, open the named Job Object and call TerminateJobObject.
+/// 2. Otherwise fall back to snapshot-based tree enumeration starting at `pid`.
 #[cfg(windows)]
-fn send_signal(pid: u32, _signal: &str) -> Result<()> {
-    // On Windows, use a Job Object to terminate the entire process tree.
-    // This is equivalent to POSIX process-group kill and satisfies the
-    // "process tree termination" requirement on Windows.
+fn send_signal(pid: u32, signal: &str, job_name: Option<&str>) -> Result<()> {
+    use tracing::debug;
+    use windows::Win32::Foundation::CloseHandle;
+
+    // Log the signal mapping for observability.
+    let _mapped = match signal {
+        "TERM" => "TerminateJobObject (TERM→process-tree kill)",
+        "INT" => "TerminateJobObject (INT→process-tree kill)",
+        "KILL" => "TerminateJobObject (KILL→process-tree kill)",
+        other => {
+            debug!(
+                signal = other,
+                "unknown signal mapped to KILL (process-tree kill)"
+            );
+            "TerminateJobObject (unknown→process-tree kill)"
+        }
+    };
+
+    // Path 1: named Job Object created by the supervisor is available.
+    if let Some(name) = job_name {
+        use windows::core::HSTRING;
+        use windows::Win32::System::JobObjects::{
+            OpenJobObjectW, TerminateJobObject, JOB_OBJECT_ALL_ACCESS,
+        };
+
+        let hname = HSTRING::from(name);
+        unsafe {
+            let job = OpenJobObjectW(JOB_OBJECT_ALL_ACCESS, false, &hname)
+                .map_err(|e| anyhow::anyhow!("OpenJobObjectW({name}) failed: {e}"))?;
+            let result = TerminateJobObject(job, 1)
+                .map_err(|e| anyhow::anyhow!("TerminateJobObject({name}) failed: {e}"));
+            let _ = CloseHandle(job);
+            return result;
+        }
+    }
+
+    // Path 2: no named Job Object — try ad-hoc assignment then terminate.
+    send_signal_no_job(pid)
+}
+
+/// Fallback Windows kill path when no named Job Object is available.
+/// Attempts to create a temporary Job Object, assign the process, and terminate.
+/// If assignment fails (process already in another job), falls back to
+/// snapshot-based recursive tree termination.
+#[cfg(windows)]
+fn send_signal_no_job(pid: u32) -> Result<()> {
     use windows::Win32::Foundation::{CloseHandle, HANDLE};
     use windows::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, TerminateJobObject,
@@ -119,9 +189,9 @@ fn send_signal(pid: u32, _signal: &str) -> Result<()> {
         // Open the target process.
         let proc_handle: HANDLE = OpenProcess(PROCESS_TERMINATE | PROCESS_SET_QUOTA, false, pid)?;
 
-        // Create a new Job Object and assign the process to it, then terminate
-        // all processes in the job (the target process and any children it
-        // has already spawned).
+        // Create an anonymous Job Object and assign the process to it, then
+        // terminate all processes in the job (the target process and any
+        // children it has already spawned).
         let job: HANDLE = CreateJobObjectW(None, None)?;
 
         // Assign process to the job (if it is already in a job this may fail,
