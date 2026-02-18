@@ -21,15 +21,15 @@ pub fn execute(opts: StatusOpts) -> Result<()> {
     let meta = job_dir.read_meta()?;
     let state = job_dir.read_state()?;
 
-    debug!(job_id = %opts.job_id, state = ?state.state, "status query");
+    debug!(job_id = %opts.job_id, state = ?state.status, "status query");
 
     let response = Response::new(
         "status",
         StatusData {
             job_id: opts.job_id.to_string(),
-            state: state.state.as_str().to_string(),
+            state: state.status.as_str().to_string(),
             exit_code: state.exit_code,
-            started_at: meta.started_at,
+            started_at: meta.created_at,
             finished_at: state.finished_at,
         },
     );

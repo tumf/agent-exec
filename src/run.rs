@@ -28,6 +28,9 @@ pub struct RunOpts<'a> {
     pub tail_lines: u64,
     /// Max bytes for tail.
     pub max_bytes: u64,
+    /// Additional environment variables in KEY=VALUE format.
+    /// Only key names are stored in meta.json; values are not persisted.
+    pub env_vars: Vec<String>,
 }
 
 impl<'a> Default for RunOpts<'a> {
@@ -38,6 +41,7 @@ impl<'a> Default for RunOpts<'a> {
             snapshot_after: 0,
             tail_lines: 50,
             max_bytes: 65536,
+            env_vars: vec![],
         }
     }
 }
@@ -53,14 +57,22 @@ pub fn execute(opts: RunOpts) -> Result<()> {
         .with_context(|| format!("create jobs root {}", root.display()))?;
 
     let job_id = Ulid::new().to_string();
-    let started_at = now_rfc3339();
+    let created_at = now_rfc3339();
+
+    // Extract only the key names from KEY=VALUE env var strings (values are not persisted).
+    let env_keys: Vec<String> = opts
+        .env_vars
+        .iter()
+        .map(|kv| kv.splitn(2, '=').next().unwrap_or(kv.as_str()).to_string())
+        .collect();
 
     let meta = JobMeta {
         job_id: job_id.clone(),
         schema_version: crate::schema::SCHEMA_VERSION.to_string(),
         command: opts.command.clone(),
-        started_at: started_at.clone(),
+        created_at: created_at.clone(),
         root: root.display().to_string(),
+        env_keys,
     };
 
     let job_dir = JobDir::create(&root, &job_id, &meta)?;
@@ -86,7 +98,18 @@ pub fn execute(opts: RunOpts) -> Result<()> {
     debug!(supervisor_pid, "supervisor spawned");
 
     // Write initial state with supervisor PID so `status` can track it.
-    job_dir.init_state(supervisor_pid)?;
+    let initial_state = crate::schema::JobState {
+        job_id: job_id.clone(),
+        status: JobStatus::Running,
+        started_at: created_at.clone(),
+        pid: Some(supervisor_pid),
+        exit_code: None,
+        signal: None,
+        duration_ms: None,
+        finished_at: None,
+        updated_at: now_rfc3339(),
+    };
+    job_dir.write_state(&initial_state)?;
 
     // Optionally wait for snapshot.
     let snapshot = if opts.snapshot_after > 0 {
@@ -132,6 +155,10 @@ pub fn supervise(job_id: &str, root: &Path, command: &[String]) -> Result<()> {
 
     let job_dir = JobDir::open(root, job_id)?;
 
+    // Read meta.json to get the started_at timestamp.
+    let meta = job_dir.read_meta()?;
+    let started_at = meta.created_at.clone();
+
     // Create the full.log file (shared between stdout/stderr threads).
     let full_log_file =
         std::fs::File::create(job_dir.full_log_path()).context("create full.log")?;
@@ -151,12 +178,19 @@ pub fn supervise(job_id: &str, root: &Path, command: &[String]) -> Result<()> {
 
     // Update state.json with real child PID.
     let state = JobState {
-        state: JobStatus::Running,
+        job_id: job_id.to_string(),
+        status: JobStatus::Running,
+        started_at: started_at.clone(),
         pid: Some(pid),
         exit_code: None,
+        signal: None,
+        duration_ms: None,
         finished_at: None,
+        updated_at: now_rfc3339(),
     };
     job_dir.write_state(&state)?;
+
+    let child_start_time = std::time::Instant::now();
 
     // Take stdout/stderr handles before moving child.
     let child_stdout = child.stdout.take().expect("child stdout piped");
@@ -201,14 +235,20 @@ pub fn supervise(job_id: &str, root: &Path, command: &[String]) -> Result<()> {
     let _ = t_stdout.join();
     let _ = t_stderr.join();
 
+    let duration_ms = child_start_time.elapsed().as_millis() as u64;
     let exit_code = exit_status.code();
     let finished_at = now_rfc3339();
 
     let state = JobState {
-        state: JobStatus::Exited, // non-zero exit still "exited"
+        job_id: job_id.to_string(),
+        status: JobStatus::Exited, // non-zero exit still "exited"
+        started_at,
         pid: Some(pid),
         exit_code,
+        signal: None,
+        duration_ms: Some(duration_ms),
         finished_at: Some(finished_at),
+        updated_at: now_rfc3339(),
     };
     job_dir.write_state(&state)?;
     info!(job_id, ?exit_code, "child process finished");

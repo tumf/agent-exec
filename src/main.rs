@@ -41,6 +41,11 @@ enum Command {
         #[arg(long, default_value = "65536")]
         max_bytes: u64,
 
+        /// Additional environment variables in KEY=VALUE format.
+        /// Only the key names are stored in meta.json; values are not persisted.
+        #[arg(long = "env", value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
+        env_vars: Vec<String>,
+
         /// Command and arguments to run.
         #[arg(required = true, trailing_var_arg = true)]
         command: Vec<String>,
@@ -157,6 +162,7 @@ fn run(cli: Cli) -> Result<()> {
             snapshot_after,
             tail_lines,
             max_bytes,
+            env_vars,
             command,
         } => {
             agent_shell::run::execute(agent_shell::run::RunOpts {
@@ -165,6 +171,7 @@ fn run(cli: Cli) -> Result<()> {
                 snapshot_after,
                 tail_lines,
                 max_bytes,
+                env_vars,
             })?;
         }
 

@@ -36,7 +36,7 @@ pub fn execute(opts: KillOpts) -> Result<()> {
     let state = job_dir.read_state()?;
     let signal_upper = opts.signal.to_uppercase();
 
-    if state.state != JobStatus::Running {
+    if state.status != JobStatus::Running {
         // Already stopped — no-op but still emit JSON.
         let response = Response::new(
             "kill",
@@ -54,11 +54,17 @@ pub fn execute(opts: KillOpts) -> Result<()> {
         info!(job_id = %opts.job_id, pid, signal = %signal_upper, "signal sent");
 
         // Mark state as killed.
+        let now = crate::run::now_rfc3339_pub();
         let new_state = JobState {
-            state: JobStatus::Killed,
+            job_id: opts.job_id.to_string(),
+            status: JobStatus::Killed,
+            started_at: state.started_at.clone(),
             pid: Some(pid),
             exit_code: None,
-            finished_at: Some(crate::run::now_rfc3339_pub()),
+            signal: Some(signal_upper.clone()),
+            duration_ms: None,
+            finished_at: Some(now.clone()),
+            updated_at: now,
         };
         job_dir.write_state(&new_state)?;
     }

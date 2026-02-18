@@ -134,25 +134,39 @@ pub struct Snapshot {
 // ---------- Persisted job metadata / state ----------
 
 /// Persisted in `meta.json` at job creation time.
+///
+/// `env_keys` stores only the names (keys) of environment variables passed via `--env`.
+/// Values MUST NOT be stored to avoid leaking secrets.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct JobMeta {
     pub job_id: String,
     pub schema_version: String,
     pub command: Vec<String>,
-    pub started_at: String,
+    pub created_at: String,
     pub root: String,
+    /// Keys of environment variables provided at job creation time.
+    /// Values are intentionally omitted for security.
+    pub env_keys: Vec<String>,
 }
 
 /// Persisted in `state.json`, updated as the job progresses.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct JobState {
-    pub state: JobStatus,
+    pub job_id: String,
+    pub status: JobStatus,
+    pub started_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub signal: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<String>,
+    /// Last time this state was written to disk (RFC 3339).
+    pub updated_at: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
