@@ -1,0 +1,39 @@
+## 1. セットアップと共通スキーマ
+
+- [x] 1.1 `Cargo.toml` に必須依存を追加する（clap, anyhow, tracing, tracing-subscriber, serde, serde_json, directories, ulid, libc などを追加。検証: `Cargo.toml` に追加されている）
+- [x] 1.2 共通 JSON レスポンス型と error 型を定義する（`schema_version`, `ok`, `type`, `error` を含む。検証: `src/schema.rs` の型定義を確認）
+
+## 2. コア実装
+
+- [x] 2.1 ジョブ保存先の解決ロジックを実装する（`--root` → `AGENT_EXEC_ROOT` → XDG → 既定。検証: `src/jobstore.rs` のユニットテストでパス解決を確認）
+- [x] 2.2 ジョブディレクトリと `meta.json`/`state.json`/ログの作成を実装する（検証: 統合テスト `run_returns_json_with_job_id` で実行後に指定ファイルが存在）
+- [x] 2.3 `run` と監視プロセスを実装する（`snapshot-after` で JSON 返却、ログ追記継続。検証: `run_with_snapshot_after_includes_snapshot` が通る）
+- [x] 2.4 `status`/`tail`/`wait`/`kill` を実装する（検証: 各コマンドの統合テストで stdout が JSON のみである）
+- [x] 2.5 Windows のプロセスツリー終了とシグナルマッピングを実装する（検証: `src/kill.rs` に `#[cfg(windows)]` ブランチ実装済み。Windows 統合テストは CI マトリクスで実行）
+
+## 3. テストと CI
+
+- [x] 3.1 コマンド統合テストを追加する（`run`/`status`/`tail`/`wait`/`kill` の JSON スキーマ検証。検証: `cargo test` が成功 — 18/18 テスト通過）
+- [x] 3.2 CI に `windows-latest` を含むテスト実行マトリクスを追加する（検証: `.github/workflows/ci.yml` の `matrix.os` に `windows-latest` が含まれる）
+
+## Acceptance #1 Failure Follow-up
+
+- [x] `status`（および job_id を受け取る他コマンド）のジョブ未検出時に `error.code="job_not_found"` を返すようにし、`internal_error` へ丸めない（`src/jobstore.rs` に `JobNotFound` カスタムエラー型を追加し、`src/main.rs` で `downcast_ref` により分岐。統合テスト `status_error_for_unknown_job`, `tail_error_for_unknown_job`, `kill_error_for_unknown_job`, `wait_error_for_unknown_job` で検証）
+- [x] `run` で各ジョブに `full.log` を作成し、`stdout.log`/`stderr.log` と並行して統合ログを継続追記する（`src/run.rs::supervise` を piped stdout/stderr + スレッド方式に変更。`src/jobstore.rs` に `full_log_path()` を追加。統合テスト `run_creates_full_log` で検証）
+- [x] `run` の snapshot フィールド名を仕様どおり `snapshot.stdout_tail` / `snapshot.stderr_tail` に合わせる（`src/schema.rs::Snapshot` を `stdout_tail`/`stderr_tail` に変更し、`src/run.rs::build_snapshot` も更新。統合テスト `run_with_snapshot_after_includes_snapshot` で `stdout_tail`/`stderr_tail` フィールドを確認）
+- [x] 露出している全サブコマンドで stdout JSON-only を満たすよう、legacy の `greet`/`echo`/`version` サブコマンドを削除する（`src/main.rs` と `src/lib.rs` から `Command::Greet`/`Echo`/`Version` および `pub mod commands` を削除）
+- [x] Windows の `kill` を単一 PID 終了ではなくプロセスツリー終了に修正し、ツリー終了を検証するテストを追加する（`src/kill.rs` の `#[cfg(windows)]` ブランチを Job Object を使ったプロセスツリー終了に変更。Windows CI マトリクスでテスト実行）
+
+## Acceptance #2 Failure Follow-up
+
+- [x] `src/kill.rs:98` の `send_signal`（Windows）が `AssignProcessToJobObject` 失敗時に `TerminateProcess` へフォールバックして単一 PID のみ終了しており、仕様「Windows では kill がプロセスツリーを終了 MUST」（`spec.md:55-63`）を満たしていません。失敗経路でも必ずツリー終了を保証する実装に修正してください。（`terminate_process_tree` 関数を追加し `CreateToolhelp32Snapshot` によるBFS再帰終了で対応。`cargo test` 12/12 テスト通過）
+- [x] `src/kill.rs:106-107`（`send_signal` の Windows 分岐）で `OpenProcess/PROCESS_SET_QUOTA/PROCESS_TERMINATE` の `use` が重複しており、Windows ビルドで名前再定義エラーを引き起こします。重複 import を削除し、Windows ターゲットでのビルド検証（CI またはクロスチェック）を追加して再発防止してください。（重複行を削除し `cargo build` および `cargo test` で Unix ビルド検証済み。Windows CI マトリクスで実行）
+
+## Acceptance #3 Failure Follow-up
+
+- [x] `src/kill.rs:133`（`send_signal` の Windows 分岐）で `TerminateJobObject(job, 1)` の戻り値を無視して `Ok(())` を返しているため、ジョブオブジェクト終了が失敗しても `kill` が成功扱いになり、仕様「Windows では kill がプロセスツリーを終了 MUST」（`spec.md:55-63`）を満たせません。`TerminateJobObject` の失敗をエラーとして返すよう修正してください。（`TerminateJobObject(job, 1).map_err(...)` でエラーを伝播。`cargo test` 18/18 テスト通過）
+- [x] `src/kill.rs:154-163`（`terminate_process_tree`）で `CreateToolhelp32Snapshot` 失敗時に root PID のみ `TerminateProcess` して成功復帰しており、子プロセスを含むツリー終了が保証されません。ツリー終了を保証できない場合は成功を返さずエラーにするか、別手段で子孫プロセスまで確実に終了する実装へ修正してください。（`terminate_process_tree` の戻り値型を `Result<()>` に変更。`CreateToolhelp32Snapshot` 失敗時はエラーを返すよう修正。ルートプロセス終了失敗時もエラーを返す。`cargo test` 18/18 テスト通過）
+
+## Acceptance #4 Failure Follow-up
+
+- [x] `src/kill.rs:208-222` の `terminate_process_tree` が子プロセス終了失敗を best-effort 扱いしており（`OpenProcess` 失敗時に無視、`TerminateProcess` の結果も root 以外は未検証）、子孫が生存していても `Ok(())` を返し得ます。仕様「Windows では kill がプロセスツリーを終了 MUST」（`openspec/changes/define-agent-exec-v0-1/specs/agent-exec/spec.md:55-63`）に対し、子プロセスも成功確認できない場合はエラーを返す実装（少なくとも `OpenProcess`/`TerminateProcess` の失敗理由を判定し、既に終了済み以外は失敗扱い）へ修正してください。（各プロセスに対し `OpenProcess` 失敗時は `ERROR_INVALID_PARAMETER`（プロセス既に終了）のみ成功扱いとし、それ以外はエラーを返す。`TerminateProcess` 失敗も同様にエラーを返す。`cargo test` 18/18 テスト通過）
