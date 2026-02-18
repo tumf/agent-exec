@@ -17,8 +17,8 @@ fn binary() -> PathBuf {
     if p.ends_with("deps") {
         p.pop();
     }
-    // Binary name matches package name in Cargo.toml.
-    p.push("agent-shell");
+    // Binary name is "agent-exec" as defined in [[bin]] of Cargo.toml.
+    p.push("agent-exec");
     if cfg!(windows) {
         p.set_extension("exe");
     }

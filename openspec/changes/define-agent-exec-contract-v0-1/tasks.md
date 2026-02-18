@@ -11,3 +11,7 @@
 ## 3. stdout/stderr 分離
 
 - [x] 3.1 stdout JSON-only と stderr ログ分離を保証する（検証: コマンド実行時 stdout が JSON のみになる）
+
+## Acceptance #1 Failure Follow-up
+
+- [x] CLI 実行名を仕様どおり `agent-exec` で呼び出せるようにする（`Cargo.toml` に `[[bin]] name = "agent-exec"` を追加し、`tests/integration.rs` の `binary()` 関数も `agent-exec` を参照するよう修正。全18テスト通過確認）。
