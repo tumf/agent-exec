@@ -5,14 +5,16 @@ TBD - created by archiving change define-agent-exec-run-supervise-v0-1. Update P
 ## Requirements
 ### Requirement: run の監視分離
 
-`run` は `snapshot-after` の待機時間を最大 10,000ms に制限しなければならない（MUST）。
-`run` の JSON には待機時間の実測値 `waited_ms` と `run` 呼び出し全体の所要時間 `elapsed_ms` を含めなければならない（MUST）。
+MUST: `run` は `snapshot-after` で指定された待機期限までブロックし、
+ジョブが `running` のままであれば期限到達まで待機を継続しなければならない（MUST）。
+出力が既に存在する場合でも、ジョブが継続中であれば待機を短縮してはならない（MUST）。
+ただしジョブが終了した場合は期限より前に返却してよい（MAY）。
 
-#### Scenario: snapshot-after の上限
+#### Scenario: 出力が先に出ても期限まで待つ
 
-Given `agent-exec run --snapshot-after 15000 --max-bytes 64 -- <cmd>` を実行する
-When 10 秒経過する
-Then `waited_ms` は 10,000 以下であり、`elapsed_ms` は `waited_ms` 以上である
+Given `agent-exec run --snapshot-after 200 -- sh -c "printf 'hi'; sleep 1"` を実行する
+When `run` の JSON が返る
+Then `waited_ms` は 200 以上である
 
 ### Requirement: snapshot/tail の末尾取得
 
