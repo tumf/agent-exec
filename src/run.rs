@@ -56,7 +56,7 @@ impl<'a> Default for RunOpts<'a> {
         RunOpts {
             command: vec![],
             root: None,
-            snapshot_after: 0,
+            snapshot_after: 200,
             tail_lines: 50,
             max_bytes: 65536,
             timeout_ms: 0,
@@ -245,10 +245,36 @@ pub fn execute(opts: RunOpts) -> Result<()> {
     let effective_snapshot_after = opts.snapshot_after.min(MAX_SNAPSHOT_AFTER_MS);
 
     // Optionally wait for snapshot and measure waited_ms.
+    // Uses a polling loop so we can exit early when output is available
+    // or the job has finished, rather than always sleeping the full duration.
     let (snapshot, waited_ms) = if effective_snapshot_after > 0 {
-        debug!(ms = effective_snapshot_after, "waiting for snapshot");
+        debug!(ms = effective_snapshot_after, "polling for snapshot");
         let wait_start = std::time::Instant::now();
-        std::thread::sleep(std::time::Duration::from_millis(effective_snapshot_after));
+        let deadline = wait_start + std::time::Duration::from_millis(effective_snapshot_after);
+        // Poll interval: 15ms gives good responsiveness without excessive CPU.
+        let poll_interval = std::time::Duration::from_millis(15);
+        loop {
+            std::thread::sleep(poll_interval);
+            // Early exit: stdout or stderr has data.
+            let stdout_size = observed_bytes(&job_dir.stdout_path());
+            let stderr_size = observed_bytes(&job_dir.stderr_path());
+            if stdout_size > 0 || stderr_size > 0 {
+                debug!("snapshot poll: output available, exiting early");
+                break;
+            }
+            // Early exit: job state changed from running (finished or failed).
+            if let Ok(st) = job_dir.read_state()
+                && *st.status() != JobStatus::Running
+            {
+                debug!("snapshot poll: job no longer running, exiting early");
+                break;
+            }
+            // Exit when deadline is reached.
+            if std::time::Instant::now() >= deadline {
+                debug!("snapshot poll: deadline reached");
+                break;
+            }
+        }
         let waited_ms = wait_start.elapsed().as_millis() as u64;
         let snap = build_snapshot(&job_dir, opts.tail_lines, opts.max_bytes);
         (Some(snap), waited_ms)
@@ -385,7 +411,7 @@ fn load_env_file(path: &str) -> Result<Vec<(String, String)>> {
 /// the entire process tree can be terminated with a single `kill` call.
 /// The Job Object name is recorded in `state.json` as `windows_job_name`.
 pub fn supervise(opts: SuperviseOpts) -> Result<()> {
-    use std::io::{BufRead, BufReader, Write};
+    use std::io::Write;
     use std::sync::{Arc, Mutex};
 
     let job_id = opts.job_id;
@@ -541,17 +567,51 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
     let child_stderr = child.stderr.take().expect("child stderr piped");
 
     // Thread: read stdout, write to stdout.log and full.log.
+    //
+    // Reads byte chunks (not lines) so that output without a trailing newline
+    // is still captured in stdout.log immediately. The full.log format
+    // "<RFC3339> [STDOUT] <line>" is maintained via a line-accumulation buffer:
+    // bytes are appended to the buffer until a newline is found, at which point
+    // a formatted line is written to full.log. Any remaining bytes at EOF are
+    // flushed as a final line.
     let stdout_log_path = job_dir.stdout_path();
     let full_log_stdout = Arc::clone(&full_log);
     let t_stdout = std::thread::spawn(move || {
+        use std::io::Read;
         let mut stdout_file =
             std::fs::File::create(&stdout_log_path).expect("create stdout.log in thread");
-        let reader = BufReader::new(child_stdout);
-        for line in reader.lines() {
-            let line = line.unwrap_or_default();
-            let _ = writeln!(stdout_file, "{line}");
+        let mut stream = child_stdout;
+        let mut buf = [0u8; 8192];
+        // Incomplete-line buffer for full.log formatting.
+        let mut line_buf: Vec<u8> = Vec::new();
+        loop {
+            match stream.read(&mut buf) {
+                Ok(0) => break, // EOF
+                Ok(n) => {
+                    let chunk = &buf[..n];
+                    // Write raw bytes to stdout.log (captures partial lines too).
+                    let _ = stdout_file.write_all(chunk);
+                    // Accumulate bytes for full.log line formatting.
+                    for &b in chunk {
+                        if b == b'\n' {
+                            let line = String::from_utf8_lossy(&line_buf);
+                            if let Ok(mut fl) = full_log_stdout.lock() {
+                                let ts = now_rfc3339();
+                                let _ = writeln!(fl, "{ts} [STDOUT] {line}");
+                            }
+                            line_buf.clear();
+                        } else {
+                            line_buf.push(b);
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        // Flush any remaining incomplete line to full.log.
+        if !line_buf.is_empty() {
+            let line = String::from_utf8_lossy(&line_buf);
             if let Ok(mut fl) = full_log_stdout.lock() {
-                // full.log format: "<RFC3339> [STDOUT] <line>"
                 let ts = now_rfc3339();
                 let _ = writeln!(fl, "{ts} [STDOUT] {line}");
             }
@@ -559,17 +619,46 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
     });
 
     // Thread: read stderr, write to stderr.log and full.log.
+    //
+    // Same byte-chunk approach as the stdout thread above.
     let stderr_log_path = job_dir.stderr_path();
     let full_log_stderr = Arc::clone(&full_log);
     let t_stderr = std::thread::spawn(move || {
+        use std::io::Read;
         let mut stderr_file =
             std::fs::File::create(&stderr_log_path).expect("create stderr.log in thread");
-        let reader = BufReader::new(child_stderr);
-        for line in reader.lines() {
-            let line = line.unwrap_or_default();
-            let _ = writeln!(stderr_file, "{line}");
+        let mut stream = child_stderr;
+        let mut buf = [0u8; 8192];
+        // Incomplete-line buffer for full.log formatting.
+        let mut line_buf: Vec<u8> = Vec::new();
+        loop {
+            match stream.read(&mut buf) {
+                Ok(0) => break, // EOF
+                Ok(n) => {
+                    let chunk = &buf[..n];
+                    // Write raw bytes to stderr.log.
+                    let _ = stderr_file.write_all(chunk);
+                    // Accumulate bytes for full.log line formatting.
+                    for &b in chunk {
+                        if b == b'\n' {
+                            let line = String::from_utf8_lossy(&line_buf);
+                            if let Ok(mut fl) = full_log_stderr.lock() {
+                                let ts = now_rfc3339();
+                                let _ = writeln!(fl, "{ts} [STDERR] {line}");
+                            }
+                            line_buf.clear();
+                        } else {
+                            line_buf.push(b);
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        // Flush any remaining incomplete line to full.log.
+        if !line_buf.is_empty() {
+            let line = String::from_utf8_lossy(&line_buf);
             if let Ok(mut fl) = full_log_stderr.lock() {
-                // full.log format: "<RFC3339> [STDERR] <line>"
                 let ts = now_rfc3339();
                 let _ = writeln!(fl, "{ts} [STDERR] {line}");
             }
