@@ -20,4 +20,3 @@ Then `stdout.log` と `stderr.log` には出力と同じ順序・内容が保存
 Given `agent-exec run --snapshot-after 0 -- <cmd>` を実行し、`<cmd>` が stdout と stderr に 1 行ずつ出力する
 When `full.log` を読む
 Then 各行が `RFC3339` 形式のタイムスタンプと `[STDOUT]` / `[STDERR]` プレフィックスを含む
-

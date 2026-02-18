@@ -16,4 +16,3 @@ Then stdout は JSON 1 行のみであり、`schema_version`/`ok`/`type` を含�
 Given `ErrorResponse` を生成する
 When `print` を呼び出す
 Then stdout は JSON 1 行のみであり、`error.code`/`error.message`/`error.retryable` を含む
-

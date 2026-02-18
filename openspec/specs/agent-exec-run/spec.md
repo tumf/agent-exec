@@ -128,4 +128,3 @@ MUST: 算出規則は既存要件に従い、`observed_bytes` は取得時点の
 Given 同一ジョブに対して `run` の `snapshot` と `tail` を取得する
 When 取得時点のログファイルサイズが観測される
 Then `run` と `tail` の `*_observed_bytes` と `*_included_bytes` は同一の規則で算出される
-

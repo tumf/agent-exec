@@ -94,4 +94,3 @@ root が存在しない場合、`list` はエラーではなく `jobs=[]` を返
 Given `agent-exec list --root /path/does/not/exist` を実行する
 When コマンドが完了する
 Then `jobs` は空配列である
-

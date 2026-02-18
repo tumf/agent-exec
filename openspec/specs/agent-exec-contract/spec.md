@@ -56,4 +56,3 @@ Then `error.code` と `error.message` と `error.retryable` が含まれる
 Given 存在しない `job_id` に対して `agent-exec status <job_id>` を実行する
 When コマンドが終了する
 Then 終了コードは `1` である
-

@@ -29,4 +29,3 @@ Windows では `state.json` に Job Object を識別できる情報を含めな�
 Given Windows 環境で実行中のジョブがある
 When `state.json` を読む
 Then Job Object の識別情報が含まれる
-

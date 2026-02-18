@@ -20,4 +20,3 @@ CI は `windows-latest` を含むマトリクスで実行しなければなら�
 Given CI ワークフロー設定を確認する
 When OS マトリクスを読む
 Then `windows-latest` が含まれている
-

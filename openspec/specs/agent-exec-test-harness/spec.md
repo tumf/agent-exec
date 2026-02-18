@@ -11,4 +11,3 @@ TBD - created by archiving change refactor-integration-test-harness. Update Purp
 Given 統合テストで一時ディレクトリを生成する
 When テストハーネス経由で `agent-exec run --snapshot-after 0 -- <cmd>` を実行する
 Then `meta.json`/`state.json` は一時ディレクトリ配下に作成される
-
