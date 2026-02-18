@@ -146,10 +146,13 @@ fn main() {
     let result = run(cli);
     if let Err(e) = result {
         // Distinguish "job not found" from generic internal errors.
+        // "job_not_found" is not retryable: the job does not exist.
+        // "internal_error" is not retryable by default; a transient I/O error
+        // would need its own code+retryable=true if we ever surface it.
         if e.downcast_ref::<JobNotFound>().is_some() {
-            ErrorResponse::new("job_not_found", format!("{e:#}")).print();
+            ErrorResponse::new("job_not_found", format!("{e:#}"), false).print();
         } else {
-            ErrorResponse::new("internal_error", format!("{e:#}")).print();
+            ErrorResponse::new("internal_error", format!("{e:#}"), false).print();
         }
         std::process::exit(1);
     }

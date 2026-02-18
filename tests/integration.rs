@@ -17,8 +17,8 @@ fn binary() -> PathBuf {
     if p.ends_with("deps") {
         p.pop();
     }
-    // Binary name matches package name in Cargo.toml.
-    p.push("agent-shell");
+    // Binary name is "agent-exec" as defined in [[bin]] of Cargo.toml.
+    p.push("agent-exec");
     if cfg!(windows) {
         p.set_extension("exe");
     }
@@ -355,4 +355,133 @@ fn state_json_required_fields_present_with_null_for_options() {
 fn all_commands_use_schema_version_0_1() {
     // Already verified individually above; this test documents the invariant.
     assert_eq!(agent_shell::schema::SCHEMA_VERSION, "0.1");
+}
+
+// ── contract v0.1: retryable field ─────────────────────────────────────────────
+
+/// Spec requirement: error object MUST contain code, message, retryable.
+#[test]
+fn error_response_has_retryable_field() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+    let v = run_cmd_with_root(&["status", "NONEXISTENT_JOB_CONTRACT_TEST"], Some(root));
+    let error = v.get("error").expect("error object missing");
+    assert!(error.get("code").is_some(), "error.code missing: {error}");
+    assert!(
+        error.get("message").is_some(),
+        "error.message missing: {error}"
+    );
+    assert!(
+        error.get("retryable").is_some(),
+        "error.retryable missing (required by spec): {error}"
+    );
+    // job_not_found is a permanent failure — retryable must be false.
+    assert_eq!(
+        error["retryable"].as_bool().unwrap_or(true),
+        false,
+        "job_not_found should have retryable=false: {error}"
+    );
+}
+
+// ── contract v0.1: exit codes ──────────────────────────────────────────────────
+
+/// Spec: expected failure (job not found) → exit code 1.
+#[test]
+fn status_unknown_job_exits_with_code_1() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+    let bin = binary();
+    let output = std::process::Command::new(&bin)
+        .env("AGENT_EXEC_ROOT", root)
+        .args(["status", "NONEXISTENT_EXIT_CODE_TEST"])
+        .output()
+        .expect("run binary");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "expected exit code 1 for unknown job"
+    );
+}
+
+/// Spec: CLI usage error → exit code 2.
+#[test]
+fn invalid_subcommand_exits_with_code_2() {
+    let bin = binary();
+    let output = std::process::Command::new(&bin)
+        .args(["__no_such_subcommand__"])
+        .output()
+        .expect("run binary");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "expected exit code 2 for invalid subcommand"
+    );
+}
+
+// ── contract v0.1: run -- <cmd> separator ──────────────────────────────────────
+
+/// Spec: `agent-exec run [options] -- <cmd> [args...]` form MUST be accepted.
+#[test]
+fn run_with_double_dash_separator() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+    // Use `--` before the command as the spec requires.
+    let v = run_cmd_with_root(&["run", "--", "echo", "hello_dash"], Some(root));
+    assert_envelope(&v, "run", true);
+    let job_id = v["job_id"].as_str().expect("job_id missing");
+    assert!(!job_id.is_empty(), "job_id is empty");
+}
+
+// ── contract v0.1: stdout JSON-only ────────────────────────────────────────────
+
+/// Spec: stdout MUST contain a single JSON object only (no extra lines or text).
+#[test]
+fn stdout_is_single_json_object() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+    let bin = binary();
+    let output = std::process::Command::new(&bin)
+        .env("AGENT_EXEC_ROOT", root)
+        .args(["status", "NONEXISTENT_STDOUT_JSON_TEST"])
+        .output()
+        .expect("run binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    // Exactly one non-empty line on stdout.
+    assert_eq!(
+        lines.len(),
+        1,
+        "stdout should contain exactly 1 line (JSON), got {}: {:?}",
+        lines.len(),
+        lines
+    );
+    // That line must parse as a JSON object.
+    let parsed: serde_json::Value =
+        serde_json::from_str(lines[0]).expect("stdout line is not valid JSON");
+    assert!(parsed.is_object(), "stdout JSON is not an object: {parsed}");
+}
+
+/// Spec: stderr is used only for diagnostic logs (not JSON output).
+#[test]
+fn stderr_contains_no_json_envelope() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+    let bin = binary();
+    let output = std::process::Command::new(&bin)
+        .env("AGENT_EXEC_ROOT", root)
+        .env("RUST_LOG", "info")
+        .args(["status", "NONEXISTENT_STDERR_TEST"])
+        .output()
+        .expect("run binary");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // stderr must not start with '{' (no JSON envelope leaking to stderr).
+    for line in stderr.lines() {
+        let trimmed = line.trim();
+        if !trimmed.is_empty() {
+            assert!(
+                !trimmed.starts_with('{'),
+                "stderr contains JSON-like output (should be logs only): {trimmed}"
+            );
+        }
+    }
 }

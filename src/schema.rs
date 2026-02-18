@@ -51,10 +51,19 @@ pub struct ErrorResponse {
 pub struct ErrorDetail {
     pub code: String,
     pub message: String,
+    /// Whether the caller may retry the same request and expect a different outcome.
+    pub retryable: bool,
 }
 
 impl ErrorResponse {
-    pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
+    /// Create an error response.
+    ///
+    /// `retryable` should be `true` only when a transient condition (e.g. I/O
+    /// contention, temporary unavailability) caused the failure and the caller
+    /// is expected to succeed on a subsequent attempt without changing the
+    /// request.  Use `false` for permanent failures such as "job not found" or
+    /// internal logic errors.
+    pub fn new(code: impl Into<String>, message: impl Into<String>, retryable: bool) -> Self {
         ErrorResponse {
             schema_version: SCHEMA_VERSION,
             ok: false,
@@ -62,6 +71,7 @@ impl ErrorResponse {
             error: ErrorDetail {
                 code: code.into(),
                 message: message.into(),
+                retryable,
             },
         }
     }
