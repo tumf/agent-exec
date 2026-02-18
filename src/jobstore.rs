@@ -165,6 +165,7 @@ impl JobDir {
             pid: Some(pid),
             exit_code: None,
             finished_at: None,
+            windows_job_name: None,
         };
         self.write_state(&state)?;
         Ok(state)
