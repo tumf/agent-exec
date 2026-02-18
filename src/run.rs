@@ -56,7 +56,7 @@ impl<'a> Default for RunOpts<'a> {
         RunOpts {
             command: vec![],
             root: None,
-            snapshot_after: 200,
+            snapshot_after: 10_000,
             tail_lines: 50,
             max_bytes: 65536,
             timeout_ms: 0,
