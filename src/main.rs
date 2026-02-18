@@ -41,10 +41,45 @@ enum Command {
         #[arg(long, default_value = "65536")]
         max_bytes: u64,
 
-        /// Additional environment variables in KEY=VALUE format.
-        /// Only the key names are stored in meta.json; values are not persisted.
-        #[arg(long = "env", value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
+        /// Timeout in milliseconds; 0 = no timeout.
+        #[arg(long, default_value = "0")]
+        timeout: u64,
+
+        /// Milliseconds after SIGTERM to send SIGKILL; 0 = immediate SIGKILL on timeout.
+        #[arg(long, default_value = "0")]
+        kill_after: u64,
+
+        /// Working directory for the command.
+        #[arg(long)]
+        cwd: Option<String>,
+
+        /// Set environment variable KEY=VALUE (may be repeated).
+        #[arg(long = "env", value_name = "KEY=VALUE")]
         env_vars: Vec<String>,
+
+        /// Load environment variables from a file (may be repeated, applied in order).
+        #[arg(long = "env-file", value_name = "FILE")]
+        env_files: Vec<String>,
+
+        /// Do not inherit the current process environment.
+        #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue, conflicts_with = "inherit_env")]
+        no_inherit_env: bool,
+
+        /// Inherit the current process environment (default; conflicts with --no-inherit-env).
+        #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue, conflicts_with = "no_inherit_env")]
+        inherit_env: bool,
+
+        /// Mask secret values in JSON output (key name only, may be repeated).
+        #[arg(long = "mask", value_name = "KEY")]
+        mask: Vec<String>,
+
+        /// Override full.log path.
+        #[arg(long)]
+        log: Option<String>,
+
+        /// Interval (ms) at which state.json.updated_at is refreshed; 0 = disabled.
+        #[arg(long, default_value = "0")]
+        progress_every: u64,
 
         /// Command and arguments to run.
         #[arg(required = true, trailing_var_arg = true)]
@@ -120,6 +155,42 @@ enum Command {
         #[arg(long)]
         root: String,
 
+        /// Override full.log path.
+        #[arg(long)]
+        full_log: Option<String>,
+
+        /// Timeout in milliseconds; 0 = no timeout.
+        #[arg(long, default_value = "0")]
+        timeout: u64,
+
+        /// Milliseconds after SIGTERM before SIGKILL; 0 = immediate SIGKILL.
+        #[arg(long, default_value = "0")]
+        kill_after: u64,
+
+        /// Working directory for the child process.
+        #[arg(long)]
+        cwd: Option<String>,
+
+        /// Environment variable KEY=VALUE (may be repeated).
+        #[arg(long = "env", value_name = "KEY=VALUE")]
+        env_vars: Vec<String>,
+
+        /// Load environment variables from a file (may be repeated).
+        #[arg(long = "env-file", value_name = "FILE")]
+        env_files: Vec<String>,
+
+        /// Do not inherit the current process environment.
+        #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue, conflicts_with = "supervise_inherit_env")]
+        no_inherit_env: bool,
+
+        /// Inherit the current process environment (default; conflicts with --no-inherit-env).
+        #[arg(long = "inherit-env", default_value = "false", action = clap::ArgAction::SetTrue, conflicts_with = "no_inherit_env", id = "supervise_inherit_env")]
+        inherit_env: bool,
+
+        /// Interval (ms) for state.json updated_at refresh; 0 = disabled.
+        #[arg(long, default_value = "0")]
+        progress_every: u64,
+
         #[arg(required = true, trailing_var_arg = true)]
         command: Vec<String>,
     },
@@ -165,16 +236,44 @@ fn run(cli: Cli) -> Result<()> {
             snapshot_after,
             tail_lines,
             max_bytes,
+            timeout,
+            kill_after,
+            cwd,
             env_vars,
+            env_files,
+            no_inherit_env,
+            inherit_env,
+            mask,
+            log,
+            progress_every,
             command,
         } => {
+            // --inherit-env and --no-inherit-env are mutually exclusive (enforced by clap).
+            // If neither is specified, default is to inherit (inherit_env=true).
+            // If --inherit-env is explicitly set, inherit_env=true.
+            // If --no-inherit-env is set, inherit_env=false.
+            let should_inherit = if no_inherit_env {
+                false
+            } else if inherit_env {
+                true
+            } else {
+                true // default
+            };
             agent_shell::run::execute(agent_shell::run::RunOpts {
                 command,
                 root: root.as_deref(),
                 snapshot_after,
                 tail_lines,
                 max_bytes,
+                timeout_ms: timeout,
+                kill_after_ms: kill_after,
+                cwd: cwd.as_deref(),
                 env_vars,
+                env_files,
+                inherit_env: should_inherit,
+                mask,
+                log: log.as_deref(),
+                progress_every_ms: progress_every,
             })?;
         }
 
@@ -228,9 +327,37 @@ fn run(cli: Cli) -> Result<()> {
         Command::Supervise {
             job_id,
             root,
+            full_log,
+            timeout,
+            kill_after,
+            cwd,
+            env_vars,
+            env_files,
+            no_inherit_env,
+            inherit_env,
+            progress_every,
             command,
         } => {
-            agent_shell::run::supervise(&job_id, std::path::Path::new(&root), &command)?;
+            let should_inherit = if no_inherit_env {
+                false
+            } else if inherit_env {
+                true
+            } else {
+                true // default
+            };
+            agent_shell::run::supervise(agent_shell::run::SuperviseOpts {
+                job_id: &job_id,
+                root: std::path::Path::new(&root),
+                command: &command,
+                full_log: full_log.as_deref(),
+                timeout_ms: timeout,
+                kill_after_ms: kill_after,
+                cwd: cwd.as_deref(),
+                env_vars,
+                env_files,
+                inherit_env: should_inherit,
+                progress_every_ms: progress_every,
+            })?;
         }
     }
     Ok(())

@@ -91,6 +91,10 @@ impl ErrorResponse {
 pub struct RunData {
     pub job_id: String,
     pub state: String,
+    /// Environment variables passed to the job, with masked values replaced by "***".
+    /// Omitted from JSON when empty.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub env_vars: Vec<String>,
     /// Present when `snapshot_after` elapsed before `run` returned.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snapshot: Option<Snapshot>,
@@ -112,8 +116,10 @@ pub struct StatusData {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TailData {
     pub job_id: String,
-    pub stdout: String,
-    pub stderr: String,
+    pub stdout_tail: String,
+    pub stderr_tail: String,
+    /// True when the output was truncated by tail_lines or max_bytes constraints.
+    pub truncated: bool,
     pub encoding: String,
 }
 
@@ -138,6 +144,8 @@ pub struct KillData {
 pub struct Snapshot {
     pub stdout_tail: String,
     pub stderr_tail: String,
+    /// True when the output was truncated by tail_lines or max_bytes constraints.
+    pub truncated: bool,
     pub encoding: String,
 }
 
@@ -159,12 +167,16 @@ pub struct JobMetaJob {
 ///   "command": [...],
 ///   "created_at": "...",
 ///   "root": "...",
-///   "env_keys": [...]
+///   "env_keys": [...],
+///   "env_vars": [...],
+///   "mask": [...]
 /// }
 /// ```
 ///
 /// `env_keys` stores only the names (keys) of environment variables passed via `--env`.
 /// Values MUST NOT be stored to avoid leaking secrets.
+/// `env_vars` stores KEY=VALUE strings with masked values replaced by "***".
+/// `mask` stores the list of keys whose values are masked.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct JobMeta {
     pub job: JobMetaJob,
@@ -175,6 +187,12 @@ pub struct JobMeta {
     /// Keys of environment variables provided at job creation time.
     /// Values are intentionally omitted for security.
     pub env_keys: Vec<String>,
+    /// Environment variables as KEY=VALUE strings, with masked values replaced by "***".
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub env_vars: Vec<String>,
+    /// Keys whose values are masked in output.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub mask: Vec<String>,
 }
 
 impl JobMeta {

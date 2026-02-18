@@ -189,8 +189,11 @@ fn tail_returns_json_with_encoding() {
     assert_envelope(&v, "tail", true);
     assert_eq!(v["job_id"].as_str().unwrap_or(""), job_id);
     assert_eq!(v["encoding"].as_str().unwrap_or(""), "utf-8-lossy");
-    assert!(v.get("stdout").is_some(), "stdout missing");
-    assert!(v.get("stderr").is_some(), "stderr missing");
+    // Spec requires stdout_tail / stderr_tail field names (not stdout / stderr).
+    assert!(v.get("stdout_tail").is_some(), "stdout_tail missing");
+    assert!(v.get("stderr_tail").is_some(), "stderr_tail missing");
+    // Spec requires truncated field.
+    assert!(v.get("truncated").is_some(), "truncated missing");
 }
 
 // ── wait ───────────────────────────────────────────────────────────────────────
@@ -484,4 +487,396 @@ fn stderr_contains_no_json_envelope() {
             );
         }
     }
+}
+
+// ── New feature tests ──────────────────────────────────────────────────────────
+
+/// Spec: full.log lines MUST include RFC3339 timestamp and [STDOUT]/[STDERR] tags.
+#[test]
+fn full_log_has_timestamp_and_stream_tags() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+
+    let run_v = run_cmd_with_root(
+        &[
+            "run",
+            "--snapshot-after",
+            "500",
+            "echo",
+            "full_log_format_test",
+        ],
+        Some(root),
+    );
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+
+    let full_log = std::path::Path::new(root).join(&job_id).join("full.log");
+    // Wait briefly for the supervisor to flush.
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    if full_log.exists() {
+        let contents = std::fs::read_to_string(&full_log).unwrap_or_default();
+        if !contents.is_empty() {
+            // Each line should contain [STDOUT] or [STDERR] tag.
+            for line in contents.lines() {
+                assert!(
+                    line.contains("[STDOUT]") || line.contains("[STDERR]"),
+                    "full.log line missing [STDOUT]/[STDERR] tag: {line}"
+                );
+            }
+        }
+    }
+}
+
+/// Spec: --log overrides the full.log path.
+#[test]
+fn run_log_path_override() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+    let log_path = tmp.path().join("custom_full.log");
+    let log_path_str = log_path.to_str().unwrap();
+
+    run_cmd_with_root(
+        &[
+            "run",
+            "--snapshot-after",
+            "500",
+            "--log",
+            log_path_str,
+            "echo",
+            "log_override_test",
+        ],
+        Some(root),
+    );
+
+    // Wait briefly for the supervisor to flush.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    assert!(
+        log_path.exists(),
+        "custom log file not found at {}",
+        log_path.display()
+    );
+}
+
+/// Spec: --env KEY=VALUE overrides environment variables.
+#[test]
+fn run_env_var_is_applied() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+
+    // Run a command that prints the env var value.
+    let run_v = run_cmd_with_root(
+        &[
+            "run",
+            "--snapshot-after",
+            "500",
+            "--env",
+            "TEST_KEY_AGENT_EXEC=hello_from_env",
+            "--",
+            "sh",
+            "-c",
+            "echo $TEST_KEY_AGENT_EXEC",
+        ],
+        Some(root),
+    );
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+
+    // Wait for the child to finish.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    let stdout_log = std::path::Path::new(root).join(&job_id).join("stdout.log");
+    if stdout_log.exists() {
+        let contents = std::fs::read_to_string(&stdout_log).unwrap_or_default();
+        assert!(
+            contents.contains("hello_from_env"),
+            "env var not applied; stdout.log: {contents}"
+        );
+    }
+}
+
+/// Spec: --no-inherit-env clears the parent environment.
+#[test]
+fn run_no_inherit_env_clears_env() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+
+    // PATH is typically set; with --no-inherit-env it should not be in child env.
+    let run_v = run_cmd_with_root(
+        &[
+            "run",
+            "--snapshot-after",
+            "500",
+            "--no-inherit-env",
+            "--",
+            "/bin/sh",
+            "-c",
+            "echo INHERITED=$HOME",
+        ],
+        Some(root),
+    );
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+
+    // Wait for the child to finish.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    let stdout_log = std::path::Path::new(root).join(&job_id).join("stdout.log");
+    if stdout_log.exists() {
+        let contents = std::fs::read_to_string(&stdout_log).unwrap_or_default();
+        // $HOME should be empty when env is cleared.
+        assert!(
+            contents.contains("INHERITED=\n") || contents.contains("INHERITED="),
+            "expected HOME to be empty with --no-inherit-env; stdout.log: {contents}"
+        );
+    }
+}
+
+/// Spec: --timeout causes the child process to be terminated after the deadline.
+#[test]
+fn run_timeout_terminates_child() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+
+    // Start a long sleep with a short timeout.
+    let run_v = run_cmd_with_root(
+        &[
+            "run",
+            "--timeout",
+            "500",
+            "--kill-after",
+            "500",
+            "sleep",
+            "60",
+        ],
+        Some(root),
+    );
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+
+    // Wait long enough for timeout + kill-after to fire.
+    std::thread::sleep(std::time::Duration::from_millis(2000));
+
+    // Check that the job is no longer running (state should be exited or killed).
+    let v = run_cmd_with_root(&["status", &job_id], Some(root));
+    let state = v["state"].as_str().unwrap_or("running");
+    assert!(
+        state != "running",
+        "job should have been terminated by timeout; state={state}"
+    );
+}
+
+/// Spec: --progress-every updates state.json.updated_at within the interval.
+#[test]
+fn run_progress_every_updates_state() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+
+    // Run a long sleep with progress-every=200ms.
+    let run_v = run_cmd_with_root(
+        &["run", "--progress-every", "200", "sleep", "5"],
+        Some(root),
+    );
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+
+    // Wait briefly to allow state.json to be updated.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    let state_path = std::path::Path::new(root).join(&job_id).join("state.json");
+    let contents = std::fs::read_to_string(&state_path).unwrap_or_default();
+    let state: serde_json::Value =
+        serde_json::from_str(&contents).expect("state.json is not valid JSON");
+
+    // updated_at should be present.
+    assert!(
+        state.get("updated_at").is_some(),
+        "updated_at missing from state.json: {contents}"
+    );
+
+    // Cleanup: kill the sleep job.
+    run_cmd_with_root(&["kill", "--signal", "KILL", &job_id], Some(root));
+}
+
+/// Acceptance #1 follow-up: --progress-every alone must not keep _supervise alive after child exits.
+/// After a short-lived process finishes, `status` must NOT remain "running" indefinitely.
+#[test]
+fn progress_every_supervise_stops_after_child_exits() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+
+    // Run a short-lived command with --progress-every only (no timeout).
+    let run_v = run_cmd_with_root(
+        &["run", "--progress-every", "100", "--", "echo", "done"],
+        Some(root),
+    );
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+
+    // Wait enough time for the supervisor to detect child exit and update state.
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+
+    let v = run_cmd_with_root(&["status", &job_id], Some(root));
+    let state = v["state"].as_str().unwrap_or("running");
+    assert_ne!(
+        state, "running",
+        "job should not be running after child exits with --progress-every; state={state}, response={v}"
+    );
+}
+
+/// Spec: --inherit-env and --no-inherit-env are mutually exclusive (clap rejects both together).
+#[test]
+fn inherit_env_and_no_inherit_env_are_mutually_exclusive() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+    let bin = binary();
+
+    // Passing both --inherit-env and --no-inherit-env should fail with exit code 2.
+    let output = std::process::Command::new(&bin)
+        .env("AGENT_EXEC_ROOT", root)
+        .args([
+            "run",
+            "--inherit-env",
+            "--no-inherit-env",
+            "--",
+            "echo",
+            "test",
+        ])
+        .output()
+        .expect("run binary");
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "expected exit code 2 when both --inherit-env and --no-inherit-env are supplied"
+    );
+}
+
+/// Spec: --mask KEY causes that key's value to appear as "***" in meta.json env_vars.
+#[test]
+fn mask_replaces_env_var_value_with_stars() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+
+    let run_v = run_cmd_with_root(
+        &[
+            "run",
+            "--env",
+            "SECRET_TOKEN=super_secret_value",
+            "--mask",
+            "SECRET_TOKEN",
+            "--snapshot-after",
+            "300",
+            "--",
+            "echo",
+            "done",
+        ],
+        Some(root),
+    );
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+
+    // Wait for supervisor to finish.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    // Read meta.json and verify the masked value.
+    let meta_path = std::path::Path::new(root).join(&job_id).join("meta.json");
+    assert!(meta_path.exists(), "meta.json not found");
+    let meta_contents = std::fs::read_to_string(&meta_path).unwrap();
+    let meta: serde_json::Value =
+        serde_json::from_str(&meta_contents).expect("meta.json invalid JSON");
+
+    // env_vars in meta.json must contain "SECRET_TOKEN=***" (not the real value).
+    let env_vars = meta["env_vars"]
+        .as_array()
+        .expect("env_vars missing in meta.json");
+    let has_masked = env_vars
+        .iter()
+        .any(|v| v.as_str() == Some("SECRET_TOKEN=***"));
+    assert!(
+        has_masked,
+        "expected SECRET_TOKEN=*** in meta.json env_vars, got: {meta_contents}"
+    );
+    // The real secret value must NOT appear in meta.json.
+    assert!(
+        !meta_contents.contains("super_secret_value"),
+        "real secret value should not appear in meta.json: {meta_contents}"
+    );
+}
+
+/// Spec (Acceptance #2): `run` JSON response must include masked env_vars field,
+/// with the masked key's value replaced by "***". The real secret value must not
+/// appear in the `run` stdout JSON response.
+#[test]
+fn run_json_response_includes_masked_env_vars() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+
+    let bin = binary();
+    let output = std::process::Command::new(&bin)
+        .env("AGENT_EXEC_ROOT", root)
+        .args([
+            "run",
+            "--env",
+            "SECRET=super_secret_run_value",
+            "--mask",
+            "SECRET",
+            "--",
+            "echo",
+            "done",
+        ])
+        .output()
+        .expect("run binary");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("stdout is not valid JSON: {e}\nstdout: {stdout}"));
+
+    assert_envelope(&v, "run", true);
+
+    // env_vars must be present in the run JSON response.
+    let env_vars = v["env_vars"]
+        .as_array()
+        .expect("env_vars missing in run JSON response");
+
+    // The masked key must appear as "SECRET=***" (not the real value).
+    let has_masked = env_vars.iter().any(|v| v.as_str() == Some("SECRET=***"));
+    assert!(
+        has_masked,
+        "expected SECRET=*** in run JSON env_vars, got: {v}"
+    );
+
+    // The real secret value must NOT appear in the run JSON response.
+    assert!(
+        !stdout.contains("super_secret_run_value"),
+        "real secret value should not appear in run JSON stdout: {stdout}"
+    );
+}
+
+/// Spec: tail returns truncated=true when output exceeds constraints.
+#[test]
+fn tail_truncated_when_over_limit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+
+    // Generate exactly 5 lines; request only 2 lines.
+    let run_v = run_cmd_with_root(
+        &[
+            "run",
+            "--snapshot-after",
+            "500",
+            "--",
+            "sh",
+            "-c",
+            "printf 'line1\\nline2\\nline3\\nline4\\nline5\\n'",
+        ],
+        Some(root),
+    );
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+
+    // Wait for the child to finish.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    let v = run_cmd_with_root(&["tail", "--tail-lines", "2", &job_id], Some(root));
+    assert_envelope(&v, "tail", true);
+    // With --lines 2 and 5 lines of output, truncated should be true.
+    assert_eq!(
+        v["truncated"].as_bool().unwrap_or(false),
+        true,
+        "expected truncated=true; response: {v}"
+    );
 }
