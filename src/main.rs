@@ -62,8 +62,12 @@ enum Command {
         env_files: Vec<String>,
 
         /// Do not inherit the current process environment.
-        #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue)]
+        #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue, conflicts_with = "inherit_env")]
         no_inherit_env: bool,
+
+        /// Inherit the current process environment (default; conflicts with --no-inherit-env).
+        #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue, conflicts_with = "no_inherit_env")]
+        inherit_env: bool,
 
         /// Mask secret values in JSON output (key name only, may be repeated).
         #[arg(long = "mask", value_name = "KEY")]
@@ -176,8 +180,12 @@ enum Command {
         env_files: Vec<String>,
 
         /// Do not inherit the current process environment.
-        #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue)]
+        #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue, conflicts_with = "supervise_inherit_env")]
         no_inherit_env: bool,
+
+        /// Inherit the current process environment (default; conflicts with --no-inherit-env).
+        #[arg(long = "inherit-env", default_value = "false", action = clap::ArgAction::SetTrue, conflicts_with = "no_inherit_env", id = "supervise_inherit_env")]
+        inherit_env: bool,
 
         /// Keys to mask in output.
         #[arg(long = "mask", value_name = "KEY")]
@@ -238,11 +246,23 @@ fn run(cli: Cli) -> Result<()> {
             env_vars,
             env_files,
             no_inherit_env,
+            inherit_env,
             mask,
             log,
             progress_every,
             command,
         } => {
+            // --inherit-env and --no-inherit-env are mutually exclusive (enforced by clap).
+            // If neither is specified, default is to inherit (inherit_env=true).
+            // If --inherit-env is explicitly set, inherit_env=true.
+            // If --no-inherit-env is set, inherit_env=false.
+            let should_inherit = if no_inherit_env {
+                false
+            } else if inherit_env {
+                true
+            } else {
+                true // default
+            };
             agent_shell::run::execute(agent_shell::run::RunOpts {
                 command,
                 root: root.as_deref(),
@@ -254,7 +274,7 @@ fn run(cli: Cli) -> Result<()> {
                 cwd: cwd.as_deref(),
                 env_vars,
                 env_files,
-                inherit_env: !no_inherit_env,
+                inherit_env: should_inherit,
                 mask,
                 log: log.as_deref(),
                 progress_every_ms: progress_every,
@@ -318,10 +338,18 @@ fn run(cli: Cli) -> Result<()> {
             env_vars,
             env_files,
             no_inherit_env,
+            inherit_env,
             mask,
             progress_every,
             command,
         } => {
+            let should_inherit = if no_inherit_env {
+                false
+            } else if inherit_env {
+                true
+            } else {
+                true // default
+            };
             agent_shell::run::supervise(agent_shell::run::SuperviseOpts {
                 job_id: &job_id,
                 root: std::path::Path::new(&root),
@@ -332,7 +360,7 @@ fn run(cli: Cli) -> Result<()> {
                 cwd: cwd.as_deref(),
                 env_vars,
                 env_files,
-                inherit_env: !no_inherit_env,
+                inherit_env: should_inherit,
                 mask,
                 progress_every_ms: progress_every,
             })?;

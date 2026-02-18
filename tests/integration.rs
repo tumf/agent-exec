@@ -597,6 +597,110 @@ fn run_progress_every_updates_state() {
     run_cmd_with_root(&["kill", "--signal", "KILL", &job_id], Some(root));
 }
 
+/// Acceptance #1 follow-up: --progress-every alone must not keep _supervise alive after child exits.
+/// After a short-lived process finishes, `status` must NOT remain "running" indefinitely.
+#[test]
+fn progress_every_supervise_stops_after_child_exits() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+
+    // Run a short-lived command with --progress-every only (no timeout).
+    let run_v = run_cmd_with_root(
+        &["run", "--progress-every", "100", "--", "echo", "done"],
+        Some(root),
+    );
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+
+    // Wait enough time for the supervisor to detect child exit and update state.
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+
+    let v = run_cmd_with_root(&["status", &job_id], Some(root));
+    let state = v["state"].as_str().unwrap_or("running");
+    assert_ne!(
+        state, "running",
+        "job should not be running after child exits with --progress-every; state={state}, response={v}"
+    );
+}
+
+/// Spec: --inherit-env and --no-inherit-env are mutually exclusive (clap rejects both together).
+#[test]
+fn inherit_env_and_no_inherit_env_are_mutually_exclusive() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+    let bin = binary();
+
+    // Passing both --inherit-env and --no-inherit-env should fail with exit code 2.
+    let output = std::process::Command::new(&bin)
+        .env("AGENT_EXEC_ROOT", root)
+        .args([
+            "run",
+            "--inherit-env",
+            "--no-inherit-env",
+            "--",
+            "echo",
+            "test",
+        ])
+        .output()
+        .expect("run binary");
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "expected exit code 2 when both --inherit-env and --no-inherit-env are supplied"
+    );
+}
+
+/// Spec: --mask KEY causes that key's value to appear as "***" in meta.json env_vars.
+#[test]
+fn mask_replaces_env_var_value_with_stars() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+
+    let run_v = run_cmd_with_root(
+        &[
+            "run",
+            "--env",
+            "SECRET_TOKEN=super_secret_value",
+            "--mask",
+            "SECRET_TOKEN",
+            "--snapshot-after",
+            "300",
+            "--",
+            "echo",
+            "done",
+        ],
+        Some(root),
+    );
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+
+    // Wait for supervisor to finish.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    // Read meta.json and verify the masked value.
+    let meta_path = std::path::Path::new(root).join(&job_id).join("meta.json");
+    assert!(meta_path.exists(), "meta.json not found");
+    let meta_contents = std::fs::read_to_string(&meta_path).unwrap();
+    let meta: serde_json::Value =
+        serde_json::from_str(&meta_contents).expect("meta.json invalid JSON");
+
+    // env_vars in meta.json must contain "SECRET_TOKEN=***" (not the real value).
+    let env_vars = meta["env_vars"]
+        .as_array()
+        .expect("env_vars missing in meta.json");
+    let has_masked = env_vars
+        .iter()
+        .any(|v| v.as_str() == Some("SECRET_TOKEN=***"));
+    assert!(
+        has_masked,
+        "expected SECRET_TOKEN=*** in meta.json env_vars, got: {meta_contents}"
+    );
+    // The real secret value must NOT appear in meta.json.
+    assert!(
+        !meta_contents.contains("super_secret_value"),
+        "real secret value should not appear in meta.json: {meta_contents}"
+    );
+}
+
 /// Spec: tail returns truncated=true when output exceeds constraints.
 #[test]
 fn tail_truncated_when_over_limit() {

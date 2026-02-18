@@ -82,12 +82,17 @@ pub fn execute(opts: RunOpts) -> Result<()> {
     let job_id = Ulid::new().to_string();
     let started_at = now_rfc3339();
 
+    // Apply masking: replace values of masked keys with "***" in env_vars for metadata.
+    let masked_env_vars = mask_env_vars(&opts.env_vars, &opts.mask);
+
     let meta = JobMeta {
         job_id: job_id.clone(),
         schema_version: crate::schema::SCHEMA_VERSION.to_string(),
         command: opts.command.clone(),
         started_at: started_at.clone(),
         root: root.display().to_string(),
+        env_vars: masked_env_vars,
+        mask: opts.mask.clone(),
     };
 
     let job_dir = JobDir::create(&root, &job_id, &meta)?;
@@ -216,6 +221,25 @@ pub struct SuperviseOpts<'a> {
     pub mask: Vec<String>,
     /// Interval (ms) for state.json updated_at refresh; 0 = disabled.
     pub progress_every_ms: u64,
+}
+
+/// Mask the values of specified keys in a list of KEY=VALUE strings.
+/// Keys listed in `mask_keys` will have their value replaced with "***".
+fn mask_env_vars(env_vars: &[String], mask_keys: &[String]) -> Vec<String> {
+    if mask_keys.is_empty() {
+        return env_vars.to_vec();
+    }
+    env_vars
+        .iter()
+        .map(|s| {
+            let (key, _val) = parse_env_var(s);
+            if mask_keys.iter().any(|k| k == &key) {
+                format!("{key}=***")
+            } else {
+                s.clone()
+            }
+        })
+        .collect()
 }
 
 /// Parse a single KEY=VALUE or KEY= string into (key, value).
@@ -376,8 +400,13 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
     let state_path = job_dir.state_path();
     let job_id_str = job_id.to_string();
 
+    // Use an atomic flag to signal the watcher thread when the child has exited.
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let child_done = Arc::new(AtomicBool::new(false));
+
     let watcher = if timeout_ms > 0 || progress_every_ms > 0 {
         let state_path_clone = state_path.clone();
+        let child_done_clone = Arc::clone(&child_done);
         Some(std::thread::spawn(move || {
             let start = std::time::Instant::now();
             let timeout_dur = if timeout_ms > 0 {
@@ -395,6 +424,12 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
 
             loop {
                 std::thread::sleep(poll_interval);
+
+                // Exit the watcher loop if the child process has finished.
+                if child_done_clone.load(Ordering::Relaxed) {
+                    break;
+                }
+
                 let elapsed = start.elapsed();
 
                 // Check for timeout.
@@ -452,6 +487,9 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
 
     // Wait for child to finish.
     let exit_status = child.wait().context("wait for child")?;
+
+    // Signal the watcher that the child has finished so it can exit its loop.
+    child_done.store(true, Ordering::Relaxed);
 
     // Join logging threads.
     let _ = t_stdout.join();

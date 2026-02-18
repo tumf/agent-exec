@@ -155,6 +155,12 @@ pub struct JobMeta {
     pub command: Vec<String>,
     pub started_at: String,
     pub root: String,
+    /// Environment variables as KEY=VALUE strings, with masked values replaced by "***".
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub env_vars: Vec<String>,
+    /// Keys whose values are masked in output.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub mask: Vec<String>,
 }
 
 /// Persisted in `state.json`, updated as the job progresses.
