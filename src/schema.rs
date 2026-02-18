@@ -143,32 +143,134 @@ pub struct Snapshot {
 
 // ---------- Persisted job metadata / state ----------
 
+/// Nested `job` block within `meta.json`.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct JobMetaJob {
+    pub id: String,
+}
+
 /// Persisted in `meta.json` at job creation time.
+///
+/// Structure:
+/// ```json
+/// {
+///   "job": { "id": "..." },
+///   "schema_version": "0.1",
+///   "command": [...],
+///   "created_at": "...",
+///   "root": "...",
+///   "env_keys": [...]
+/// }
+/// ```
+///
+/// `env_keys` stores only the names (keys) of environment variables passed via `--env`.
+/// Values MUST NOT be stored to avoid leaking secrets.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct JobMeta {
-    pub job_id: String,
+    pub job: JobMetaJob,
     pub schema_version: String,
     pub command: Vec<String>,
-    pub started_at: String,
+    pub created_at: String,
     pub root: String,
+    /// Keys of environment variables provided at job creation time.
+    /// Values are intentionally omitted for security.
+    pub env_keys: Vec<String>,
+}
+
+impl JobMeta {
+    /// Convenience accessor: returns the job ID.
+    pub fn job_id(&self) -> &str {
+        &self.job.id
+    }
+}
+
+/// Nested `job` block within `state.json`.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct JobStateJob {
+    pub id: String,
+    pub status: JobStatus,
+    pub started_at: String,
+}
+
+/// Nested `result` block within `state.json`.
+///
+/// Option fields are serialized as `null` (not omitted) so callers always
+/// see consistent keys regardless of job lifecycle stage.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct JobStateResult {
+    /// `null` while running; set to exit code when process ends.
+    pub exit_code: Option<i32>,
+    /// `null` unless the process was killed by a signal.
+    pub signal: Option<String>,
+    /// `null` while running; set to elapsed milliseconds when process ends.
+    pub duration_ms: Option<u64>,
 }
 
 /// Persisted in `state.json`, updated as the job progresses.
+///
+/// Structure:
+/// ```json
+/// {
+///   "job": { "id": "...", "status": "running", "started_at": "..." },
+///   "result": { "exit_code": null, "signal": null, "duration_ms": null },
+///   "updated_at": "..."
+/// }
+/// ```
+///
+/// Required fields per spec: `job.id`, `job.status`, `job.started_at`,
+/// `result.exit_code`, `result.signal`, `result.duration_ms`, `updated_at`.
+/// Option fields MUST be serialized as `null` (not omitted) so callers always
+/// see consistent keys regardless of job lifecycle stage.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct JobState {
-    pub state: JobStatus,
+    pub job: JobStateJob,
+    pub result: JobStateResult,
+    /// Process ID (not part of the public spec; omitted when not available).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub exit_code: Option<i32>,
+    /// Finish time (not part of the nested result block; kept for internal use).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<String>,
+    /// Last time this state was written to disk (RFC 3339).
+    pub updated_at: String,
     /// Windows-only: name of the Job Object used to manage the process tree.
     /// Present only when the supervisor successfully created and assigned a
     /// named Job Object; absent on non-Windows platforms and when creation
     /// fails (in which case tree management falls back to snapshot enumeration).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub windows_job_name: Option<String>,
+}
+
+impl JobState {
+    /// Convenience accessor: returns the job ID.
+    pub fn job_id(&self) -> &str {
+        &self.job.id
+    }
+
+    /// Convenience accessor: returns the job status.
+    pub fn status(&self) -> &JobStatus {
+        &self.job.status
+    }
+
+    /// Convenience accessor: returns the started_at timestamp.
+    pub fn started_at(&self) -> &str {
+        &self.job.started_at
+    }
+
+    /// Convenience accessor: returns the exit code.
+    pub fn exit_code(&self) -> Option<i32> {
+        self.result.exit_code
+    }
+
+    /// Convenience accessor: returns the signal name.
+    pub fn signal(&self) -> Option<&str> {
+        self.result.signal.as_deref()
+    }
+
+    /// Convenience accessor: returns the duration in milliseconds.
+    pub fn duration_ms(&self) -> Option<u64> {
+        self.result.duration_ms
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]

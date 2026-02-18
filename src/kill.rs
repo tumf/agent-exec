@@ -19,7 +19,7 @@ use anyhow::Result;
 use tracing::info;
 
 use crate::jobstore::{resolve_root, JobDir};
-use crate::schema::{JobState, JobStatus, KillData, Response};
+use crate::schema::{JobState, JobStateJob, JobStateResult, JobStatus, KillData, Response};
 
 /// Options for the `kill` sub-command.
 #[derive(Debug)]
@@ -48,7 +48,7 @@ pub fn execute(opts: KillOpts) -> Result<()> {
     let state = job_dir.read_state()?;
     let signal_upper = opts.signal.to_uppercase();
 
-    if state.state != JobStatus::Running {
+    if *state.status() != JobStatus::Running {
         // Already stopped — no-op but still emit JSON.
         let response = Response::new(
             "kill",
@@ -72,11 +72,21 @@ pub fn execute(opts: KillOpts) -> Result<()> {
         info!(job_id = %opts.job_id, pid, signal = %signal_upper, "signal sent");
 
         // Mark state as killed.
+        let now = crate::run::now_rfc3339_pub();
         let new_state = JobState {
-            state: JobStatus::Killed,
+            job: JobStateJob {
+                id: opts.job_id.to_string(),
+                status: JobStatus::Killed,
+                started_at: state.started_at().to_string(),
+            },
+            result: JobStateResult {
+                exit_code: None,
+                signal: Some(signal_upper.clone()),
+                duration_ms: None,
+            },
             pid: Some(pid),
-            exit_code: None,
-            finished_at: Some(crate::run::now_rfc3339_pub()),
+            finished_at: Some(now.clone()),
+            updated_at: now,
             windows_job_name: None,
         };
         job_dir.write_state(&new_state)?;

@@ -13,7 +13,10 @@ use tracing::{debug, info};
 use ulid::Ulid;
 
 use crate::jobstore::{resolve_root, JobDir};
-use crate::schema::{JobMeta, JobState, JobStatus, Response, RunData, Snapshot};
+use crate::schema::{
+    JobMeta, JobMetaJob, JobState, JobStateJob, JobStateResult, JobStatus, Response, RunData,
+    Snapshot,
+};
 
 /// Options for the `run` sub-command.
 #[derive(Debug)]
@@ -28,6 +31,9 @@ pub struct RunOpts<'a> {
     pub tail_lines: u64,
     /// Max bytes for tail.
     pub max_bytes: u64,
+    /// Additional environment variables in KEY=VALUE format.
+    /// Only key names are stored in meta.json; values are not persisted.
+    pub env_vars: Vec<String>,
 }
 
 impl<'a> Default for RunOpts<'a> {
@@ -38,6 +44,7 @@ impl<'a> Default for RunOpts<'a> {
             snapshot_after: 0,
             tail_lines: 50,
             max_bytes: 65536,
+            env_vars: vec![],
         }
     }
 }
@@ -53,18 +60,42 @@ pub fn execute(opts: RunOpts) -> Result<()> {
         .with_context(|| format!("create jobs root {}", root.display()))?;
 
     let job_id = Ulid::new().to_string();
-    let started_at = now_rfc3339();
+    let created_at = now_rfc3339();
+
+    // Extract only the key names from KEY=VALUE env var strings (values are not persisted).
+    let env_keys: Vec<String> = opts
+        .env_vars
+        .iter()
+        .map(|kv| kv.splitn(2, '=').next().unwrap_or(kv.as_str()).to_string())
+        .collect();
 
     let meta = JobMeta {
-        job_id: job_id.clone(),
+        job: JobMetaJob { id: job_id.clone() },
         schema_version: crate::schema::SCHEMA_VERSION.to_string(),
         command: opts.command.clone(),
-        started_at: started_at.clone(),
+        created_at: created_at.clone(),
         root: root.display().to_string(),
+        env_keys,
     };
 
     let job_dir = JobDir::create(&root, &job_id, &meta)?;
     info!(job_id = %job_id, "created job directory");
+
+    // Pre-create empty log files so they exist before the supervisor starts.
+    // This guarantees that `stdout.log`, `stderr.log`, and `full.log` are
+    // present immediately after `run` returns, even if the supervisor has
+    // not yet begun writing.
+    for log_path in [
+        job_dir.stdout_path(),
+        job_dir.stderr_path(),
+        job_dir.full_log_path(),
+    ] {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .with_context(|| format!("pre-create log file {}", log_path.display()))?;
+    }
 
     // Spawn the supervisor (same binary, internal `_supervise` sub-command).
     let exe = std::env::current_exe().context("resolve current exe")?;
@@ -88,7 +119,7 @@ pub fn execute(opts: RunOpts) -> Result<()> {
     // Write initial state with supervisor PID so `status` can track it.
     // On Windows, this also pre-records the deterministic Job Object name
     // (AgentExec-{job_id}) so that callers can find it immediately after run returns.
-    job_dir.init_state(supervisor_pid)?;
+    job_dir.init_state(supervisor_pid, &created_at)?;
 
     // On Windows, poll state.json until the supervisor confirms Job Object
     // assignment (state pid changes to child pid or state changes to "failed").
@@ -107,9 +138,9 @@ pub fn execute(opts: RunOpts) -> Result<()> {
                     .pid
                     .map(|p| p != supervisor_pid)
                     .unwrap_or(false)
-                    || current_state.state == JobStatus::Failed;
+                    || *current_state.status() == JobStatus::Failed;
                 if supervisor_updated {
-                    if current_state.state == JobStatus::Failed {
+                    if *current_state.status() == JobStatus::Failed {
                         // Supervisor failed to assign the child to a Job Object
                         // and has already killed the child and updated state.json.
                         // Report failure to the caller.
@@ -179,6 +210,10 @@ pub fn supervise(job_id: &str, root: &Path, command: &[String]) -> Result<()> {
 
     let job_dir = JobDir::open(root, job_id)?;
 
+    // Read meta.json to get the started_at timestamp.
+    let meta = job_dir.read_meta()?;
+    let started_at = meta.created_at.clone();
+
     // Create the full.log file (shared between stdout/stderr threads).
     let full_log_file =
         std::fs::File::create(job_dir.full_log_path()).context("create full.log")?;
@@ -214,10 +249,19 @@ pub fn supervise(job_id: &str, root: &Path, command: &[String]) -> Result<()> {
                 let _ = child.wait(); // reap to avoid zombies
 
                 let failed_state = JobState {
-                    state: JobStatus::Failed,
+                    job: JobStateJob {
+                        id: job_id.to_string(),
+                        status: JobStatus::Failed,
+                        started_at: started_at.clone(),
+                    },
+                    result: JobStateResult {
+                        exit_code: None,
+                        signal: None,
+                        duration_ms: None,
+                    },
                     pid: Some(pid),
-                    exit_code: None,
                     finished_at: Some(now_rfc3339()),
+                    updated_at: now_rfc3339(),
                     windows_job_name: None,
                 };
                 // Best-effort: if writing state fails, we still propagate the
@@ -246,13 +290,24 @@ pub fn supervise(job_id: &str, root: &Path, command: &[String]) -> Result<()> {
     // by the MUST requirement above), so state.json will always contain the
     // Job Object identifier while the job is running.
     let state = JobState {
-        state: JobStatus::Running,
+        job: JobStateJob {
+            id: job_id.to_string(),
+            status: JobStatus::Running,
+            started_at: started_at.clone(),
+        },
+        result: JobStateResult {
+            exit_code: None,
+            signal: None,
+            duration_ms: None,
+        },
         pid: Some(pid),
-        exit_code: None,
         finished_at: None,
+        updated_at: now_rfc3339(),
         windows_job_name,
     };
     job_dir.write_state(&state)?;
+
+    let child_start_time = std::time::Instant::now();
 
     // Take stdout/stderr handles before moving child.
     let child_stdout = child.stdout.take().expect("child stdout piped");
@@ -297,14 +352,24 @@ pub fn supervise(job_id: &str, root: &Path, command: &[String]) -> Result<()> {
     let _ = t_stdout.join();
     let _ = t_stderr.join();
 
+    let duration_ms = child_start_time.elapsed().as_millis() as u64;
     let exit_code = exit_status.code();
     let finished_at = now_rfc3339();
 
     let state = JobState {
-        state: JobStatus::Exited, // non-zero exit still "exited"
+        job: JobStateJob {
+            id: job_id.to_string(),
+            status: JobStatus::Exited, // non-zero exit still "exited"
+            started_at,
+        },
+        result: JobStateResult {
+            exit_code,
+            signal: None,
+            duration_ms: Some(duration_ms),
+        },
         pid: Some(pid),
-        exit_code,
         finished_at: Some(finished_at),
+        updated_at: now_rfc3339(),
         windows_job_name: None, // not needed after process exits
     };
     job_dir.write_state(&state)?;
