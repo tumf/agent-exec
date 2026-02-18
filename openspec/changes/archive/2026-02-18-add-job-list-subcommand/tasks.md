@@ -1,7 +1,7 @@
 ## 1. CLI 入口の追加
 
 - [x] 1.1 `Command` に `list` サブコマンドと `--root`/`--limit` を追加する（検証: `src/main.rs` に `List` 変種と引数定義がある）
-- [x] 1.2 `list` の実行パスを `run()` の match に配線する（検証: `src/main.rs` で `agent_shell::list::execute(...)` が呼ばれる）
+- [x] 1.2 `list` の実行パスを `run()` の match に配線する（検証: `src/main.rs` で `agent_exec::list::execute(...)` が呼ばれる）
 
 ## 2. スキーマと list 実装
 

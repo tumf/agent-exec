@@ -1,11 +1,11 @@
-# Agent Guide (agent-shell)
+# Agent Guide (agent-exec)
 
 For agentic coding assistants operating in this repository.
 
 ## Project Snapshot
 
 - Language: Rust (edition 2024)
-- Crate: `agent-shell`
+- Crate: `agent-exec`
 - Binary: `agent-exec` (`src/main.rs`)
 - Contract: stdout is JSON-only; diagnostic logs go to stderr (`src/main.rs`, `src/schema.rs`).
 - CI: runs `prek` hooks (`prek.toml`, `.github/workflows/ci.yml`).
@@ -95,7 +95,7 @@ prek run cargo-test -a
 
 - Prefer explicit imports; avoid glob imports (`use foo::*`) unless strongly justified.
 - Group imports as: (1) `std` (2) external crates (3) local crate/modules.
-- In library code prefer `crate::...`; in the binary/tests prefer `agent_shell::...`.
+- In library code prefer `crate::...`; in the binary/tests prefer `agent_exec::...`.
 
 ### Types / Ownership
 

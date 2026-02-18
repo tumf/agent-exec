@@ -1,4 +1,4 @@
-# agent-shell
+# agent-exec
 
 Small Rust CLI skeleton.
 

@@ -6,8 +6,8 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
-use agent_shell::jobstore::JobNotFound;
-use agent_shell::schema::ErrorResponse;
+use agent_exec::jobstore::JobNotFound;
+use agent_exec::schema::ErrorResponse;
 
 #[derive(Debug, Parser)]
 #[command(name = "agent-exec")]
@@ -263,7 +263,7 @@ fn run(cli: Cli) -> Result<()> {
             // If neither is specified, default is to inherit (inherit_env=true).
             // If --no-inherit-env is set, inherit_env=false.
             let should_inherit = !no_inherit_env;
-            agent_shell::run::execute(agent_shell::run::RunOpts {
+            agent_exec::run::execute(agent_exec::run::RunOpts {
                 command,
                 root: root.as_deref(),
                 snapshot_after,
@@ -282,7 +282,7 @@ fn run(cli: Cli) -> Result<()> {
         }
 
         Command::Status { root, job_id } => {
-            agent_shell::status::execute(agent_shell::status::StatusOpts {
+            agent_exec::status::execute(agent_exec::status::StatusOpts {
                 job_id: &job_id,
                 root: root.as_deref(),
             })?;
@@ -294,7 +294,7 @@ fn run(cli: Cli) -> Result<()> {
             max_bytes,
             job_id,
         } => {
-            agent_shell::tail::execute(agent_shell::tail::TailOpts {
+            agent_exec::tail::execute(agent_exec::tail::TailOpts {
                 job_id: &job_id,
                 root: root.as_deref(),
                 tail_lines,
@@ -308,7 +308,7 @@ fn run(cli: Cli) -> Result<()> {
             timeout_ms,
             job_id,
         } => {
-            agent_shell::wait::execute(agent_shell::wait::WaitOpts {
+            agent_exec::wait::execute(agent_exec::wait::WaitOpts {
                 job_id: &job_id,
                 root: root.as_deref(),
                 poll_ms,
@@ -321,7 +321,7 @@ fn run(cli: Cli) -> Result<()> {
             signal,
             job_id,
         } => {
-            agent_shell::kill::execute(agent_shell::kill::KillOpts {
+            agent_exec::kill::execute(agent_exec::kill::KillOpts {
                 job_id: &job_id,
                 root: root.as_deref(),
                 signal: &signal,
@@ -329,7 +329,7 @@ fn run(cli: Cli) -> Result<()> {
         }
 
         Command::List { root, limit } => {
-            agent_shell::list::execute(agent_shell::list::ListOpts {
+            agent_exec::list::execute(agent_exec::list::ListOpts {
                 root: root.as_deref(),
                 limit,
             })?;
@@ -350,7 +350,7 @@ fn run(cli: Cli) -> Result<()> {
             command,
         } => {
             let should_inherit = !no_inherit_env;
-            agent_shell::run::supervise(agent_shell::run::SuperviseOpts {
+            agent_exec::run::supervise(agent_exec::run::SuperviseOpts {
                 job_id: &job_id,
                 root: std::path::Path::new(&root),
                 command: &command,

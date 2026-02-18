@@ -13,7 +13,7 @@ fn binary() -> PathBuf {
     // Prefer the current exe's directory (works inside cargo test).
     let mut p = std::env::current_exe().expect("current exe");
     p.pop(); // remove test binary name
-    // In release mode there's no "deps" subdirectory; try both.
+             // In release mode there's no "deps" subdirectory; try both.
     if p.ends_with("deps") {
         p.pop();
     }
@@ -375,7 +375,7 @@ fn state_json_required_fields_present_with_null_for_options() {
 #[test]
 fn all_commands_use_schema_version_0_1() {
     // Already verified individually above; this test documents the invariant.
-    assert_eq!(agent_shell::schema::SCHEMA_VERSION, "0.1");
+    assert_eq!(agent_exec::schema::SCHEMA_VERSION, "0.1");
 }
 
 // ── contract v0.1: retryable field ─────────────────────────────────────────────
