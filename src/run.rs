@@ -155,12 +155,26 @@ pub fn supervise(job_id: &str, root: &Path, command: &[String]) -> Result<()> {
 
     // On Windows, assign child to a named Job Object for process-tree management.
     // The job name is derived from the job_id so that `kill` can look it up.
+    // Assignment is a MUST requirement on Windows: if it fails, the supervisor
+    // exits with an error rather than continuing without reliable tree management.
     #[cfg(windows)]
-    let windows_job_name = assign_to_job_object(job_id, pid);
+    let windows_job_name = {
+        let name = assign_to_job_object(job_id, pid).with_context(|| {
+            format!(
+                "supervisor: failed to assign pid {pid} to Job Object \
+                 (Windows MUST requirement); consider running outside a \
+                 nested Job Object environment"
+            )
+        })?;
+        Some(name)
+    };
     #[cfg(not(windows))]
     let windows_job_name: Option<String> = None;
 
-    // Update state.json with real child PID (and Windows job name if available).
+    // Update state.json with real child PID and Windows Job Object name.
+    // On Windows, windows_job_name is always Some at this point (guaranteed
+    // by the MUST requirement above), so state.json will always contain the
+    // Job Object identifier while the job is running.
     let state = JobState {
         state: JobStatus::Running,
         pid: Some(pid),
@@ -306,16 +320,15 @@ fn is_leap(year: u64) -> bool {
 /// Windows-only: create a named Job Object and assign the given child process
 /// to it so that the entire process tree can be terminated via `kill`.
 ///
-/// The Job Object is named `"AgentExec-{job_id}"` (prefixed with `\\.\`
-/// to use the local device namespace). This name is stored in `state.json`
-/// so that future `kill` invocations can open the same Job Object by name
-/// and call `TerminateJobObject` to stop the whole tree.
+/// The Job Object is named `"AgentExec-{job_id}"`. This name is stored in
+/// `state.json` so that future `kill` invocations can open the same Job Object
+/// by name and call `TerminateJobObject` to stop the whole tree.
 ///
-/// Returns `Some(name)` on success, `None` on failure (in which case `kill`
-/// falls back to snapshot-based tree enumeration as already implemented).
+/// Returns `Ok(name)` on success.  Returns `Err` on failure — the caller
+/// (`supervise`) treats failure as a fatal error because reliable process-tree
+/// management is a Windows MUST requirement (design.md).
 #[cfg(windows)]
-fn assign_to_job_object(job_id: &str, pid: u32) -> Option<String> {
-    use tracing::warn;
+fn assign_to_job_object(job_id: &str, pid: u32) -> Result<String> {
     use windows::core::HSTRING;
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::JobObjects::{AssignProcessToJobObject, CreateJobObjectW};
@@ -326,36 +339,34 @@ fn assign_to_job_object(job_id: &str, pid: u32) -> Option<String> {
 
     unsafe {
         // Open the child process handle (needed for AssignProcessToJobObject).
-        let proc_handle = match OpenProcess(PROCESS_TERMINATE | PROCESS_SET_QUOTA, false, pid) {
-            Ok(h) => h,
-            Err(e) => {
-                warn!(job_id, pid, err = %e, "supervisor: OpenProcess failed, skipping Job Object");
-                return None;
-            }
-        };
+        let proc_handle =
+            OpenProcess(PROCESS_TERMINATE | PROCESS_SET_QUOTA, false, pid).map_err(|e| {
+                anyhow::anyhow!(
+                    "supervisor: OpenProcess(pid={pid}) failed — cannot assign to Job Object: {e}"
+                )
+            })?;
 
         // Create a named Job Object.
         let job = match CreateJobObjectW(None, &hname) {
             Ok(h) => h,
             Err(e) => {
                 let _ = CloseHandle(proc_handle);
-                warn!(job_id, err = %e, "supervisor: CreateJobObjectW failed, skipping Job Object");
-                return None;
+                return Err(anyhow::anyhow!(
+                    "supervisor: CreateJobObjectW({job_name}) failed: {e}"
+                ));
             }
         };
 
         // Assign the child process to the Job Object.
+        // This can fail if the process is already in another job (e.g. CI/nested).
+        // Per design.md, assignment is a MUST on Windows — failure is a fatal error.
         if let Err(e) = AssignProcessToJobObject(job, proc_handle) {
-            // This can fail if the process is already in another job (e.g. CI).
-            // Log and return None; `kill` will fall back to tree enumeration.
-            warn!(
-                job_id, pid, err = %e,
-                "supervisor: AssignProcessToJobObject failed (process may already be in a job); \
-                 kill will use snapshot-based tree termination as fallback"
-            );
             let _ = CloseHandle(job);
             let _ = CloseHandle(proc_handle);
-            return None;
+            return Err(anyhow::anyhow!(
+                "supervisor: AssignProcessToJobObject(pid={pid}) failed \
+                 (process may already belong to another Job Object, e.g. in a CI environment): {e}"
+            ));
         }
 
         // Keep job handle open for the lifetime of the supervisor so the Job
@@ -369,7 +380,7 @@ fn assign_to_job_object(job_id: &str, pid: u32) -> Option<String> {
     }
 
     info!(job_id, name = %job_name, "supervisor: child assigned to Job Object");
-    Some(job_name)
+    Ok(job_name)
 }
 
 #[cfg(test)]

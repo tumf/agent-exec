@@ -23,3 +23,8 @@
 - `src/schema.rs` の `JobState` 構造体に `windows_job_name: Option<String>` フィールドを追加
 - `#[serde(skip_serializing_if = "Option::is_none")]` により非 Windows では JSON に含まれない
 - Windows で Job Object 割り当て成功時のみ値が設定される
+
+## Acceptance #1 Failure Follow-up
+
+- [x] `src/run.rs` の `supervise` で Job Object 割り当て失敗時に処理を継続しないように修正し、Windows の MUST 要件（子プロセスを Job Object に割り当てる）を満たす
+- [x] `src/jobstore.rs` の `init_state` と `src/run.rs` の `supervise` 更新ロジックを見直し、Windows で実行中の `state.json` が常に Job Object 識別情報を含むようにする

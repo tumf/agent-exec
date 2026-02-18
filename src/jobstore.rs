@@ -158,13 +158,27 @@ impl JobDir {
         lines[skip..].join("\n")
     }
 
-    /// Return the initial JobState (running) and write it to disk.
+    /// Write the initial JobState (running, supervisor PID) to disk.
+    ///
+    /// This is called by the `run` command immediately after the supervisor
+    /// process is spawned, so `pid` is the supervisor's PID. The child process
+    /// PID and, on Windows, the Job Object name are not yet known at this point.
+    ///
+    /// On Windows the supervisor process will overwrite this state shortly after
+    /// it starts: once the child process has been spawned and assigned to a named
+    /// Job Object (a MUST requirement per design.md), `supervise()` calls
+    /// `write_state` with the real child PID and the `windows_job_name` field
+    /// populated.  From that point forward, the running `state.json` always
+    /// contains the Job Object identifier.
     pub fn init_state(&self, pid: u32) -> Result<JobState> {
         let state = JobState {
             state: JobStatus::Running,
             pid: Some(pid),
             exit_code: None,
             finished_at: None,
+            // windows_job_name is not available here (supervisor PID only).
+            // The supervisor will overwrite this with the Job Object name after
+            // the child process is spawned and assigned.
             windows_job_name: None,
         };
         self.write_state(&state)?;
