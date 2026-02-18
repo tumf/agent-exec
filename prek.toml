@@ -1,0 +1,39 @@
+minimum_prek_version = "0.3.0"
+
+[[repos]]
+repo = "builtin"
+hooks = [
+  { id = "trailing-whitespace" },
+  { id = "end-of-file-fixer" },
+  { id = "check-toml" },
+  { id = "check-yaml" },
+]
+
+[[repos]]
+repo = "local"
+hooks = [
+  {
+    id = "cargo-fmt",
+    name = "cargo fmt (--check)",
+    language = "system",
+    entry = "cargo fmt --all -- --check",
+    files = "\\.rs$",
+    pass_filenames = false,
+  },
+  {
+    id = "cargo-clippy",
+    name = "cargo clippy (-D warnings)",
+    language = "system",
+    entry = "cargo clippy --all-targets --all-features -- -D warnings",
+    files = "\\.rs$",
+    pass_filenames = false,
+  },
+  {
+    id = "cargo-test",
+    name = "cargo test",
+    language = "system",
+    entry = "cargo test --all",
+    files = "\\.rs$",
+    pass_filenames = false,
+  },
+]
