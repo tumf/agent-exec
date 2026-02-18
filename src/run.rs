@@ -255,14 +255,9 @@ pub fn execute(opts: RunOpts) -> Result<()> {
         let poll_interval = std::time::Duration::from_millis(15);
         loop {
             std::thread::sleep(poll_interval);
-            // Early exit: stdout or stderr has data.
-            let stdout_size = observed_bytes(&job_dir.stdout_path());
-            let stderr_size = observed_bytes(&job_dir.stderr_path());
-            if stdout_size > 0 || stderr_size > 0 {
-                debug!("snapshot poll: output available, exiting early");
-                break;
-            }
             // Early exit: job state changed from running (finished or failed).
+            // Output availability alone does NOT cause early exit; we always
+            // wait until the deadline when the job is still running.
             if let Ok(st) = job_dir.read_state()
                 && *st.status() != JobStatus::Running
             {

@@ -1339,3 +1339,47 @@ fn run_snapshot_captures_output_without_newline() {
         "snapshot.stdout_tail should contain 'no-newline-output' even without trailing newline; got: {stdout_tail:?}"
     );
 }
+
+/// snapshot-after waits until deadline even when output is immediately available.
+///
+/// Verifies that `waited_ms >= snapshot_after` when the job is still running
+/// at the time output arrives. Uses `printf` (immediate output) + `sleep`
+/// (keeps the job running) so that the polling loop cannot exit early due to
+/// output availability.
+#[test]
+fn snapshot_after_waits_until_deadline_despite_early_output() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+    // Command: print immediately, then sleep long enough that the job is still
+    // running when snapshot-after elapses. snapshot-after=200ms per design.md.
+    let v = run_cmd_with_root(
+        &[
+            "run",
+            "--snapshot-after",
+            "200",
+            "sh",
+            "-c",
+            "printf 'hello\\n'; sleep 5",
+        ],
+        Some(root),
+    );
+    assert_envelope(&v, "run", true);
+
+    // waited_ms must be >= snapshot-after (200ms).
+    let waited_ms = v["waited_ms"]
+        .as_u64()
+        .expect("waited_ms missing from run response");
+    assert!(
+        waited_ms >= 200,
+        "waited_ms ({waited_ms}) must be >= snapshot-after (200ms) even when output \
+         arrives early; early-output exit was not removed from the polling loop"
+    );
+
+    // snapshot must be present and contain the output that was produced before deadline.
+    let snapshot = v.get("snapshot").expect("snapshot must be present");
+    let stdout_tail = snapshot["stdout_tail"].as_str().unwrap_or("");
+    assert!(
+        stdout_tail.contains("hello"),
+        "snapshot.stdout_tail should contain 'hello'; got: {stdout_tail:?}"
+    );
+}
