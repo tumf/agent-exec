@@ -60,6 +60,22 @@ pub fn resolve_root(cli_root: Option<&str>) -> PathBuf {
     PathBuf::from("~/.local/share/agent-exec/jobs")
 }
 
+/// Metrics returned by [`JobDir::read_tail_metrics`].
+///
+/// Bundles the tail content together with the byte counts used in the
+/// `run` snapshot and `tail` JSON responses, so that both callers share
+/// the same calculation logic.
+pub struct TailMetrics {
+    /// The tail text (lossy UTF-8, last N lines / max_bytes).
+    pub tail: String,
+    /// Whether the content was truncated by bytes or lines constraints.
+    pub truncated: bool,
+    /// Total file size in bytes (0 if the file does not exist).
+    pub observed_bytes: u64,
+    /// Number of bytes included in `tail`.
+    pub included_bytes: u64,
+}
+
 /// Handle to a specific job's directory.
 pub struct JobDir {
     pub path: PathBuf,
@@ -179,6 +195,33 @@ impl JobDir {
         let skip = lines.len().saturating_sub(tail_lines as usize);
         let line_truncated = skip > 0;
         (lines[skip..].join("\n"), byte_truncated || line_truncated)
+    }
+
+    /// Read tail content and byte metrics for a single log file.
+    ///
+    /// Returns a [`TailMetrics`] that bundles the tail text, truncation flag,
+    /// observed file size, and included byte count.  Both `run`'s snapshot
+    /// generation and `tail`'s JSON generation use this helper so that the
+    /// metric calculation is defined in exactly one place.
+    ///
+    /// `encoding` is always `"utf-8-lossy"` (as required by the contract).
+    pub fn read_tail_metrics(
+        &self,
+        filename: &str,
+        tail_lines: u64,
+        max_bytes: u64,
+    ) -> TailMetrics {
+        let (tail, truncated) = self.tail_log_with_truncated(filename, tail_lines, max_bytes);
+        let included_bytes = tail.len() as u64;
+        let observed_bytes = std::fs::metadata(self.path.join(filename))
+            .map(|m| m.len())
+            .unwrap_or(0);
+        TailMetrics {
+            tail,
+            truncated,
+            observed_bytes,
+            included_bytes,
+        }
     }
 
     /// Write the initial JobState (running, supervisor PID) to disk.
