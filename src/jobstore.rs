@@ -133,13 +133,26 @@ impl JobDir {
 
     /// Read the last `max_bytes` of a log file, returning lossy UTF-8.
     pub fn tail_log(&self, filename: &str, tail_lines: u64, max_bytes: u64) -> String {
+        self.tail_log_with_truncated(filename, tail_lines, max_bytes)
+            .0
+    }
+
+    /// Read the last `max_bytes` of a log file, returning (content, truncated).
+    /// `truncated` is true when the content was cut by bytes or lines constraints.
+    pub fn tail_log_with_truncated(
+        &self,
+        filename: &str,
+        tail_lines: u64,
+        max_bytes: u64,
+    ) -> (String, bool) {
         let path = self.path.join(filename);
         let Ok(data) = std::fs::read(&path) else {
-            return String::new();
+            return (String::new(), false);
         };
 
         // Truncate to max_bytes from the end.
-        let start = if data.len() as u64 > max_bytes {
+        let byte_truncated = data.len() as u64 > max_bytes;
+        let start = if byte_truncated {
             (data.len() as u64 - max_bytes) as usize
         } else {
             0
@@ -151,11 +164,12 @@ impl JobDir {
 
         // Keep only the last tail_lines.
         if tail_lines == 0 {
-            return text.into_owned();
+            return (text.into_owned(), byte_truncated);
         }
         let lines: Vec<&str> = text.lines().collect();
         let skip = lines.len().saturating_sub(tail_lines as usize);
-        lines[skip..].join("\n")
+        let line_truncated = skip > 0;
+        (lines[skip..].join("\n"), byte_truncated || line_truncated)
     }
 
     /// Return the initial JobState (running) and write it to disk.
@@ -165,6 +179,7 @@ impl JobDir {
             pid: Some(pid),
             exit_code: None,
             finished_at: None,
+            updated_at: None,
         };
         self.write_state(&state)?;
         Ok(state)

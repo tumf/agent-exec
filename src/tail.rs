@@ -32,15 +32,19 @@ pub fn execute(opts: TailOpts) -> Result<()> {
     let root = resolve_root(opts.root);
     let job_dir = JobDir::open(&root, opts.job_id)?;
 
-    let stdout = job_dir.tail_log("stdout.log", opts.tail_lines, opts.max_bytes);
-    let stderr = job_dir.tail_log("stderr.log", opts.tail_lines, opts.max_bytes);
+    let (stdout_tail, stdout_truncated) =
+        job_dir.tail_log_with_truncated("stdout.log", opts.tail_lines, opts.max_bytes);
+    let (stderr_tail, stderr_truncated) =
+        job_dir.tail_log_with_truncated("stderr.log", opts.tail_lines, opts.max_bytes);
+    let truncated = stdout_truncated || stderr_truncated;
 
     let response = Response::new(
         "tail",
         TailData {
             job_id: opts.job_id.to_string(),
-            stdout,
-            stderr,
+            stdout_tail,
+            stderr_tail,
+            truncated,
             encoding: "utf-8-lossy".to_string(),
         },
     );

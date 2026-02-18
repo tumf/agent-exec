@@ -112,8 +112,10 @@ pub struct StatusData {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TailData {
     pub job_id: String,
-    pub stdout: String,
-    pub stderr: String,
+    pub stdout_tail: String,
+    pub stderr_tail: String,
+    /// True when the output was truncated by tail_lines or max_bytes constraints.
+    pub truncated: bool,
     pub encoding: String,
 }
 
@@ -138,6 +140,8 @@ pub struct KillData {
 pub struct Snapshot {
     pub stdout_tail: String,
     pub stderr_tail: String,
+    /// True when the output was truncated by tail_lines or max_bytes constraints.
+    pub truncated: bool,
     pub encoding: String,
 }
 
@@ -163,6 +167,9 @@ pub struct JobState {
     pub exit_code: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<String>,
+    /// Last time state.json was updated (RFC3339). Updated periodically by progress-every.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]

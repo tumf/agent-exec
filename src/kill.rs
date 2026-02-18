@@ -54,11 +54,13 @@ pub fn execute(opts: KillOpts) -> Result<()> {
         info!(job_id = %opts.job_id, pid, signal = %signal_upper, "signal sent");
 
         // Mark state as killed.
+        let finished = crate::run::now_rfc3339_pub();
         let new_state = JobState {
             state: JobStatus::Killed,
             pid: Some(pid),
             exit_code: None,
-            finished_at: Some(crate::run::now_rfc3339_pub()),
+            finished_at: Some(finished.clone()),
+            updated_at: Some(finished),
         };
         job_dir.write_state(&new_state)?;
     }

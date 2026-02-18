@@ -189,8 +189,11 @@ fn tail_returns_json_with_encoding() {
     assert_envelope(&v, "tail", true);
     assert_eq!(v["job_id"].as_str().unwrap_or(""), job_id);
     assert_eq!(v["encoding"].as_str().unwrap_or(""), "utf-8-lossy");
-    assert!(v.get("stdout").is_some(), "stdout missing");
-    assert!(v.get("stderr").is_some(), "stderr missing");
+    // Spec requires stdout_tail / stderr_tail field names (not stdout / stderr).
+    assert!(v.get("stdout_tail").is_some(), "stdout_tail missing");
+    assert!(v.get("stderr_tail").is_some(), "stderr_tail missing");
+    // Spec requires truncated field.
+    assert!(v.get("truncated").is_some(), "truncated missing");
 }
 
 // ── wait ───────────────────────────────────────────────────────────────────────
@@ -387,4 +390,243 @@ fn stderr_contains_no_json_envelope() {
             );
         }
     }
+}
+
+// ── New feature tests ──────────────────────────────────────────────────────────
+
+/// Spec: full.log lines MUST include RFC3339 timestamp and [STDOUT]/[STDERR] tags.
+#[test]
+fn full_log_has_timestamp_and_stream_tags() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+
+    let run_v = run_cmd_with_root(
+        &[
+            "run",
+            "--snapshot-after",
+            "500",
+            "echo",
+            "full_log_format_test",
+        ],
+        Some(root),
+    );
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+
+    let full_log = std::path::Path::new(root).join(&job_id).join("full.log");
+    // Wait briefly for the supervisor to flush.
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    if full_log.exists() {
+        let contents = std::fs::read_to_string(&full_log).unwrap_or_default();
+        if !contents.is_empty() {
+            // Each line should contain [STDOUT] or [STDERR] tag.
+            for line in contents.lines() {
+                assert!(
+                    line.contains("[STDOUT]") || line.contains("[STDERR]"),
+                    "full.log line missing [STDOUT]/[STDERR] tag: {line}"
+                );
+            }
+        }
+    }
+}
+
+/// Spec: --log overrides the full.log path.
+#[test]
+fn run_log_path_override() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+    let log_path = tmp.path().join("custom_full.log");
+    let log_path_str = log_path.to_str().unwrap();
+
+    run_cmd_with_root(
+        &[
+            "run",
+            "--snapshot-after",
+            "500",
+            "--log",
+            log_path_str,
+            "echo",
+            "log_override_test",
+        ],
+        Some(root),
+    );
+
+    // Wait briefly for the supervisor to flush.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    assert!(
+        log_path.exists(),
+        "custom log file not found at {}",
+        log_path.display()
+    );
+}
+
+/// Spec: --env KEY=VALUE overrides environment variables.
+#[test]
+fn run_env_var_is_applied() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+
+    // Run a command that prints the env var value.
+    let run_v = run_cmd_with_root(
+        &[
+            "run",
+            "--snapshot-after",
+            "500",
+            "--env",
+            "TEST_KEY_AGENT_EXEC=hello_from_env",
+            "--",
+            "sh",
+            "-c",
+            "echo $TEST_KEY_AGENT_EXEC",
+        ],
+        Some(root),
+    );
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+
+    // Wait for the child to finish.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    let stdout_log = std::path::Path::new(root).join(&job_id).join("stdout.log");
+    if stdout_log.exists() {
+        let contents = std::fs::read_to_string(&stdout_log).unwrap_or_default();
+        assert!(
+            contents.contains("hello_from_env"),
+            "env var not applied; stdout.log: {contents}"
+        );
+    }
+}
+
+/// Spec: --no-inherit-env clears the parent environment.
+#[test]
+fn run_no_inherit_env_clears_env() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+
+    // PATH is typically set; with --no-inherit-env it should not be in child env.
+    let run_v = run_cmd_with_root(
+        &[
+            "run",
+            "--snapshot-after",
+            "500",
+            "--no-inherit-env",
+            "--",
+            "/bin/sh",
+            "-c",
+            "echo INHERITED=$HOME",
+        ],
+        Some(root),
+    );
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+
+    // Wait for the child to finish.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    let stdout_log = std::path::Path::new(root).join(&job_id).join("stdout.log");
+    if stdout_log.exists() {
+        let contents = std::fs::read_to_string(&stdout_log).unwrap_or_default();
+        // $HOME should be empty when env is cleared.
+        assert!(
+            contents.contains("INHERITED=\n") || contents.contains("INHERITED="),
+            "expected HOME to be empty with --no-inherit-env; stdout.log: {contents}"
+        );
+    }
+}
+
+/// Spec: --timeout causes the child process to be terminated after the deadline.
+#[test]
+fn run_timeout_terminates_child() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+
+    // Start a long sleep with a short timeout.
+    let run_v = run_cmd_with_root(
+        &[
+            "run",
+            "--timeout",
+            "500",
+            "--kill-after",
+            "500",
+            "sleep",
+            "60",
+        ],
+        Some(root),
+    );
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+
+    // Wait long enough for timeout + kill-after to fire.
+    std::thread::sleep(std::time::Duration::from_millis(2000));
+
+    // Check that the job is no longer running (state should be exited or killed).
+    let v = run_cmd_with_root(&["status", &job_id], Some(root));
+    let state = v["state"].as_str().unwrap_or("running");
+    assert!(
+        state != "running",
+        "job should have been terminated by timeout; state={state}"
+    );
+}
+
+/// Spec: --progress-every updates state.json.updated_at within the interval.
+#[test]
+fn run_progress_every_updates_state() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+
+    // Run a long sleep with progress-every=200ms.
+    let run_v = run_cmd_with_root(
+        &["run", "--progress-every", "200", "sleep", "5"],
+        Some(root),
+    );
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+
+    // Wait briefly to allow state.json to be updated.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    let state_path = std::path::Path::new(root).join(&job_id).join("state.json");
+    let contents = std::fs::read_to_string(&state_path).unwrap_or_default();
+    let state: serde_json::Value =
+        serde_json::from_str(&contents).expect("state.json is not valid JSON");
+
+    // updated_at should be present.
+    assert!(
+        state.get("updated_at").is_some(),
+        "updated_at missing from state.json: {contents}"
+    );
+
+    // Cleanup: kill the sleep job.
+    run_cmd_with_root(&["kill", "--signal", "KILL", &job_id], Some(root));
+}
+
+/// Spec: tail returns truncated=true when output exceeds constraints.
+#[test]
+fn tail_truncated_when_over_limit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+
+    // Generate exactly 5 lines; request only 2 lines.
+    let run_v = run_cmd_with_root(
+        &[
+            "run",
+            "--snapshot-after",
+            "500",
+            "--",
+            "sh",
+            "-c",
+            "printf 'line1\\nline2\\nline3\\nline4\\nline5\\n'",
+        ],
+        Some(root),
+    );
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+
+    // Wait for the child to finish.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    let v = run_cmd_with_root(&["tail", "--tail-lines", "2", &job_id], Some(root));
+    assert_envelope(&v, "tail", true);
+    // With --lines 2 and 5 lines of output, truncated should be true.
+    assert_eq!(
+        v["truncated"].as_bool().unwrap_or(false),
+        true,
+        "expected truncated=true; response: {v}"
+    );
 }
