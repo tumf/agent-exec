@@ -1,6 +1,6 @@
 # agent-exec-run 変更仕様: include-run-output-default
 
-## MODIFIED Requirements
+## ADDED Requirements
 
 ### Requirement: run の既定スナップショットと出力含有
 
