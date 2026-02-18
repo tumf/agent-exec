@@ -1,3 +1,16 @@
+/// agent-exec v0.1 — core library
+///
+/// Provides JSON output types, job-directory management, and the
+/// implementation of the five sub-commands: run, status, tail, wait, kill.
+pub mod schema;
+pub mod jobstore;
+pub mod run;
+pub mod status;
+pub mod tail;
+pub mod wait;
+pub mod kill;
+
+// Legacy commands kept for backward compatibility during transition.
 pub mod commands {
     /// Build a greeting string.
     pub fn greet(name: Option<&str>) -> String {
@@ -5,7 +18,6 @@ pub mod commands {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .unwrap_or("world");
-
         format!("Hello, {name}!")
     }
 
