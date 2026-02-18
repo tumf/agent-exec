@@ -70,7 +70,11 @@ fn assert_envelope(v: &serde_json::Value, expected_type: &str, expected_ok: bool
 fn run_returns_json_with_job_id() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().to_str().unwrap();
-    let v = run_cmd_with_root(&["run", "echo", "hello"], Some(root));
+    // Use --snapshot-after 0 to return immediately (avoid 10s default wait in tests).
+    let v = run_cmd_with_root(
+        &["run", "--snapshot-after", "0", "echo", "hello"],
+        Some(root),
+    );
     assert_envelope(&v, "run", true);
     let job_id = v["job_id"].as_str().expect("job_id missing");
     assert!(!job_id.is_empty(), "job_id is empty");
@@ -110,8 +114,8 @@ fn status_returns_json_for_existing_job() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().to_str().unwrap();
 
-    // First run a job.
-    let run_v = run_cmd_with_root(&["run", "echo", "hi"], Some(root));
+    // First run a job (use --snapshot-after 0 to return immediately).
+    let run_v = run_cmd_with_root(&["run", "--snapshot-after", "0", "echo", "hi"], Some(root));
     let job_id = run_v["job_id"].as_str().unwrap().to_string();
 
     // Then query status.
@@ -202,7 +206,11 @@ fn wait_returns_json_after_job_finishes() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().to_str().unwrap();
 
-    let run_v = run_cmd_with_root(&["run", "echo", "done"], Some(root));
+    // Use --snapshot-after 0 to return immediately so we can test wait separately.
+    let run_v = run_cmd_with_root(
+        &["run", "--snapshot-after", "0", "echo", "done"],
+        Some(root),
+    );
     let job_id = run_v["job_id"].as_str().unwrap().to_string();
 
     // Wait with timeout=5s; echo finishes fast.
@@ -219,8 +227,8 @@ fn kill_returns_json() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().to_str().unwrap();
 
-    // Run a long-running command.
-    let run_v = run_cmd_with_root(&["run", "sleep", "60"], Some(root));
+    // Run a long-running command (use --snapshot-after 0 to return immediately).
+    let run_v = run_cmd_with_root(&["run", "--snapshot-after", "0", "sleep", "60"], Some(root));
     let job_id = run_v["job_id"].as_str().unwrap().to_string();
 
     // Brief wait to let the supervisor start the child.
@@ -261,8 +269,11 @@ fn run_creates_all_log_files_immediately() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().to_str().unwrap();
 
-    // Run WITHOUT snapshot-after so the test doesn't wait for the child.
-    let run_v = run_cmd_with_root(&["run", "echo", "log_files_test"], Some(root));
+    // Run with --snapshot-after 0 so the test doesn't wait for the child.
+    let run_v = run_cmd_with_root(
+        &["run", "--snapshot-after", "0", "echo", "log_files_test"],
+        Some(root),
+    );
     let job_id = run_v["job_id"].as_str().unwrap().to_string();
 
     let job_path = std::path::Path::new(root).join(&job_id);
@@ -286,8 +297,11 @@ fn state_json_required_fields_present_with_null_for_options() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().to_str().unwrap();
 
-    // Run a job and read back state.json from the job directory.
-    let run_v = run_cmd_with_root(&["run", "echo", "state_test"], Some(root));
+    // Run a job and read back state.json from the job directory (use --snapshot-after 0 to return immediately).
+    let run_v = run_cmd_with_root(
+        &["run", "--snapshot-after", "0", "echo", "state_test"],
+        Some(root),
+    );
     let job_id = run_v["job_id"].as_str().unwrap().to_string();
 
     let state_path = std::path::Path::new(root).join(&job_id).join("state.json");
@@ -426,8 +440,11 @@ fn invalid_subcommand_exits_with_code_2() {
 fn run_with_double_dash_separator() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().to_str().unwrap();
-    // Use `--` before the command as the spec requires.
-    let v = run_cmd_with_root(&["run", "--", "echo", "hello_dash"], Some(root));
+    // Use `--` before the command as the spec requires (use --snapshot-after 0 to return immediately).
+    let v = run_cmd_with_root(
+        &["run", "--snapshot-after", "0", "--", "echo", "hello_dash"],
+        Some(root),
+    );
     assert_envelope(&v, "run", true);
     let job_id = v["job_id"].as_str().expect("job_id missing");
     assert!(!job_id.is_empty(), "job_id is empty");
@@ -635,9 +652,12 @@ fn run_timeout_terminates_child() {
     let root = tmp.path().to_str().unwrap();
 
     // Start a long sleep with a short timeout.
+    // Use --snapshot-after 0 to return immediately; timeout is tested via status.
     let run_v = run_cmd_with_root(
         &[
             "run",
+            "--snapshot-after",
+            "0",
             "--timeout",
             "500",
             "--kill-after",
@@ -668,8 +688,17 @@ fn run_progress_every_updates_state() {
     let root = tmp.path().to_str().unwrap();
 
     // Run a long sleep with progress-every=200ms.
+    // Use --snapshot-after 0 to return immediately; progress-every is the focus here.
     let run_v = run_cmd_with_root(
-        &["run", "--progress-every", "200", "sleep", "5"],
+        &[
+            "run",
+            "--snapshot-after",
+            "0",
+            "--progress-every",
+            "200",
+            "sleep",
+            "5",
+        ],
         Some(root),
     );
     let job_id = run_v["job_id"].as_str().unwrap().to_string();
@@ -700,8 +729,18 @@ fn progress_every_supervise_stops_after_child_exits() {
     let root = tmp.path().to_str().unwrap();
 
     // Run a short-lived command with --progress-every only (no timeout).
+    // Use --snapshot-after 0 to return immediately; progress-every is the focus here.
     let run_v = run_cmd_with_root(
-        &["run", "--progress-every", "100", "--", "echo", "done"],
+        &[
+            "run",
+            "--snapshot-after",
+            "0",
+            "--progress-every",
+            "100",
+            "--",
+            "echo",
+            "done",
+        ],
         Some(root),
     );
     let job_id = run_v["job_id"].as_str().unwrap().to_string();
@@ -809,6 +848,8 @@ fn run_json_response_includes_masked_env_vars() {
         .env("AGENT_EXEC_ROOT", root)
         .args([
             "run",
+            "--snapshot-after",
+            "0",
             "--env",
             "SECRET=super_secret_run_value",
             "--mask",
@@ -1071,11 +1112,17 @@ fn list_returns_jobs_sorted_by_started_at_desc() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().to_str().unwrap();
 
-    // Run two jobs; both should appear in list.
-    let _r1 = run_cmd_with_root(&["run", "echo", "job1"], Some(root));
+    // Run two jobs (use --snapshot-after 0 to return immediately); both should appear in list.
+    let _r1 = run_cmd_with_root(
+        &["run", "--snapshot-after", "0", "echo", "job1"],
+        Some(root),
+    );
     // Small sleep to ensure distinct timestamps.
     std::thread::sleep(std::time::Duration::from_millis(10));
-    let r2 = run_cmd_with_root(&["run", "echo", "job2"], Some(root));
+    let r2 = run_cmd_with_root(
+        &["run", "--snapshot-after", "0", "echo", "job2"],
+        Some(root),
+    );
     let job2_id = r2["job_id"].as_str().unwrap().to_string();
 
     let v = run_cmd_with_root(&["list"], Some(root));
@@ -1108,12 +1155,12 @@ fn list_limit_truncates_result() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().to_str().unwrap();
 
-    // Run 3 jobs.
-    run_cmd_with_root(&["run", "echo", "j1"], Some(root));
+    // Run 3 jobs (use --snapshot-after 0 to return immediately).
+    run_cmd_with_root(&["run", "--snapshot-after", "0", "echo", "j1"], Some(root));
     std::thread::sleep(std::time::Duration::from_millis(10));
-    run_cmd_with_root(&["run", "echo", "j2"], Some(root));
+    run_cmd_with_root(&["run", "--snapshot-after", "0", "echo", "j2"], Some(root));
     std::thread::sleep(std::time::Duration::from_millis(10));
-    run_cmd_with_root(&["run", "echo", "j3"], Some(root));
+    run_cmd_with_root(&["run", "--snapshot-after", "0", "echo", "j3"], Some(root));
 
     // Request only 2.
     let v = run_cmd_with_root(&["list", "--limit", "2"], Some(root));
@@ -1133,6 +1180,7 @@ fn list_response_contains_root_field() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().to_str().unwrap();
 
+    // No run jobs needed for this test; just verify list root field.
     let v = run_cmd_with_root(&["list"], Some(root));
     assert_envelope(&v, "list", true);
 
@@ -1147,8 +1195,11 @@ fn list_skips_invalid_directories() {
     let root_path = tmp.path();
     let root = root_path.to_str().unwrap();
 
-    // Run a valid job first.
-    let r = run_cmd_with_root(&["run", "echo", "valid"], Some(root));
+    // Run a valid job first (use --snapshot-after 0 to return immediately).
+    let r = run_cmd_with_root(
+        &["run", "--snapshot-after", "0", "echo", "valid"],
+        Some(root),
+    );
     let valid_job_id = r["job_id"].as_str().unwrap().to_string();
 
     // Create a "broken" directory (no meta.json inside).
@@ -1208,17 +1259,18 @@ fn run_snapshot_after_is_clamped_to_10_seconds() {
 // ── include-run-output-default: default snapshot ───────────────────────────────
 
 /// Task 5.1: default run (no --snapshot-after flag) returns a snapshot.
-/// With the new default of 200ms, snapshot should be present in every run response.
+/// With the new default of 10,000ms, snapshot should be present in every run response.
 #[test]
 fn run_default_includes_snapshot() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().to_str().unwrap();
 
-    // Run without any --snapshot-after flag; default is now 200ms.
+    // Run without any --snapshot-after flag; default is now 10,000ms.
+    // echo finishes quickly so the polling loop exits early when output is available.
     let v = run_cmd_with_root(&["run", "echo", "default_snapshot_test"], Some(root));
     assert_envelope(&v, "run", true);
 
-    // snapshot must be present with the default 200ms wait.
+    // snapshot must be present with the default 10,000ms wait.
     assert!(
         v.get("snapshot").is_some() && !v["snapshot"].is_null(),
         "snapshot should be present in default run response: {v}"
@@ -1242,7 +1294,12 @@ fn run_default_includes_snapshot() {
     let waited_ms = v["waited_ms"].as_u64().expect("waited_ms missing");
     assert!(
         waited_ms > 0,
-        "waited_ms must be > 0 with default snapshot_after=200: {waited_ms}"
+        "waited_ms must be > 0 with default snapshot_after=10000: {waited_ms}"
+    );
+    // waited_ms must not exceed 10,000ms (the default cap).
+    assert!(
+        waited_ms <= 10_000,
+        "waited_ms ({waited_ms}) must be <= 10,000ms with default snapshot_after=10000"
     );
 
     // stdout_tail should contain the echo output.
