@@ -13,7 +13,7 @@ fn binary() -> PathBuf {
     // Prefer the current exe's directory (works inside cargo test).
     let mut p = std::env::current_exe().expect("current exe");
     p.pop(); // remove test binary name
-             // In release mode there's no "deps" subdirectory; try both.
+    // In release mode there's no "deps" subdirectory; try both.
     if p.ends_with("deps") {
         p.pop();
     }

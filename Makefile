@@ -31,7 +31,7 @@ help:
 	@echo "  make setup             - Setup development environment"
 	@echo "  make pre-commit        - Run prek on all files (matches CI)"
 	@echo "  make pre-commit-hooks  - Install git pre-commit hooks (prek)"
-	@echo "  make ci                - Alias for pre-commit"
+	@echo "  make ci                - Run CI checks (fmt-check, lint, test)"
 	@echo "  make bump-patch        - Bump patch version and tag (no publish)"
 	@echo "  make bump-minor        - Bump minor version and tag (no publish)"
 	@echo "  make bump-major        - Bump major version and tag (no publish)"
@@ -109,7 +109,7 @@ pre-commit:
 	fi; \
 	"$$PREK" run -a
 
-ci: pre-commit
+ci: check
 
 # Install pre-commit hooks
 pre-commit-hooks:
