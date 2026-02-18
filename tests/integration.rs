@@ -25,6 +25,41 @@ fn binary() -> PathBuf {
     p
 }
 
+/// Test harness that owns an isolated temporary root directory.
+///
+/// Each test should create one harness; the temp directory is cleaned up
+/// automatically when the harness is dropped.
+struct TestHarness {
+    /// The underlying temporary directory (kept alive for the harness lifetime).
+    _tmp: tempfile::TempDir,
+    /// String path to the root, set as `AGENT_EXEC_ROOT` for every command.
+    root: String,
+}
+
+impl TestHarness {
+    /// Create a new harness with a fresh temporary directory.
+    fn new() -> Self {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let root = tmp
+            .path()
+            .to_str()
+            .expect("tempdir path is valid UTF-8")
+            .to_string();
+        Self { _tmp: tmp, root }
+    }
+
+    /// Return the root path as a `&str`.
+    fn root(&self) -> &str {
+        &self.root
+    }
+
+    /// Run the binary with the given args under this harness's root, returning
+    /// the parsed stdout JSON.  Panics with a descriptive message on any error.
+    fn run(&self, args: &[&str]) -> serde_json::Value {
+        run_cmd_with_root(args, Some(&self.root))
+    }
+}
+
 fn run_cmd_with_root(args: &[&str], root: Option<&str>) -> serde_json::Value {
     let bin = binary();
     let mut cmd = Command::new(&bin);
@@ -68,13 +103,9 @@ fn assert_envelope(v: &serde_json::Value, expected_type: &str, expected_ok: bool
 
 #[test]
 fn run_returns_json_with_job_id() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().to_str().unwrap();
+    let h = TestHarness::new();
     // Use --snapshot-after 0 to return immediately (avoid 10s default wait in tests).
-    let v = run_cmd_with_root(
-        &["run", "--snapshot-after", "0", "echo", "hello"],
-        Some(root),
-    );
+    let v = h.run(&["run", "--snapshot-after", "0", "echo", "hello"]);
     assert_envelope(&v, "run", true);
     let job_id = v["job_id"].as_str().expect("job_id missing");
     assert!(!job_id.is_empty(), "job_id is empty");
@@ -83,13 +114,9 @@ fn run_returns_json_with_job_id() {
 
 #[test]
 fn run_with_snapshot_after_includes_snapshot() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().to_str().unwrap();
+    let h = TestHarness::new();
     // Use snapshot_after=500ms; the echo command finishes quickly.
-    let v = run_cmd_with_root(
-        &["run", "--snapshot-after", "500", "echo", "snapshot_test"],
-        Some(root),
-    );
+    let v = h.run(&["run", "--snapshot-after", "500", "echo", "snapshot_test"]);
     assert_envelope(&v, "run", true);
     // snapshot field may or may not contain the output depending on timing,
     // but the field itself must be present.
@@ -111,15 +138,14 @@ fn run_with_snapshot_after_includes_snapshot() {
 
 #[test]
 fn status_returns_json_for_existing_job() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().to_str().unwrap();
+    let h = TestHarness::new();
 
     // First run a job (use --snapshot-after 0 to return immediately).
-    let run_v = run_cmd_with_root(&["run", "--snapshot-after", "0", "echo", "hi"], Some(root));
+    let run_v = h.run(&["run", "--snapshot-after", "0", "echo", "hi"]);
     let job_id = run_v["job_id"].as_str().unwrap().to_string();
 
     // Then query status.
-    let v = run_cmd_with_root(&["status", &job_id], Some(root));
+    let v = h.run(&["status", &job_id]);
     assert_envelope(&v, "status", true);
     assert_eq!(v["job_id"].as_str().unwrap_or(""), job_id);
     assert!(v.get("state").is_some(), "state missing");
@@ -128,9 +154,8 @@ fn status_returns_json_for_existing_job() {
 
 #[test]
 fn status_error_for_unknown_job() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().to_str().unwrap();
-    let v = run_cmd_with_root(&["status", "NONEXISTENT_JOB_ID_XYZ"], Some(root));
+    let h = TestHarness::new();
+    let v = h.run(&["status", "NONEXISTENT_JOB_ID_XYZ"]);
     assert!(
         !v["ok"].as_bool().unwrap_or(true),
         "expected ok=false for unknown job: {v}"
@@ -146,9 +171,8 @@ fn status_error_for_unknown_job() {
 
 #[test]
 fn tail_error_for_unknown_job() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().to_str().unwrap();
-    let v = run_cmd_with_root(&["tail", "NONEXISTENT_JOB_ID_XYZ"], Some(root));
+    let h = TestHarness::new();
+    let v = h.run(&["tail", "NONEXISTENT_JOB_ID_XYZ"]);
     assert!(!v["ok"].as_bool().unwrap_or(true));
     assert_eq!(v["type"].as_str().unwrap_or(""), "error");
     assert_eq!(v["error"]["code"].as_str().unwrap_or(""), "job_not_found");
@@ -156,9 +180,8 @@ fn tail_error_for_unknown_job() {
 
 #[test]
 fn kill_error_for_unknown_job() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().to_str().unwrap();
-    let v = run_cmd_with_root(&["kill", "NONEXISTENT_JOB_ID_XYZ"], Some(root));
+    let h = TestHarness::new();
+    let v = h.run(&["kill", "NONEXISTENT_JOB_ID_XYZ"]);
     assert!(!v["ok"].as_bool().unwrap_or(true));
     assert_eq!(v["type"].as_str().unwrap_or(""), "error");
     assert_eq!(v["error"]["code"].as_str().unwrap_or(""), "job_not_found");
@@ -166,9 +189,8 @@ fn kill_error_for_unknown_job() {
 
 #[test]
 fn wait_error_for_unknown_job() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().to_str().unwrap();
-    let v = run_cmd_with_root(&["wait", "NONEXISTENT_JOB_ID_XYZ"], Some(root));
+    let h = TestHarness::new();
+    let v = h.run(&["wait", "NONEXISTENT_JOB_ID_XYZ"]);
     assert!(!v["ok"].as_bool().unwrap_or(true));
     assert_eq!(v["type"].as_str().unwrap_or(""), "error");
     assert_eq!(v["error"]["code"].as_str().unwrap_or(""), "job_not_found");
@@ -178,17 +200,13 @@ fn wait_error_for_unknown_job() {
 
 #[test]
 fn tail_returns_json_with_encoding() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().to_str().unwrap();
+    let h = TestHarness::new();
 
     // Run and wait briefly for the echo to complete.
-    let run_v = run_cmd_with_root(
-        &["run", "--snapshot-after", "300", "echo", "tail_test"],
-        Some(root),
-    );
+    let run_v = h.run(&["run", "--snapshot-after", "300", "echo", "tail_test"]);
     let job_id = run_v["job_id"].as_str().unwrap().to_string();
 
-    let v = run_cmd_with_root(&["tail", &job_id], Some(root));
+    let v = h.run(&["tail", &job_id]);
     assert_envelope(&v, "tail", true);
     assert_eq!(v["job_id"].as_str().unwrap_or(""), job_id);
     assert_eq!(v["encoding"].as_str().unwrap_or(""), "utf-8-lossy");
@@ -203,18 +221,14 @@ fn tail_returns_json_with_encoding() {
 
 #[test]
 fn wait_returns_json_after_job_finishes() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().to_str().unwrap();
+    let h = TestHarness::new();
 
     // Use --snapshot-after 0 to return immediately so we can test wait separately.
-    let run_v = run_cmd_with_root(
-        &["run", "--snapshot-after", "0", "echo", "done"],
-        Some(root),
-    );
+    let run_v = h.run(&["run", "--snapshot-after", "0", "echo", "done"]);
     let job_id = run_v["job_id"].as_str().unwrap().to_string();
 
     // Wait with timeout=5s; echo finishes fast.
-    let v = run_cmd_with_root(&["wait", "--timeout-ms", "5000", &job_id], Some(root));
+    let v = h.run(&["wait", "--timeout-ms", "5000", &job_id]);
     assert_envelope(&v, "wait", true);
     assert_eq!(v["job_id"].as_str().unwrap_or(""), job_id);
     assert!(v.get("state").is_some(), "state missing");
@@ -224,17 +238,16 @@ fn wait_returns_json_after_job_finishes() {
 
 #[test]
 fn kill_returns_json() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().to_str().unwrap();
+    let h = TestHarness::new();
 
     // Run a long-running command (use --snapshot-after 0 to return immediately).
-    let run_v = run_cmd_with_root(&["run", "--snapshot-after", "0", "sleep", "60"], Some(root));
+    let run_v = h.run(&["run", "--snapshot-after", "0", "sleep", "60"]);
     let job_id = run_v["job_id"].as_str().unwrap().to_string();
 
     // Brief wait to let the supervisor start the child.
     std::thread::sleep(std::time::Duration::from_millis(200));
 
-    let v = run_cmd_with_root(&["kill", "--signal", "KILL", &job_id], Some(root));
+    let v = h.run(&["kill", "--signal", "KILL", &job_id]);
     assert_envelope(&v, "kill", true);
     assert_eq!(v["job_id"].as_str().unwrap_or(""), job_id);
     assert!(v.get("signal").is_some(), "signal missing");
@@ -244,17 +257,15 @@ fn kill_returns_json() {
 
 #[test]
 fn run_creates_full_log() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().to_str().unwrap();
+    let h = TestHarness::new();
 
-    let run_v = run_cmd_with_root(
-        &["run", "--snapshot-after", "400", "echo", "full_log_test"],
-        Some(root),
-    );
+    let run_v = h.run(&["run", "--snapshot-after", "400", "echo", "full_log_test"]);
     let job_id = run_v["job_id"].as_str().unwrap().to_string();
 
     // full.log must exist alongside stdout.log and stderr.log.
-    let full_log = std::path::Path::new(root).join(&job_id).join("full.log");
+    let full_log = std::path::Path::new(h.root())
+        .join(&job_id)
+        .join("full.log");
     assert!(
         full_log.exists(),
         "full.log not found at {}",
@@ -266,17 +277,13 @@ fn run_creates_full_log() {
 
 #[test]
 fn run_creates_all_log_files_immediately() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().to_str().unwrap();
+    let h = TestHarness::new();
 
     // Run with --snapshot-after 0 so the test doesn't wait for the child.
-    let run_v = run_cmd_with_root(
-        &["run", "--snapshot-after", "0", "echo", "log_files_test"],
-        Some(root),
-    );
+    let run_v = h.run(&["run", "--snapshot-after", "0", "echo", "log_files_test"]);
     let job_id = run_v["job_id"].as_str().unwrap().to_string();
 
-    let job_path = std::path::Path::new(root).join(&job_id);
+    let job_path = std::path::Path::new(h.root()).join(&job_id);
 
     // All three log files must exist immediately after `run` returns,
     // even before the supervisor has written any content.
@@ -294,17 +301,15 @@ fn run_creates_all_log_files_immediately() {
 
 #[test]
 fn state_json_required_fields_present_with_null_for_options() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().to_str().unwrap();
+    let h = TestHarness::new();
 
     // Run a job and read back state.json from the job directory (use --snapshot-after 0 to return immediately).
-    let run_v = run_cmd_with_root(
-        &["run", "--snapshot-after", "0", "echo", "state_test"],
-        Some(root),
-    );
+    let run_v = h.run(&["run", "--snapshot-after", "0", "echo", "state_test"]);
     let job_id = run_v["job_id"].as_str().unwrap().to_string();
 
-    let state_path = std::path::Path::new(root).join(&job_id).join("state.json");
+    let state_path = std::path::Path::new(h.root())
+        .join(&job_id)
+        .join("state.json");
     assert!(state_path.exists(), "state.json not found");
 
     let raw = std::fs::read_to_string(&state_path).unwrap();
@@ -378,9 +383,8 @@ fn all_commands_use_schema_version_0_1() {
 /// Spec requirement: error object MUST contain code, message, retryable.
 #[test]
 fn error_response_has_retryable_field() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().to_str().unwrap();
-    let v = run_cmd_with_root(&["status", "NONEXISTENT_JOB_CONTRACT_TEST"], Some(root));
+    let h = TestHarness::new();
+    let v = h.run(&["status", "NONEXISTENT_JOB_CONTRACT_TEST"]);
     let error = v.get("error").expect("error object missing");
     assert!(error.get("code").is_some(), "error.code missing: {error}");
     assert!(
@@ -403,11 +407,10 @@ fn error_response_has_retryable_field() {
 /// Spec: expected failure (job not found) → exit code 1.
 #[test]
 fn status_unknown_job_exits_with_code_1() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().to_str().unwrap();
+    let h = TestHarness::new();
     let bin = binary();
     let output = std::process::Command::new(&bin)
-        .env("AGENT_EXEC_ROOT", root)
+        .env("AGENT_EXEC_ROOT", h.root())
         .args(["status", "NONEXISTENT_EXIT_CODE_TEST"])
         .output()
         .expect("run binary");
@@ -438,13 +441,9 @@ fn invalid_subcommand_exits_with_code_2() {
 /// Spec: `agent-exec run [options] -- <cmd> [args...]` form MUST be accepted.
 #[test]
 fn run_with_double_dash_separator() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().to_str().unwrap();
+    let h = TestHarness::new();
     // Use `--` before the command as the spec requires (use --snapshot-after 0 to return immediately).
-    let v = run_cmd_with_root(
-        &["run", "--snapshot-after", "0", "--", "echo", "hello_dash"],
-        Some(root),
-    );
+    let v = h.run(&["run", "--snapshot-after", "0", "--", "echo", "hello_dash"]);
     assert_envelope(&v, "run", true);
     let job_id = v["job_id"].as_str().expect("job_id missing");
     assert!(!job_id.is_empty(), "job_id is empty");
@@ -455,11 +454,10 @@ fn run_with_double_dash_separator() {
 /// Spec: stdout MUST contain a single JSON object only (no extra lines or text).
 #[test]
 fn stdout_is_single_json_object() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().to_str().unwrap();
+    let h = TestHarness::new();
     let bin = binary();
     let output = std::process::Command::new(&bin)
-        .env("AGENT_EXEC_ROOT", root)
+        .env("AGENT_EXEC_ROOT", h.root())
         .args(["status", "NONEXISTENT_STDOUT_JSON_TEST"])
         .output()
         .expect("run binary");
@@ -482,11 +480,10 @@ fn stdout_is_single_json_object() {
 /// Spec: stderr is used only for diagnostic logs (not JSON output).
 #[test]
 fn stderr_contains_no_json_envelope() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().to_str().unwrap();
+    let h = TestHarness::new();
     let bin = binary();
     let output = std::process::Command::new(&bin)
-        .env("AGENT_EXEC_ROOT", root)
+        .env("AGENT_EXEC_ROOT", h.root())
         .env("RUST_LOG", "info")
         .args(["status", "NONEXISTENT_STDERR_TEST"])
         .output()
@@ -509,22 +506,20 @@ fn stderr_contains_no_json_envelope() {
 /// Spec: full.log lines MUST include RFC3339 timestamp and [STDOUT]/[STDERR] tags.
 #[test]
 fn full_log_has_timestamp_and_stream_tags() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().to_str().unwrap();
+    let h = TestHarness::new();
 
-    let run_v = run_cmd_with_root(
-        &[
-            "run",
-            "--snapshot-after",
-            "500",
-            "echo",
-            "full_log_format_test",
-        ],
-        Some(root),
-    );
+    let run_v = h.run(&[
+        "run",
+        "--snapshot-after",
+        "500",
+        "echo",
+        "full_log_format_test",
+    ]);
     let job_id = run_v["job_id"].as_str().unwrap().to_string();
 
-    let full_log = std::path::Path::new(root).join(&job_id).join("full.log");
+    let full_log = std::path::Path::new(h.root())
+        .join(&job_id)
+        .join("full.log");
     // Wait briefly for the supervisor to flush.
     std::thread::sleep(std::time::Duration::from_millis(200));
 
@@ -545,23 +540,19 @@ fn full_log_has_timestamp_and_stream_tags() {
 /// Spec: --log overrides the full.log path.
 #[test]
 fn run_log_path_override() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().to_str().unwrap();
-    let log_path = tmp.path().join("custom_full.log");
+    let h = TestHarness::new();
+    let log_path = std::path::Path::new(h.root()).join("custom_full.log");
     let log_path_str = log_path.to_str().unwrap();
 
-    run_cmd_with_root(
-        &[
-            "run",
-            "--snapshot-after",
-            "500",
-            "--log",
-            log_path_str,
-            "echo",
-            "log_override_test",
-        ],
-        Some(root),
-    );
+    h.run(&[
+        "run",
+        "--snapshot-after",
+        "500",
+        "--log",
+        log_path_str,
+        "echo",
+        "log_override_test",
+    ]);
 
     // Wait briefly for the supervisor to flush.
     std::thread::sleep(std::time::Duration::from_millis(300));
@@ -576,30 +567,28 @@ fn run_log_path_override() {
 /// Spec: --env KEY=VALUE overrides environment variables.
 #[test]
 fn run_env_var_is_applied() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().to_str().unwrap();
+    let h = TestHarness::new();
 
     // Run a command that prints the env var value.
-    let run_v = run_cmd_with_root(
-        &[
-            "run",
-            "--snapshot-after",
-            "500",
-            "--env",
-            "TEST_KEY_AGENT_EXEC=hello_from_env",
-            "--",
-            "sh",
-            "-c",
-            "echo $TEST_KEY_AGENT_EXEC",
-        ],
-        Some(root),
-    );
+    let run_v = h.run(&[
+        "run",
+        "--snapshot-after",
+        "500",
+        "--env",
+        "TEST_KEY_AGENT_EXEC=hello_from_env",
+        "--",
+        "sh",
+        "-c",
+        "echo $TEST_KEY_AGENT_EXEC",
+    ]);
     let job_id = run_v["job_id"].as_str().unwrap().to_string();
 
     // Wait for the child to finish.
     std::thread::sleep(std::time::Duration::from_millis(500));
 
-    let stdout_log = std::path::Path::new(root).join(&job_id).join("stdout.log");
+    let stdout_log = std::path::Path::new(h.root())
+        .join(&job_id)
+        .join("stdout.log");
     if stdout_log.exists() {
         let contents = std::fs::read_to_string(&stdout_log).unwrap_or_default();
         assert!(
@@ -612,29 +601,27 @@ fn run_env_var_is_applied() {
 /// Spec: --no-inherit-env clears the parent environment.
 #[test]
 fn run_no_inherit_env_clears_env() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().to_str().unwrap();
+    let h = TestHarness::new();
 
     // PATH is typically set; with --no-inherit-env it should not be in child env.
-    let run_v = run_cmd_with_root(
-        &[
-            "run",
-            "--snapshot-after",
-            "500",
-            "--no-inherit-env",
-            "--",
-            "/bin/sh",
-            "-c",
-            "echo INHERITED=$HOME",
-        ],
-        Some(root),
-    );
+    let run_v = h.run(&[
+        "run",
+        "--snapshot-after",
+        "500",
+        "--no-inherit-env",
+        "--",
+        "/bin/sh",
+        "-c",
+        "echo INHERITED=$HOME",
+    ]);
     let job_id = run_v["job_id"].as_str().unwrap().to_string();
 
     // Wait for the child to finish.
     std::thread::sleep(std::time::Duration::from_millis(500));
 
-    let stdout_log = std::path::Path::new(root).join(&job_id).join("stdout.log");
+    let stdout_log = std::path::Path::new(h.root())
+        .join(&job_id)
+        .join("stdout.log");
     if stdout_log.exists() {
         let contents = std::fs::read_to_string(&stdout_log).unwrap_or_default();
         // $HOME should be empty when env is cleared.
@@ -648,32 +635,28 @@ fn run_no_inherit_env_clears_env() {
 /// Spec: --timeout causes the child process to be terminated after the deadline.
 #[test]
 fn run_timeout_terminates_child() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().to_str().unwrap();
+    let h = TestHarness::new();
 
     // Start a long sleep with a short timeout.
     // Use --snapshot-after 0 to return immediately; timeout is tested via status.
-    let run_v = run_cmd_with_root(
-        &[
-            "run",
-            "--snapshot-after",
-            "0",
-            "--timeout",
-            "500",
-            "--kill-after",
-            "500",
-            "sleep",
-            "60",
-        ],
-        Some(root),
-    );
+    let run_v = h.run(&[
+        "run",
+        "--snapshot-after",
+        "0",
+        "--timeout",
+        "500",
+        "--kill-after",
+        "500",
+        "sleep",
+        "60",
+    ]);
     let job_id = run_v["job_id"].as_str().unwrap().to_string();
 
     // Wait long enough for timeout + kill-after to fire.
     std::thread::sleep(std::time::Duration::from_millis(2000));
 
     // Check that the job is no longer running (state should be exited or killed).
-    let v = run_cmd_with_root(&["status", &job_id], Some(root));
+    let v = h.run(&["status", &job_id]);
     let state = v["state"].as_str().unwrap_or("running");
     assert!(
         state != "running",
@@ -684,29 +667,27 @@ fn run_timeout_terminates_child() {
 /// Spec: --progress-every updates state.json.updated_at within the interval.
 #[test]
 fn run_progress_every_updates_state() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().to_str().unwrap();
+    let h = TestHarness::new();
 
     // Run a long sleep with progress-every=200ms.
     // Use --snapshot-after 0 to return immediately; progress-every is the focus here.
-    let run_v = run_cmd_with_root(
-        &[
-            "run",
-            "--snapshot-after",
-            "0",
-            "--progress-every",
-            "200",
-            "sleep",
-            "5",
-        ],
-        Some(root),
-    );
+    let run_v = h.run(&[
+        "run",
+        "--snapshot-after",
+        "0",
+        "--progress-every",
+        "200",
+        "sleep",
+        "5",
+    ]);
     let job_id = run_v["job_id"].as_str().unwrap().to_string();
 
     // Wait briefly to allow state.json to be updated.
     std::thread::sleep(std::time::Duration::from_millis(500));
 
-    let state_path = std::path::Path::new(root).join(&job_id).join("state.json");
+    let state_path = std::path::Path::new(h.root())
+        .join(&job_id)
+        .join("state.json");
     let contents = std::fs::read_to_string(&state_path).unwrap_or_default();
     let state: serde_json::Value =
         serde_json::from_str(&contents).expect("state.json is not valid JSON");
@@ -718,37 +699,33 @@ fn run_progress_every_updates_state() {
     );
 
     // Cleanup: kill the sleep job.
-    run_cmd_with_root(&["kill", "--signal", "KILL", &job_id], Some(root));
+    h.run(&["kill", "--signal", "KILL", &job_id]);
 }
 
 /// Acceptance #1 follow-up: --progress-every alone must not keep _supervise alive after child exits.
 /// After a short-lived process finishes, `status` must NOT remain "running" indefinitely.
 #[test]
 fn progress_every_supervise_stops_after_child_exits() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().to_str().unwrap();
+    let h = TestHarness::new();
 
     // Run a short-lived command with --progress-every only (no timeout).
     // Use --snapshot-after 0 to return immediately; progress-every is the focus here.
-    let run_v = run_cmd_with_root(
-        &[
-            "run",
-            "--snapshot-after",
-            "0",
-            "--progress-every",
-            "100",
-            "--",
-            "echo",
-            "done",
-        ],
-        Some(root),
-    );
+    let run_v = h.run(&[
+        "run",
+        "--snapshot-after",
+        "0",
+        "--progress-every",
+        "100",
+        "--",
+        "echo",
+        "done",
+    ]);
     let job_id = run_v["job_id"].as_str().unwrap().to_string();
 
     // Wait enough time for the supervisor to detect child exit and update state.
     std::thread::sleep(std::time::Duration::from_millis(1500));
 
-    let v = run_cmd_with_root(&["status", &job_id], Some(root));
+    let v = h.run(&["status", &job_id]);
     let state = v["state"].as_str().unwrap_or("running");
     assert_ne!(
         state, "running",
@@ -759,13 +736,12 @@ fn progress_every_supervise_stops_after_child_exits() {
 /// Spec: --inherit-env and --no-inherit-env are mutually exclusive (clap rejects both together).
 #[test]
 fn inherit_env_and_no_inherit_env_are_mutually_exclusive() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().to_str().unwrap();
+    let h = TestHarness::new();
     let bin = binary();
 
     // Passing both --inherit-env and --no-inherit-env should fail with exit code 2.
     let output = std::process::Command::new(&bin)
-        .env("AGENT_EXEC_ROOT", root)
+        .env("AGENT_EXEC_ROOT", h.root())
         .args([
             "run",
             "--inherit-env",
@@ -787,31 +763,29 @@ fn inherit_env_and_no_inherit_env_are_mutually_exclusive() {
 /// Spec: --mask KEY causes that key's value to appear as "***" in meta.json env_vars.
 #[test]
 fn mask_replaces_env_var_value_with_stars() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().to_str().unwrap();
+    let h = TestHarness::new();
 
-    let run_v = run_cmd_with_root(
-        &[
-            "run",
-            "--env",
-            "SECRET_TOKEN=super_secret_value",
-            "--mask",
-            "SECRET_TOKEN",
-            "--snapshot-after",
-            "300",
-            "--",
-            "echo",
-            "done",
-        ],
-        Some(root),
-    );
+    let run_v = h.run(&[
+        "run",
+        "--env",
+        "SECRET_TOKEN=super_secret_value",
+        "--mask",
+        "SECRET_TOKEN",
+        "--snapshot-after",
+        "300",
+        "--",
+        "echo",
+        "done",
+    ]);
     let job_id = run_v["job_id"].as_str().unwrap().to_string();
 
     // Wait for supervisor to finish.
     std::thread::sleep(std::time::Duration::from_millis(300));
 
     // Read meta.json and verify the masked value.
-    let meta_path = std::path::Path::new(root).join(&job_id).join("meta.json");
+    let meta_path = std::path::Path::new(h.root())
+        .join(&job_id)
+        .join("meta.json");
     assert!(meta_path.exists(), "meta.json not found");
     let meta_contents = std::fs::read_to_string(&meta_path).unwrap();
     let meta: serde_json::Value =
@@ -840,12 +814,11 @@ fn mask_replaces_env_var_value_with_stars() {
 /// appear in the `run` stdout JSON response.
 #[test]
 fn run_json_response_includes_masked_env_vars() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().to_str().unwrap();
+    let h = TestHarness::new();
 
     let bin = binary();
     let output = std::process::Command::new(&bin)
-        .env("AGENT_EXEC_ROOT", root)
+        .env("AGENT_EXEC_ROOT", h.root())
         .args([
             "run",
             "--snapshot-after",
@@ -889,28 +862,24 @@ fn run_json_response_includes_masked_env_vars() {
 /// Spec: tail returns truncated=true when output exceeds constraints.
 #[test]
 fn tail_truncated_when_over_limit() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().to_str().unwrap();
+    let h = TestHarness::new();
 
     // Generate exactly 5 lines; request only 2 lines.
-    let run_v = run_cmd_with_root(
-        &[
-            "run",
-            "--snapshot-after",
-            "500",
-            "--",
-            "sh",
-            "-c",
-            "printf 'line1\\nline2\\nline3\\nline4\\nline5\\n'",
-        ],
-        Some(root),
-    );
+    let run_v = h.run(&[
+        "run",
+        "--snapshot-after",
+        "500",
+        "--",
+        "sh",
+        "-c",
+        "printf 'line1\\nline2\\nline3\\nline4\\nline5\\n'",
+    ]);
     let job_id = run_v["job_id"].as_str().unwrap().to_string();
 
     // Wait for the child to finish.
     std::thread::sleep(std::time::Duration::from_millis(300));
 
-    let v = run_cmd_with_root(&["tail", "--tail-lines", "2", &job_id], Some(root));
+    let v = h.run(&["tail", "--tail-lines", "2", &job_id]);
     assert_envelope(&v, "tail", true);
     // With --lines 2 and 5 lines of output, truncated should be true.
     assert!(
@@ -924,13 +893,9 @@ fn tail_truncated_when_over_limit() {
 /// Task 3.1: run response includes waited_ms, elapsed_ms, and snapshot bytes metrics.
 #[test]
 fn run_includes_waited_ms_elapsed_ms_and_log_paths() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().to_str().unwrap();
+    let h = TestHarness::new();
 
-    let v = run_cmd_with_root(
-        &["run", "--snapshot-after", "300", "echo", "metrics_test"],
-        Some(root),
-    );
+    let v = h.run(&["run", "--snapshot-after", "300", "echo", "metrics_test"]);
     assert_envelope(&v, "run", true);
 
     // waited_ms must be present and non-negative.
@@ -998,14 +963,10 @@ fn run_includes_waited_ms_elapsed_ms_and_log_paths() {
 /// Task 3.1: run with explicit --snapshot-after 0 has waited_ms=0 and no snapshot.
 #[test]
 fn run_without_snapshot_after_has_waited_ms_zero() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().to_str().unwrap();
+    let h = TestHarness::new();
 
     // Explicitly pass --snapshot-after 0 to opt out of the default 200ms wait.
-    let v = run_cmd_with_root(
-        &["run", "--snapshot-after", "0", "echo", "no_snapshot"],
-        Some(root),
-    );
+    let v = h.run(&["run", "--snapshot-after", "0", "echo", "no_snapshot"]);
     assert_envelope(&v, "run", true);
 
     let waited_ms = v["waited_ms"].as_u64().expect("waited_ms missing");
@@ -1027,19 +988,15 @@ fn run_without_snapshot_after_has_waited_ms_zero() {
 /// Task 3.2: tail response includes log paths and bytes metrics.
 #[test]
 fn tail_includes_log_paths_and_bytes_metrics() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().to_str().unwrap();
+    let h = TestHarness::new();
 
-    let run_v = run_cmd_with_root(
-        &["run", "--snapshot-after", "400", "echo", "tail_bytes_test"],
-        Some(root),
-    );
+    let run_v = h.run(&["run", "--snapshot-after", "400", "echo", "tail_bytes_test"]);
     let job_id = run_v["job_id"].as_str().unwrap().to_string();
 
     // Wait for the child to finish writing output.
     std::thread::sleep(std::time::Duration::from_millis(200));
 
-    let v = run_cmd_with_root(&["tail", &job_id], Some(root));
+    let v = h.run(&["tail", &job_id]);
     assert_envelope(&v, "tail", true);
 
     // stdout_log_path and stderr_log_path must be present and absolute.
@@ -1093,10 +1050,10 @@ fn tail_includes_log_paths_and_bytes_metrics() {
 #[test]
 fn list_returns_empty_when_root_does_not_exist() {
     // Use a path that does not exist.
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().join("does_not_exist");
-    let root_str = root.to_str().unwrap();
-    let v = run_cmd_with_root(&["list"], Some(root_str));
+    let h = TestHarness::new();
+    let nonexistent = std::path::Path::new(h.root()).join("does_not_exist");
+    let nonexistent_str = nonexistent.to_str().unwrap();
+    let v = run_cmd_with_root(&["list"], Some(nonexistent_str));
     assert_envelope(&v, "list", true);
     let jobs = v["jobs"].as_array().expect("jobs missing");
     assert!(jobs.is_empty(), "expected empty jobs list; got: {v}");
@@ -1109,23 +1066,16 @@ fn list_returns_empty_when_root_does_not_exist() {
 /// Spec: `list` returns all jobs, sorted by started_at descending.
 #[test]
 fn list_returns_jobs_sorted_by_started_at_desc() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().to_str().unwrap();
+    let h = TestHarness::new();
 
     // Run two jobs (use --snapshot-after 0 to return immediately); both should appear in list.
-    let _r1 = run_cmd_with_root(
-        &["run", "--snapshot-after", "0", "echo", "job1"],
-        Some(root),
-    );
+    let _r1 = h.run(&["run", "--snapshot-after", "0", "echo", "job1"]);
     // Small sleep to ensure distinct timestamps.
     std::thread::sleep(std::time::Duration::from_millis(10));
-    let r2 = run_cmd_with_root(
-        &["run", "--snapshot-after", "0", "echo", "job2"],
-        Some(root),
-    );
+    let r2 = h.run(&["run", "--snapshot-after", "0", "echo", "job2"]);
     let job2_id = r2["job_id"].as_str().unwrap().to_string();
 
-    let v = run_cmd_with_root(&["list"], Some(root));
+    let v = h.run(&["list"]);
     assert_envelope(&v, "list", true);
 
     let jobs = v["jobs"].as_array().expect("jobs missing");
@@ -1152,18 +1102,17 @@ fn list_returns_jobs_sorted_by_started_at_desc() {
 /// Spec: `--limit` truncates the result and sets truncated=true.
 #[test]
 fn list_limit_truncates_result() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().to_str().unwrap();
+    let h = TestHarness::new();
 
     // Run 3 jobs (use --snapshot-after 0 to return immediately).
-    run_cmd_with_root(&["run", "--snapshot-after", "0", "echo", "j1"], Some(root));
+    h.run(&["run", "--snapshot-after", "0", "echo", "j1"]);
     std::thread::sleep(std::time::Duration::from_millis(10));
-    run_cmd_with_root(&["run", "--snapshot-after", "0", "echo", "j2"], Some(root));
+    h.run(&["run", "--snapshot-after", "0", "echo", "j2"]);
     std::thread::sleep(std::time::Duration::from_millis(10));
-    run_cmd_with_root(&["run", "--snapshot-after", "0", "echo", "j3"], Some(root));
+    h.run(&["run", "--snapshot-after", "0", "echo", "j3"]);
 
     // Request only 2.
-    let v = run_cmd_with_root(&["list", "--limit", "2"], Some(root));
+    let v = h.run(&["list", "--limit", "2"]);
     assert_envelope(&v, "list", true);
 
     let jobs = v["jobs"].as_array().expect("jobs missing");
@@ -1177,11 +1126,10 @@ fn list_limit_truncates_result() {
 /// Spec: `list` root field contains the resolved root path.
 #[test]
 fn list_response_contains_root_field() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().to_str().unwrap();
+    let h = TestHarness::new();
 
     // No run jobs needed for this test; just verify list root field.
-    let v = run_cmd_with_root(&["list"], Some(root));
+    let v = h.run(&["list"]);
     assert_envelope(&v, "list", true);
 
     let resp_root = v["root"].as_str().expect("root missing in list response");
@@ -1191,22 +1139,17 @@ fn list_response_contains_root_field() {
 /// Spec: directories without valid meta.json are counted in skipped, not returned as jobs.
 #[test]
 fn list_skips_invalid_directories() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root_path = tmp.path();
-    let root = root_path.to_str().unwrap();
+    let h = TestHarness::new();
 
     // Run a valid job first (use --snapshot-after 0 to return immediately).
-    let r = run_cmd_with_root(
-        &["run", "--snapshot-after", "0", "echo", "valid"],
-        Some(root),
-    );
+    let r = h.run(&["run", "--snapshot-after", "0", "echo", "valid"]);
     let valid_job_id = r["job_id"].as_str().unwrap().to_string();
 
     // Create a "broken" directory (no meta.json inside).
-    let broken_dir = root_path.join("broken_job_dir");
+    let broken_dir = std::path::Path::new(h.root()).join("broken_job_dir");
     std::fs::create_dir_all(&broken_dir).unwrap();
 
-    let v = run_cmd_with_root(&["list"], Some(root));
+    let v = h.run(&["list"]);
     assert_envelope(&v, "list", true);
 
     // The valid job must appear.
@@ -1229,17 +1172,13 @@ fn list_skips_invalid_directories() {
 /// Task 3.3: snapshot-after is clamped to 10,000ms (waited_ms <= 10000).
 #[test]
 fn run_snapshot_after_is_clamped_to_10_seconds() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().to_str().unwrap();
+    let h = TestHarness::new();
 
     // Pass a value larger than 10,000ms; the binary must clamp it to 10,000ms.
     // We use a sleep command to avoid test hanging forever; with clamping the
     // waited_ms must not exceed 10,000.
     // Use a short override to keep the test fast: pass 500ms and verify waited_ms <= 10000.
-    let v = run_cmd_with_root(
-        &["run", "--snapshot-after", "20000", "echo", "clamp_test"],
-        Some(root),
-    );
+    let v = h.run(&["run", "--snapshot-after", "20000", "echo", "clamp_test"]);
     assert_envelope(&v, "run", true);
 
     let waited_ms = v["waited_ms"].as_u64().expect("waited_ms missing");
@@ -1262,12 +1201,11 @@ fn run_snapshot_after_is_clamped_to_10_seconds() {
 /// With the new default of 10,000ms, snapshot should be present in every run response.
 #[test]
 fn run_default_includes_snapshot() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().to_str().unwrap();
+    let h = TestHarness::new();
 
     // Run without any --snapshot-after flag; default is now 10,000ms.
     // echo finishes quickly so the polling loop exits early when output is available.
-    let v = run_cmd_with_root(&["run", "echo", "default_snapshot_test"], Some(root));
+    let v = h.run(&["run", "echo", "default_snapshot_test"]);
     assert_envelope(&v, "run", true);
 
     // snapshot must be present with the default 10,000ms wait.
@@ -1313,23 +1251,19 @@ fn run_default_includes_snapshot() {
 /// Task 5.2: output without a trailing newline is captured in snapshot.stdout_tail.
 #[test]
 fn run_snapshot_captures_output_without_newline() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().to_str().unwrap();
+    let h = TestHarness::new();
 
     // Use printf to emit output without a trailing newline.
-    let v = run_cmd_with_root(
-        &[
-            "run",
-            "--snapshot-after",
-            "400",
-            "--max-bytes",
-            "256",
-            "sh",
-            "-c",
-            "printf 'no-newline-output'",
-        ],
-        Some(root),
-    );
+    let v = h.run(&[
+        "run",
+        "--snapshot-after",
+        "400",
+        "--max-bytes",
+        "256",
+        "sh",
+        "-c",
+        "printf 'no-newline-output'",
+    ]);
     assert_envelope(&v, "run", true);
 
     let snapshot = v.get("snapshot").expect("snapshot must be present");
@@ -1348,21 +1282,17 @@ fn run_snapshot_captures_output_without_newline() {
 /// output availability.
 #[test]
 fn snapshot_after_waits_until_deadline_despite_early_output() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().to_str().unwrap();
+    let h = TestHarness::new();
     // Command: print immediately, then sleep long enough that the job is still
     // running when snapshot-after elapses. snapshot-after=200ms per design.md.
-    let v = run_cmd_with_root(
-        &[
-            "run",
-            "--snapshot-after",
-            "200",
-            "sh",
-            "-c",
-            "printf 'hello\\n'; sleep 5",
-        ],
-        Some(root),
-    );
+    let v = h.run(&[
+        "run",
+        "--snapshot-after",
+        "200",
+        "sh",
+        "-c",
+        "printf 'hello\\n'; sleep 5",
+    ]);
     assert_envelope(&v, "run", true);
 
     // waited_ms must be >= snapshot-after (200ms).
