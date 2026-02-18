@@ -255,6 +255,103 @@ fn run_creates_full_log() {
     );
 }
 
+// ── log files exist immediately after run ──────────────────────────────────────
+
+#[test]
+fn run_creates_all_log_files_immediately() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+
+    // Run WITHOUT snapshot-after so the test doesn't wait for the child.
+    let run_v = run_cmd_with_root(&["run", "echo", "log_files_test"], Some(root));
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+
+    let job_path = std::path::Path::new(root).join(&job_id);
+
+    // All three log files must exist immediately after `run` returns,
+    // even before the supervisor has written any content.
+    for log_file in &["stdout.log", "stderr.log", "full.log"] {
+        let p = job_path.join(log_file);
+        assert!(
+            p.exists(),
+            "{log_file} not found at {} immediately after run",
+            p.display()
+        );
+    }
+}
+
+// ── state.json null fields ─────────────────────────────────────────────────────
+
+#[test]
+fn state_json_required_fields_present_with_null_for_options() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+
+    // Run a job and read back state.json from the job directory.
+    let run_v = run_cmd_with_root(&["run", "echo", "state_test"], Some(root));
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+
+    let state_path = std::path::Path::new(root).join(&job_id).join("state.json");
+    assert!(state_path.exists(), "state.json not found");
+
+    let raw = std::fs::read_to_string(&state_path).unwrap();
+    let state: serde_json::Value = serde_json::from_str(&raw).unwrap();
+
+    // Required fields from spec: nested structure with job.id, job.status, job.started_at,
+    // result.exit_code, result.signal, result.duration_ms, and top-level updated_at.
+    let job = state.get("job").expect("job block missing from state.json");
+    assert!(job.get("id").is_some(), "job.id missing from state.json");
+    assert!(
+        job.get("status").is_some(),
+        "job.status missing from state.json"
+    );
+    assert!(
+        job.get("started_at").is_some(),
+        "job.started_at missing from state.json"
+    );
+
+    let result = state
+        .get("result")
+        .expect("result block missing from state.json");
+    assert!(
+        result.get("exit_code").is_some(),
+        "result.exit_code missing from state.json (must be null)"
+    );
+    assert!(
+        result.get("signal").is_some(),
+        "result.signal missing from state.json (must be null)"
+    );
+    assert!(
+        result.get("duration_ms").is_some(),
+        "result.duration_ms missing from state.json (must be null)"
+    );
+    assert!(
+        state.get("updated_at").is_some(),
+        "updated_at missing from state.json"
+    );
+
+    // While the job was just spawned, these should be null (running).
+    // (They may already be set if the echo finished before this read; that's fine.)
+    // What we verify is that the keys are always present regardless.
+    let exit_code = &result["exit_code"];
+    let signal = &result["signal"];
+    let duration_ms = &result["duration_ms"];
+
+    // They must be either null or a concrete value, never absent.
+    assert!(
+        exit_code.is_null() || exit_code.is_number(),
+        "result.exit_code must be null or number, got {exit_code}"
+    );
+    assert!(
+        signal.is_null() || signal.is_string(),
+        "result.signal must be null or string, got {signal}"
+    );
+    assert!(
+        duration_ms.is_null() || duration_ms.is_number(),
+        "result.duration_ms must be null or number, got {duration_ms}"
+    );
+}
+
 // ── schema_version sanity ──────────────────────────────────────────────────────
 
 #[test]

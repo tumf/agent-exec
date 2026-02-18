@@ -13,7 +13,10 @@ use tracing::{debug, info};
 use ulid::Ulid;
 
 use crate::jobstore::{resolve_root, JobDir};
-use crate::schema::{JobMeta, JobState, JobStatus, Response, RunData, Snapshot};
+use crate::schema::{
+    JobMeta, JobMetaJob, JobState, JobStateJob, JobStateResult, JobStatus, Response, RunData,
+    Snapshot,
+};
 
 /// Options for the `run` sub-command.
 #[derive(Debug)]
@@ -80,17 +83,25 @@ pub fn execute(opts: RunOpts) -> Result<()> {
         .with_context(|| format!("create jobs root {}", root.display()))?;
 
     let job_id = Ulid::new().to_string();
-    let started_at = now_rfc3339();
+    let created_at = now_rfc3339();
+
+    // Extract only the key names from KEY=VALUE env var strings (values are not persisted).
+    let env_keys: Vec<String> = opts
+        .env_vars
+        .iter()
+        .map(|kv| kv.splitn(2, '=').next().unwrap_or(kv.as_str()).to_string())
+        .collect();
 
     // Apply masking: replace values of masked keys with "***" in env_vars for metadata.
     let masked_env_vars = mask_env_vars(&opts.env_vars, &opts.mask);
 
     let meta = JobMeta {
-        job_id: job_id.clone(),
+        job: JobMetaJob { id: job_id.clone() },
         schema_version: crate::schema::SCHEMA_VERSION.to_string(),
         command: opts.command.clone(),
-        started_at: started_at.clone(),
+        created_at: created_at.clone(),
         root: root.display().to_string(),
+        env_keys,
         env_vars: masked_env_vars.clone(),
         mask: opts.mask.clone(),
     };
@@ -104,6 +115,22 @@ pub fn execute(opts: RunOpts) -> Result<()> {
     } else {
         job_dir.full_log_path().display().to_string()
     };
+
+    // Pre-create empty log files so they exist before the supervisor starts.
+    // This guarantees that `stdout.log`, `stderr.log`, and `full.log` are
+    // present immediately after `run` returns, even if the supervisor has
+    // not yet begun writing.
+    for log_path in [
+        job_dir.stdout_path(),
+        job_dir.stderr_path(),
+        job_dir.full_log_path(),
+    ] {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .with_context(|| format!("pre-create log file {}", log_path.display()))?;
+    }
 
     // Spawn the supervisor (same binary, internal `_supervise` sub-command).
     let exe = std::env::current_exe().context("resolve current exe")?;
@@ -160,7 +187,50 @@ pub fn execute(opts: RunOpts) -> Result<()> {
     debug!(supervisor_pid, "supervisor spawned");
 
     // Write initial state with supervisor PID so `status` can track it.
-    job_dir.init_state(supervisor_pid)?;
+    // On Windows, this also pre-records the deterministic Job Object name
+    // (AgentExec-{job_id}) so that callers can find it immediately after run returns.
+    job_dir.init_state(supervisor_pid, &created_at)?;
+
+    // On Windows, poll state.json until the supervisor confirms Job Object
+    // assignment (state pid changes to child pid or state changes to "failed").
+    // This handshake ensures `run` can detect Job Object assignment failures
+    // before returning.  We wait up to 5 seconds (500 × 10ms intervals).
+    #[cfg(windows)]
+    {
+        let handshake_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            if let Ok(current_state) = job_dir.read_state() {
+                // Supervisor has updated state once the pid changes from
+                // supervisor_pid to the child pid (success), or state becomes
+                // "failed" (Job Object assignment error).
+                let supervisor_updated = current_state
+                    .pid
+                    .map(|p| p != supervisor_pid)
+                    .unwrap_or(false)
+                    || *current_state.status() == JobStatus::Failed;
+                if supervisor_updated {
+                    if *current_state.status() == JobStatus::Failed {
+                        // Supervisor failed to assign the child to a Job Object
+                        // and has already killed the child and updated state.json.
+                        // Report failure to the caller.
+                        anyhow::bail!(
+                            "supervisor failed to assign child process to Job Object \
+                             (Windows MUST requirement); see stderr for details"
+                        );
+                    }
+                    debug!("supervisor confirmed Job Object assignment via state.json handshake");
+                    break;
+                }
+            }
+            if std::time::Instant::now() >= handshake_deadline {
+                // Supervisor did not confirm within 5 seconds. Proceed with
+                // the initial state (deterministic job name already written).
+                debug!("supervisor handshake timed out; proceeding with initial state");
+                break;
+            }
+        }
+    }
 
     // Optionally wait for snapshot.
     let snapshot = if opts.snapshot_after > 0 {
@@ -276,6 +346,10 @@ fn load_env_file(path: &str) -> Result<Vec<(String, String)>> {
 /// Runs the target command, streams stdout/stderr to individual log files
 /// (`stdout.log`, `stderr.log`) **and** to the combined `full.log`, then
 /// updates `state.json` when the process finishes.
+///
+/// On Windows, the child process is assigned to a named Job Object so that
+/// the entire process tree can be terminated with a single `kill` call.
+/// The Job Object name is recorded in `state.json` as `windows_job_name`.
 pub fn supervise(opts: SuperviseOpts) -> Result<()> {
     use std::io::{BufRead, BufReader, Write};
     use std::sync::{Arc, Mutex};
@@ -289,6 +363,10 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
     }
 
     let job_dir = JobDir::open(root, job_id)?;
+
+    // Read meta.json to get the started_at timestamp.
+    let meta = job_dir.read_meta()?;
+    let started_at = meta.created_at.clone();
 
     // Determine full.log path.
     let full_log_path = if let Some(p) = opts.full_log {
@@ -346,15 +424,83 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
     let pid = child.id();
     info!(job_id, pid, "child process started");
 
-    // Update state.json with real child PID.
+    // On Windows, assign child to a named Job Object for process-tree management.
+    // The job name is derived from the job_id so that `kill` can look it up.
+    // Assignment is a MUST requirement on Windows: if it fails, the supervisor
+    // kills the child process and updates state.json to "failed" before returning
+    // an error, so that the run front-end (which may have already returned) can
+    // detect the failure via state.json on next poll.
+    #[cfg(windows)]
+    let windows_job_name = {
+        match assign_to_job_object(job_id, pid) {
+            Ok(name) => Some(name),
+            Err(e) => {
+                // Job Object assignment failed. Per design.md this is a MUST
+                // requirement on Windows. Kill the child process and update
+                // state.json to "failed" so the run front-end can detect it.
+                let kill_err = child.kill();
+                let _ = child.wait(); // reap to avoid zombies
+
+                let failed_state = JobState {
+                    job: JobStateJob {
+                        id: job_id.to_string(),
+                        status: JobStatus::Failed,
+                        started_at: started_at.clone(),
+                    },
+                    result: JobStateResult {
+                        exit_code: None,
+                        signal: None,
+                        duration_ms: None,
+                    },
+                    pid: Some(pid),
+                    finished_at: Some(now_rfc3339()),
+                    updated_at: now_rfc3339(),
+                    windows_job_name: None,
+                };
+                // Best-effort: if writing state fails, we still propagate the
+                // original assignment error.
+                let _ = job_dir.write_state(&failed_state);
+
+                if let Err(ke) = kill_err {
+                    return Err(anyhow::anyhow!(
+                        "supervisor: failed to assign pid {pid} to Job Object \
+                         (Windows MUST requirement): {e}; also failed to kill child: {ke}"
+                    ));
+                }
+                return Err(anyhow::anyhow!(
+                    "supervisor: failed to assign pid {pid} to Job Object \
+                     (Windows MUST requirement); child process was killed; \
+                     consider running outside a nested Job Object environment: {e}"
+                ));
+            }
+        }
+    };
+    #[cfg(not(windows))]
+    let windows_job_name: Option<String> = None;
+
+    // Update state.json with real child PID and Windows Job Object name.
+    // On Windows, windows_job_name is always Some at this point (guaranteed
+    // by the MUST requirement above), so state.json will always contain the
+    // Job Object identifier while the job is running.
     let state = JobState {
-        state: JobStatus::Running,
+        job: JobStateJob {
+            id: job_id.to_string(),
+            status: JobStatus::Running,
+            started_at: started_at.clone(),
+        },
+        result: JobStateResult {
+            exit_code: None,
+            signal: None,
+            duration_ms: None,
+        },
         pid: Some(pid),
-        exit_code: None,
         finished_at: None,
-        updated_at: Some(now_rfc3339()),
+        updated_at: now_rfc3339(),
+        windows_job_name,
     };
     job_dir.write_state(&state)?;
+
+    let child_start_time = std::time::Instant::now();
 
     // Take stdout/stderr handles before moving child.
     let child_stdout = child.stdout.take().expect("child stdout piped");
@@ -475,7 +621,7 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
                             if let Ok(mut st) =
                                 serde_json::from_slice::<crate::schema::JobState>(&raw)
                             {
-                                st.updated_at = Some(now_rfc3339());
+                                st.updated_at = now_rfc3339();
                                 if let Ok(s) = serde_json::to_string_pretty(&st) {
                                     let _ = std::fs::write(&state_path_clone, s);
                                 }
@@ -504,15 +650,25 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
         let _ = w.join();
     }
 
+    let duration_ms = child_start_time.elapsed().as_millis() as u64;
     let exit_code = exit_status.code();
     let finished_at = now_rfc3339();
 
     let state = JobState {
-        state: JobStatus::Exited, // non-zero exit still "exited"
+        job: JobStateJob {
+            id: job_id.to_string(),
+            status: JobStatus::Exited, // non-zero exit still "exited"
+            started_at,
+        },
+        result: JobStateResult {
+            exit_code,
+            signal: None,
+            duration_ms: Some(duration_ms),
+        },
         pid: Some(pid),
-        exit_code,
-        finished_at: Some(finished_at.clone()),
-        updated_at: Some(finished_at),
+        finished_at: Some(finished_at),
+        updated_at: now_rfc3339(),
+        windows_job_name: None, // not needed after process exits
     };
     job_dir.write_state(&state)?;
     info!(job_id, ?exit_code, "child process finished");
@@ -592,6 +748,72 @@ fn format_rfc3339(secs: u64) -> String {
 
 fn is_leap(year: u64) -> bool {
     (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+}
+
+/// Windows-only: create a named Job Object and assign the given child process
+/// to it so that the entire process tree can be terminated via `kill`.
+///
+/// The Job Object is named `"AgentExec-{job_id}"`. This name is stored in
+/// `state.json` so that future `kill` invocations can open the same Job Object
+/// by name and call `TerminateJobObject` to stop the whole tree.
+///
+/// Returns `Ok(name)` on success.  Returns `Err` on failure — the caller
+/// (`supervise`) treats failure as a fatal error because reliable process-tree
+/// management is a Windows MUST requirement (design.md).
+#[cfg(windows)]
+fn assign_to_job_object(job_id: &str, pid: u32) -> Result<String> {
+    use windows::core::HSTRING;
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::JobObjects::{AssignProcessToJobObject, CreateJobObjectW};
+    use windows::Win32::System::Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE};
+
+    let job_name = format!("AgentExec-{job_id}");
+    let hname = HSTRING::from(job_name.as_str());
+
+    unsafe {
+        // Open the child process handle (needed for AssignProcessToJobObject).
+        let proc_handle =
+            OpenProcess(PROCESS_TERMINATE | PROCESS_SET_QUOTA, false, pid).map_err(|e| {
+                anyhow::anyhow!(
+                    "supervisor: OpenProcess(pid={pid}) failed — cannot assign to Job Object: {e}"
+                )
+            })?;
+
+        // Create a named Job Object.
+        let job = match CreateJobObjectW(None, &hname) {
+            Ok(h) => h,
+            Err(e) => {
+                let _ = CloseHandle(proc_handle);
+                return Err(anyhow::anyhow!(
+                    "supervisor: CreateJobObjectW({job_name}) failed: {e}"
+                ));
+            }
+        };
+
+        // Assign the child process to the Job Object.
+        // This can fail if the process is already in another job (e.g. CI/nested).
+        // Per design.md, assignment is a MUST on Windows — failure is a fatal error.
+        if let Err(e) = AssignProcessToJobObject(job, proc_handle) {
+            let _ = CloseHandle(job);
+            let _ = CloseHandle(proc_handle);
+            return Err(anyhow::anyhow!(
+                "supervisor: AssignProcessToJobObject(pid={pid}) failed \
+                 (process may already belong to another Job Object, e.g. in a CI environment): {e}"
+            ));
+        }
+
+        // Keep job handle open for the lifetime of the supervisor so the Job
+        // Object remains valid. We intentionally do NOT close it here.
+        // The OS will close it automatically when the supervisor exits.
+        // (We close proc_handle since we only needed it for assignment.)
+        let _ = CloseHandle(proc_handle);
+        // Note: job handle is intentionally leaked here to keep the Job Object alive.
+        // The handle will be closed when the supervisor process exits.
+        std::mem::forget(job);
+    }
+
+    info!(job_id, name = %job_name, "supervisor: child assigned to Job Object");
+    Ok(job_name)
 }
 
 #[cfg(test)]
