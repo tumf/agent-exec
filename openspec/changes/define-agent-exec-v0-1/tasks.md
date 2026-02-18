@@ -28,3 +28,8 @@
 
 - [x] `src/kill.rs:98` の `send_signal`（Windows）が `AssignProcessToJobObject` 失敗時に `TerminateProcess` へフォールバックして単一 PID のみ終了しており、仕様「Windows では kill がプロセスツリーを終了 MUST」（`spec.md:55-63`）を満たしていません。失敗経路でも必ずツリー終了を保証する実装に修正してください。（`terminate_process_tree` 関数を追加し `CreateToolhelp32Snapshot` によるBFS再帰終了で対応。`cargo test` 12/12 テスト通過）
 - [x] `src/kill.rs:106-107`（`send_signal` の Windows 分岐）で `OpenProcess/PROCESS_SET_QUOTA/PROCESS_TERMINATE` の `use` が重複しており、Windows ビルドで名前再定義エラーを引き起こします。重複 import を削除し、Windows ターゲットでのビルド検証（CI またはクロスチェック）を追加して再発防止してください。（重複行を削除し `cargo build` および `cargo test` で Unix ビルド検証済み。Windows CI マトリクスで実行）
+
+## Acceptance #3 Failure Follow-up
+
+- [x] `src/kill.rs:133`（`send_signal` の Windows 分岐）で `TerminateJobObject(job, 1)` の戻り値を無視して `Ok(())` を返しているため、ジョブオブジェクト終了が失敗しても `kill` が成功扱いになり、仕様「Windows では kill がプロセスツリーを終了 MUST」（`spec.md:55-63`）を満たせません。`TerminateJobObject` の失敗をエラーとして返すよう修正してください。（`TerminateJobObject(job, 1).map_err(...)` でエラーを伝播。`cargo test` 18/18 テスト通過）
+- [x] `src/kill.rs:154-163`（`terminate_process_tree`）で `CreateToolhelp32Snapshot` 失敗時に root PID のみ `TerminateProcess` して成功復帰しており、子プロセスを含むツリー終了が保証されません。ツリー終了を保証できない場合は成功を返さずエラーにするか、別手段で子孫プロセスまで確実に終了する実装へ修正してください。（`terminate_process_tree` の戻り値型を `Result<()>` に変更。`CreateToolhelp32Snapshot` 失敗時はエラーを返すよう修正。ルートプロセス終了失敗時もエラーを返す。`cargo test` 18/18 テスト通過）

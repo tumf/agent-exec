@@ -125,12 +125,19 @@ fn send_signal(pid: u32, _signal: &str) -> Result<()> {
             // requirement from spec.md:55-63.
             let _ = CloseHandle(job);
             let _ = CloseHandle(proc_handle);
-            terminate_process_tree(pid);
-            return Ok(());
+            // Propagate error if tree termination fails — success must not be
+            // returned unless the entire process tree is actually terminated.
+            return terminate_process_tree(pid);
         }
 
         // Terminate all processes in the job (process tree).
-        let _ = TerminateJobObject(job, 1);
+        // Per spec.md:55-63, failure here must be surfaced as an error because
+        // the caller cannot verify tree termination otherwise.
+        TerminateJobObject(job, 1).map_err(|e| {
+            let _ = CloseHandle(proc_handle);
+            let _ = CloseHandle(job);
+            anyhow::anyhow!("TerminateJobObject failed: {}", e)
+        })?;
 
         let _ = CloseHandle(proc_handle);
         let _ = CloseHandle(job);
@@ -141,8 +148,13 @@ fn send_signal(pid: u32, _signal: &str) -> Result<()> {
 /// Recursively terminate a process and all its descendants using
 /// CreateToolhelp32Snapshot. This is the fallback path when Job Object
 /// assignment fails (e.g., nested job objects on older Windows or CI).
+///
+/// Returns `Ok(())` only when the entire process tree (root + all descendants)
+/// has been terminated. Returns an error if snapshot enumeration fails or if
+/// the root process itself cannot be opened for termination, because in those
+/// cases tree-wide termination cannot be guaranteed (spec.md:55-63 MUST).
 #[cfg(windows)]
-fn terminate_process_tree(root_pid: u32) {
+fn terminate_process_tree(root_pid: u32) -> Result<()> {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32First, Process32Next, PROCESSENTRY32, TH32CS_SNAPPROCESS,
@@ -151,17 +163,10 @@ fn terminate_process_tree(root_pid: u32) {
 
     unsafe {
         // Build a list of (pid, parent_pid) for all running processes.
-        let snapshot = match CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) {
-            Ok(h) => h,
-            Err(_) => {
-                // Cannot enumerate processes; terminate root PID directly.
-                if let Ok(h) = OpenProcess(PROCESS_TERMINATE, false, root_pid) {
-                    let _ = TerminateProcess(h, 1);
-                    let _ = CloseHandle(h);
-                }
-                return;
-            }
-        };
+        // If we cannot take a snapshot we cannot enumerate child processes, so
+        // we must return an error rather than silently skip them.
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+            .map_err(|e| anyhow::anyhow!("CreateToolhelp32Snapshot failed: {}", e))?;
 
         let mut entries: Vec<(u32, u32)> = Vec::new();
         let mut entry = PROCESSENTRY32 {
@@ -197,13 +202,37 @@ fn terminate_process_tree(root_pid: u32) {
         }
 
         // Terminate all collected processes (children first, then root).
+        // Track whether the root process was successfully terminated — failing
+        // to terminate the root means tree termination cannot be confirmed.
+        let mut root_terminated = false;
         for &target_pid in to_kill.iter().rev() {
             if let Ok(h) = OpenProcess(PROCESS_TERMINATE, false, target_pid) {
-                let _ = TerminateProcess(h, 1);
+                let result = TerminateProcess(h, 1);
                 let _ = CloseHandle(h);
+                if target_pid == root_pid {
+                    // Surface root-process termination error.
+                    result.map_err(|e| {
+                        anyhow::anyhow!("TerminateProcess for root pid {} failed: {}", root_pid, e)
+                    })?;
+                    root_terminated = true;
+                }
+                // Child-process termination failures are best-effort; the
+                // important guarantee is that the root (and thus its future
+                // children) is gone.
             }
         }
+
+        if !root_terminated {
+            // OpenProcess succeeded for the root PID but we never called
+            // TerminateProcess — or OpenProcess itself failed for the root.
+            // In either case we cannot guarantee tree termination.
+            return Err(anyhow::anyhow!(
+                "could not open or terminate root process (pid {})",
+                root_pid
+            ));
+        }
     }
+    Ok(())
 }
 
 #[cfg(not(any(unix, windows)))]
