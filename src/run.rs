@@ -385,6 +385,67 @@ fn load_env_file(path: &str) -> Result<Vec<(String, String)>> {
     Ok(vars)
 }
 
+/// Stream bytes from a child process output pipe to an individual log file and
+/// to the shared `full.log`.
+///
+/// Reads byte chunks (not lines) so that output without a trailing newline is
+/// still captured in the individual log immediately.  The `full.log` format
+/// `"<RFC3339> [LABEL] <line>"` is maintained via a line-accumulation buffer:
+/// bytes are appended to the buffer until a newline is found, at which point a
+/// formatted line is written to `full.log`.  Any remaining bytes at EOF are
+/// flushed as a final line.
+///
+/// This helper is used by both the stdout and stderr monitoring threads inside
+/// [`supervise`], replacing the previously duplicated per-stream implementations.
+/// Buffer size (8192 bytes) and newline-split logic are preserved unchanged.
+fn stream_to_logs<R>(
+    stream: R,
+    log_path: &std::path::Path,
+    full_log: std::sync::Arc<std::sync::Mutex<std::fs::File>>,
+    label: &str,
+) where
+    R: std::io::Read,
+{
+    use std::io::Write;
+    let mut log_file = std::fs::File::create(log_path).expect("create stream log file in thread");
+    let mut stream = stream;
+    let mut buf = [0u8; 8192];
+    // Incomplete-line buffer for full.log formatting.
+    let mut line_buf: Vec<u8> = Vec::new();
+    loop {
+        match stream.read(&mut buf) {
+            Ok(0) => break, // EOF
+            Ok(n) => {
+                let chunk = &buf[..n];
+                // Write raw bytes to the individual log (captures partial lines too).
+                let _ = log_file.write_all(chunk);
+                // Accumulate bytes for full.log line formatting.
+                for &b in chunk {
+                    if b == b'\n' {
+                        let line = String::from_utf8_lossy(&line_buf);
+                        if let Ok(mut fl) = full_log.lock() {
+                            let ts = now_rfc3339();
+                            let _ = writeln!(fl, "{ts} [{label}] {line}");
+                        }
+                        line_buf.clear();
+                    } else {
+                        line_buf.push(b);
+                    }
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    // Flush any remaining incomplete line to full.log.
+    if !line_buf.is_empty() {
+        let line = String::from_utf8_lossy(&line_buf);
+        if let Ok(mut fl) = full_log.lock() {
+            let ts = now_rfc3339();
+            let _ = writeln!(fl, "{ts} [{label}] {line}");
+        }
+    }
+}
+
 /// Internal supervisor sub-command.
 ///
 /// Runs the target command, streams stdout/stderr to individual log files
@@ -395,7 +456,6 @@ fn load_env_file(path: &str) -> Result<Vec<(String, String)>> {
 /// the entire process tree can be terminated with a single `kill` call.
 /// The Job Object name is recorded in `state.json` as `windows_job_name`.
 pub fn supervise(opts: SuperviseOpts) -> Result<()> {
-    use std::io::Write;
     use std::sync::{Arc, Mutex};
 
     let job_id = opts.job_id;
@@ -551,102 +611,17 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
     let child_stderr = child.stderr.take().expect("child stderr piped");
 
     // Thread: read stdout, write to stdout.log and full.log.
-    //
-    // Reads byte chunks (not lines) so that output without a trailing newline
-    // is still captured in stdout.log immediately. The full.log format
-    // "<RFC3339> [STDOUT] <line>" is maintained via a line-accumulation buffer:
-    // bytes are appended to the buffer until a newline is found, at which point
-    // a formatted line is written to full.log. Any remaining bytes at EOF are
-    // flushed as a final line.
     let stdout_log_path = job_dir.stdout_path();
     let full_log_stdout = Arc::clone(&full_log);
     let t_stdout = std::thread::spawn(move || {
-        use std::io::Read;
-        let mut stdout_file =
-            std::fs::File::create(&stdout_log_path).expect("create stdout.log in thread");
-        let mut stream = child_stdout;
-        let mut buf = [0u8; 8192];
-        // Incomplete-line buffer for full.log formatting.
-        let mut line_buf: Vec<u8> = Vec::new();
-        loop {
-            match stream.read(&mut buf) {
-                Ok(0) => break, // EOF
-                Ok(n) => {
-                    let chunk = &buf[..n];
-                    // Write raw bytes to stdout.log (captures partial lines too).
-                    let _ = stdout_file.write_all(chunk);
-                    // Accumulate bytes for full.log line formatting.
-                    for &b in chunk {
-                        if b == b'\n' {
-                            let line = String::from_utf8_lossy(&line_buf);
-                            if let Ok(mut fl) = full_log_stdout.lock() {
-                                let ts = now_rfc3339();
-                                let _ = writeln!(fl, "{ts} [STDOUT] {line}");
-                            }
-                            line_buf.clear();
-                        } else {
-                            line_buf.push(b);
-                        }
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-        // Flush any remaining incomplete line to full.log.
-        if !line_buf.is_empty() {
-            let line = String::from_utf8_lossy(&line_buf);
-            if let Ok(mut fl) = full_log_stdout.lock() {
-                let ts = now_rfc3339();
-                let _ = writeln!(fl, "{ts} [STDOUT] {line}");
-            }
-        }
+        stream_to_logs(child_stdout, &stdout_log_path, full_log_stdout, "STDOUT");
     });
 
     // Thread: read stderr, write to stderr.log and full.log.
-    //
-    // Same byte-chunk approach as the stdout thread above.
     let stderr_log_path = job_dir.stderr_path();
     let full_log_stderr = Arc::clone(&full_log);
     let t_stderr = std::thread::spawn(move || {
-        use std::io::Read;
-        let mut stderr_file =
-            std::fs::File::create(&stderr_log_path).expect("create stderr.log in thread");
-        let mut stream = child_stderr;
-        let mut buf = [0u8; 8192];
-        // Incomplete-line buffer for full.log formatting.
-        let mut line_buf: Vec<u8> = Vec::new();
-        loop {
-            match stream.read(&mut buf) {
-                Ok(0) => break, // EOF
-                Ok(n) => {
-                    let chunk = &buf[..n];
-                    // Write raw bytes to stderr.log.
-                    let _ = stderr_file.write_all(chunk);
-                    // Accumulate bytes for full.log line formatting.
-                    for &b in chunk {
-                        if b == b'\n' {
-                            let line = String::from_utf8_lossy(&line_buf);
-                            if let Ok(mut fl) = full_log_stderr.lock() {
-                                let ts = now_rfc3339();
-                                let _ = writeln!(fl, "{ts} [STDERR] {line}");
-                            }
-                            line_buf.clear();
-                        } else {
-                            line_buf.push(b);
-                        }
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-        // Flush any remaining incomplete line to full.log.
-        if !line_buf.is_empty() {
-            let line = String::from_utf8_lossy(&line_buf);
-            if let Ok(mut fl) = full_log_stderr.lock() {
-                let ts = now_rfc3339();
-                let _ = writeln!(fl, "{ts} [STDERR] {line}");
-            }
-        }
+        stream_to_logs(child_stderr, &stderr_log_path, full_log_stderr, "STDERR");
     });
 
     // Timeout / kill-after / progress-every handling.
