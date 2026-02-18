@@ -37,12 +37,16 @@ Then ジョブは `BaseDirs::data_local_dir()/agent-exec/jobs/<job_id>` に作�
 
 ### Requirement: run のジョブ生成とスナップショット
 
-`run` は `job_id` を生成し、ジョブディレクトリ内に `meta.json`, `state.json`, `stdout.log`, `stderr.log`, `full.log` を作成しなければならない（MUST）。`snapshot-after` 経過時点の `stdout.log`/`stderr.log` 末尾を読み取り、スナップショットを JSON に含めて stdout へ返し、`run` は終了しなければならない（MUST）。子プロセスは監視プロセスに引き渡され、ログと `state.json` の更新は継続されなければならない（MUST）。
+`run` は `snapshot-after` の待機時間を最大 10,000ms に制限しなければならない（MUST）。
+`run` の `snapshot` は `stdout_observed_bytes`/`stderr_observed_bytes` と
+`stdout_included_bytes`/`stderr_included_bytes` を含めなければならない（MUST）。
 
-#### Scenario: snapshot-after による JSON 返却
-Given `agent-exec run --snapshot-after 2s -- <cmd>` を実行する
-When 2 秒経過する
-Then stdout に `type="run"` を含む JSON が 1 回出力され、`snapshot.stdout_tail` と `snapshot.stderr_tail` が含まれる
+#### Scenario: snapshot の bytes メトリクス
+
+Given `agent-exec run --snapshot-after 500 --max-bytes 64 -- <cmd>` を実行する
+When snapshot が返る
+Then `snapshot.stdout_observed_bytes` と `snapshot.stderr_observed_bytes` が含まれる
+And `snapshot.stdout_included_bytes` と `snapshot.stderr_included_bytes` が含まれる
 
 ### Requirement: tail/snapshot の UTF-8 lossy
 

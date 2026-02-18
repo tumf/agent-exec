@@ -33,17 +33,17 @@ pub fn resolve_root(cli_root: Option<&str>) -> PathBuf {
     }
 
     // 2. Environment variable
-    if let Ok(root) = std::env::var("AGENT_EXEC_ROOT") {
-        if !root.is_empty() {
-            return PathBuf::from(root);
-        }
+    if let Ok(root) = std::env::var("AGENT_EXEC_ROOT")
+        && !root.is_empty()
+    {
+        return PathBuf::from(root);
     }
 
     // 3. XDG_DATA_HOME
-    if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
-        if !xdg.is_empty() {
-            return PathBuf::from(xdg).join("agent-exec").join("jobs");
-        }
+    if let Ok(xdg) = std::env::var("XDG_DATA_HOME")
+        && !xdg.is_empty()
+    {
+        return PathBuf::from(xdg).join("agent-exec").join("jobs");
     }
 
     // 4. Default: ~/.local/share/agent-exec/jobs

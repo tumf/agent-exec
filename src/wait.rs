@@ -6,7 +6,7 @@
 use anyhow::Result;
 use tracing::debug;
 
-use crate::jobstore::{resolve_root, JobDir};
+use crate::jobstore::{JobDir, resolve_root};
 use crate::schema::{JobStatus, Response, WaitData};
 
 /// Options for the `wait` sub-command.
@@ -60,20 +60,20 @@ pub fn execute(opts: WaitOpts) -> Result<()> {
             return Ok(());
         }
 
-        if let Some(dl) = deadline {
-            if std::time::Instant::now() >= dl {
-                // Timed out — still running.
-                let response = Response::new(
-                    "wait",
-                    WaitData {
-                        job_id: opts.job_id.to_string(),
-                        state: JobStatus::Running.as_str().to_string(),
-                        exit_code: None,
-                    },
-                );
-                response.print();
-                return Ok(());
-            }
+        if let Some(dl) = deadline
+            && std::time::Instant::now() >= dl
+        {
+            // Timed out — still running.
+            let response = Response::new(
+                "wait",
+                WaitData {
+                    job_id: opts.job_id.to_string(),
+                    state: JobStatus::Running.as_str().to_string(),
+                    exit_code: None,
+                },
+            );
+            response.print();
+            return Ok(());
         }
 
         std::thread::sleep(poll);

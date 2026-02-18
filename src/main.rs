@@ -242,7 +242,7 @@ fn run(cli: Cli) -> Result<()> {
             env_vars,
             env_files,
             no_inherit_env,
-            inherit_env,
+            inherit_env: _inherit_env,
             mask,
             log,
             progress_every,
@@ -250,15 +250,8 @@ fn run(cli: Cli) -> Result<()> {
         } => {
             // --inherit-env and --no-inherit-env are mutually exclusive (enforced by clap).
             // If neither is specified, default is to inherit (inherit_env=true).
-            // If --inherit-env is explicitly set, inherit_env=true.
             // If --no-inherit-env is set, inherit_env=false.
-            let should_inherit = if no_inherit_env {
-                false
-            } else if inherit_env {
-                true
-            } else {
-                true // default
-            };
+            let should_inherit = !no_inherit_env;
             agent_shell::run::execute(agent_shell::run::RunOpts {
                 command,
                 root: root.as_deref(),
@@ -334,17 +327,11 @@ fn run(cli: Cli) -> Result<()> {
             env_vars,
             env_files,
             no_inherit_env,
-            inherit_env,
+            inherit_env: _inherit_env,
             progress_every,
             command,
         } => {
-            let should_inherit = if no_inherit_env {
-                false
-            } else if inherit_env {
-                true
-            } else {
-                true // default
-            };
+            let should_inherit = !no_inherit_env;
             agent_shell::run::supervise(agent_shell::run::SuperviseOpts {
                 job_id: &job_id,
                 root: std::path::Path::new(&root),
