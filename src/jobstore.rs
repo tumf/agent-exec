@@ -12,6 +12,19 @@ use std::path::PathBuf;
 
 use crate::schema::{JobMeta, JobState, JobStatus};
 
+/// Sentinel error type to distinguish "job not found" from other I/O errors.
+/// Used by callers to emit `error.code = "job_not_found"` instead of `internal_error`.
+#[derive(Debug)]
+pub struct JobNotFound(pub String);
+
+impl std::fmt::Display for JobNotFound {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "job not found: {}", self.0)
+    }
+}
+
+impl std::error::Error for JobNotFound {}
+
 /// Resolve the jobs root directory following the priority chain.
 pub fn resolve_root(cli_root: Option<&str>) -> PathBuf {
     // 1. CLI flag
@@ -55,10 +68,13 @@ pub struct JobDir {
 
 impl JobDir {
     /// Open an existing job directory by ID.
+    ///
+    /// Returns `Err` wrapping `JobNotFound` when the directory does not exist,
+    /// so callers can emit `error.code = "job_not_found"` rather than `internal_error`.
     pub fn open(root: &std::path::Path, job_id: &str) -> Result<Self> {
         let path = root.join(job_id);
         if !path.exists() {
-            anyhow::bail!("job not found: {}", job_id);
+            return Err(anyhow::Error::new(JobNotFound(job_id.to_string())));
         }
         Ok(JobDir {
             path,
@@ -94,6 +110,9 @@ impl JobDir {
     }
     pub fn stderr_path(&self) -> PathBuf {
         self.path.join("stderr.log")
+    }
+    pub fn full_log_path(&self) -> PathBuf {
+        self.path.join("full.log")
     }
 
     pub fn read_meta(&self) -> Result<JobMeta> {

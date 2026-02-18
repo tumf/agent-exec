@@ -126,8 +126,8 @@ pub struct KillData {
 /// Snapshot of stdout/stderr tail at a point in time.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Snapshot {
-    pub stdout: String,
-    pub stderr: String,
+    pub stdout_tail: String,
+    pub stderr_tail: String,
     pub encoding: String,
 }
 

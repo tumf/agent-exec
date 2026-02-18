@@ -92,6 +92,15 @@ fn run_with_snapshot_after_includes_snapshot() {
     assert!(v.get("snapshot").is_some(), "snapshot field missing: {v}");
     let snapshot = &v["snapshot"];
     assert_eq!(snapshot["encoding"].as_str().unwrap_or(""), "utf-8-lossy");
+    // Verify correct field names: stdout_tail / stderr_tail (not stdout / stderr).
+    assert!(
+        snapshot.get("stdout_tail").is_some(),
+        "snapshot.stdout_tail missing: {snapshot}"
+    );
+    assert!(
+        snapshot.get("stderr_tail").is_some(),
+        "snapshot.stderr_tail missing: {snapshot}"
+    );
 }
 
 // ── status ─────────────────────────────────────────────────────────────────────
@@ -124,6 +133,42 @@ fn status_error_for_unknown_job() {
         "expected ok=false for unknown job: {v}"
     );
     assert_eq!(v["type"].as_str().unwrap_or(""), "error");
+    // Verify the error code is "job_not_found", not "internal_error".
+    assert_eq!(
+        v["error"]["code"].as_str().unwrap_or(""),
+        "job_not_found",
+        "expected error.code=job_not_found: {v}"
+    );
+}
+
+#[test]
+fn tail_error_for_unknown_job() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+    let v = run_cmd_with_root(&["tail", "NONEXISTENT_JOB_ID_XYZ"], Some(root));
+    assert_eq!(v["ok"].as_bool().unwrap_or(true), false);
+    assert_eq!(v["type"].as_str().unwrap_or(""), "error");
+    assert_eq!(v["error"]["code"].as_str().unwrap_or(""), "job_not_found");
+}
+
+#[test]
+fn kill_error_for_unknown_job() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+    let v = run_cmd_with_root(&["kill", "NONEXISTENT_JOB_ID_XYZ"], Some(root));
+    assert_eq!(v["ok"].as_bool().unwrap_or(true), false);
+    assert_eq!(v["type"].as_str().unwrap_or(""), "error");
+    assert_eq!(v["error"]["code"].as_str().unwrap_or(""), "job_not_found");
+}
+
+#[test]
+fn wait_error_for_unknown_job() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+    let v = run_cmd_with_root(&["wait", "NONEXISTENT_JOB_ID_XYZ"], Some(root));
+    assert_eq!(v["ok"].as_bool().unwrap_or(true), false);
+    assert_eq!(v["type"].as_str().unwrap_or(""), "error");
+    assert_eq!(v["error"]["code"].as_str().unwrap_or(""), "job_not_found");
 }
 
 // ── tail ───────────────────────────────────────────────────────────────────────
@@ -183,6 +228,28 @@ fn kill_returns_json() {
     assert_envelope(&v, "kill", true);
     assert_eq!(v["job_id"].as_str().unwrap_or(""), job_id);
     assert!(v.get("signal").is_some(), "signal missing");
+}
+
+// ── full.log ───────────────────────────────────────────────────────────────────
+
+#[test]
+fn run_creates_full_log() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+
+    let run_v = run_cmd_with_root(
+        &["run", "--snapshot-after", "400", "echo", "full_log_test"],
+        Some(root),
+    );
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+
+    // full.log must exist alongside stdout.log and stderr.log.
+    let full_log = std::path::Path::new(root).join(&job_id).join("full.log");
+    assert!(
+        full_log.exists(),
+        "full.log not found at {}",
+        full_log.display()
+    );
 }
 
 // ── schema_version sanity ──────────────────────────────────────────────────────

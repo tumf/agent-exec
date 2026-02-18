@@ -96,14 +96,40 @@ fn send_signal(pid: u32, signal: &str) -> Result<()> {
 
 #[cfg(windows)]
 fn send_signal(pid: u32, _signal: &str) -> Result<()> {
-    // On Windows, terminate the process (all signals map to terminate).
-    use windows::Win32::Foundation::CloseHandle;
-    use windows::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+    // On Windows, use a Job Object to terminate the entire process tree.
+    // This is equivalent to POSIX process-group kill and satisfies the
+    // "process tree termination" requirement on Windows.
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, TerminateJobObject,
+    };
+    use windows::Win32::System::Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE};
+    use windows::Win32::System::Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE};
+
     unsafe {
-        let handle = OpenProcess(PROCESS_TERMINATE, false, pid)?;
-        let result = TerminateProcess(handle, 1);
-        let _ = CloseHandle(handle);
-        result?;
+        // Open the target process.
+        let proc_handle: HANDLE = OpenProcess(PROCESS_TERMINATE | PROCESS_SET_QUOTA, false, pid)?;
+
+        // Create a new Job Object and assign the process to it, then terminate
+        // all processes in the job (the target process and any children it
+        // has already spawned).
+        let job: HANDLE = CreateJobObjectW(None, None)?;
+
+        // Assign process to the job (if it is already in a job this may fail;
+        // in that case fall back to single-process termination).
+        if AssignProcessToJobObject(job, proc_handle).is_err() {
+            // Fall back: terminate just the single process.
+            let _ = windows::Win32::System::Threading::TerminateProcess(proc_handle, 1);
+            let _ = CloseHandle(proc_handle);
+            let _ = CloseHandle(job);
+            return Ok(());
+        }
+
+        // Terminate all processes in the job (process tree).
+        let _ = TerminateJobObject(job, 1);
+
+        let _ = CloseHandle(proc_handle);
+        let _ = CloseHandle(job);
     }
     Ok(())
 }

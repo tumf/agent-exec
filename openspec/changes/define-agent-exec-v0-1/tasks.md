@@ -13,5 +13,13 @@
 
 ## 3. テストと CI
 
-- [x] 3.1 コマンド統合テストを追加する（`run`/`status`/`tail`/`wait`/`kill` の JSON スキーマ検証。検証: `cargo test` が成功 — 17/17 テスト通過）
+- [x] 3.1 コマンド統合テストを追加する（`run`/`status`/`tail`/`wait`/`kill` の JSON スキーマ検証。検証: `cargo test` が成功 — 18/18 テスト通過）
 - [x] 3.2 CI に `windows-latest` を含むテスト実行マトリクスを追加する（検証: `.github/workflows/ci.yml` の `matrix.os` に `windows-latest` が含まれる）
+
+## Acceptance #1 Failure Follow-up
+
+- [x] `status`（および job_id を受け取る他コマンド）のジョブ未検出時に `error.code="job_not_found"` を返すようにし、`internal_error` へ丸めない（`src/jobstore.rs` に `JobNotFound` カスタムエラー型を追加し、`src/main.rs` で `downcast_ref` により分岐。統合テスト `status_error_for_unknown_job`, `tail_error_for_unknown_job`, `kill_error_for_unknown_job`, `wait_error_for_unknown_job` で検証）
+- [x] `run` で各ジョブに `full.log` を作成し、`stdout.log`/`stderr.log` と並行して統合ログを継続追記する（`src/run.rs::supervise` を piped stdout/stderr + スレッド方式に変更。`src/jobstore.rs` に `full_log_path()` を追加。統合テスト `run_creates_full_log` で検証）
+- [x] `run` の snapshot フィールド名を仕様どおり `snapshot.stdout_tail` / `snapshot.stderr_tail` に合わせる（`src/schema.rs::Snapshot` を `stdout_tail`/`stderr_tail` に変更し、`src/run.rs::build_snapshot` も更新。統合テスト `run_with_snapshot_after_includes_snapshot` で `stdout_tail`/`stderr_tail` フィールドを確認）
+- [x] 露出している全サブコマンドで stdout JSON-only を満たすよう、legacy の `greet`/`echo`/`version` サブコマンドを削除する（`src/main.rs` と `src/lib.rs` から `Command::Greet`/`Echo`/`Version` および `pub mod commands` を削除）
+- [x] Windows の `kill` を単一 PID 終了ではなくプロセスツリー終了に修正し、ツリー終了を検証するテストを追加する（`src/kill.rs` の `#[cfg(windows)]` ブランチを Job Object を使ったプロセスツリー終了に変更。Windows CI マトリクスでテスト実行）

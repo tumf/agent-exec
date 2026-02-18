@@ -6,6 +6,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
+use agent_shell::jobstore::JobNotFound;
 use agent_shell::schema::ErrorResponse;
 
 #[derive(Debug, Parser)]
@@ -117,19 +118,6 @@ enum Command {
         #[arg(required = true, trailing_var_arg = true)]
         command: Vec<String>,
     },
-
-    // ---------- Legacy commands (kept for backward compat) ----------
-    /// Print a greeting.
-    Greet {
-        #[arg(long)]
-        name: Option<String>,
-    },
-
-    /// Echo a message.
-    Echo { message: String },
-
-    /// Print version.
-    Version,
 }
 
 fn main() {
@@ -152,7 +140,12 @@ fn main() {
 
     let result = run(cli);
     if let Err(e) = result {
-        ErrorResponse::new("internal_error", format!("{e:#}")).print();
+        // Distinguish "job not found" from generic internal errors.
+        if e.downcast_ref::<JobNotFound>().is_some() {
+            ErrorResponse::new("job_not_found", format!("{e:#}")).print();
+        } else {
+            ErrorResponse::new("internal_error", format!("{e:#}")).print();
+        }
         std::process::exit(1);
     }
 }
@@ -228,17 +221,6 @@ fn run(cli: Cli) -> Result<()> {
             command,
         } => {
             agent_shell::run::supervise(&job_id, std::path::Path::new(&root), &command)?;
-        }
-
-        // Legacy commands
-        Command::Greet { name } => {
-            println!("{}", agent_shell::commands::greet(name.as_deref()));
-        }
-        Command::Echo { message } => {
-            println!("{}", agent_shell::commands::echo(&message));
-        }
-        Command::Version => {
-            println!("{}", agent_shell::commands::version());
         }
     }
     Ok(())

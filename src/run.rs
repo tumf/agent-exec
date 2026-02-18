@@ -111,31 +111,38 @@ pub fn execute(opts: RunOpts) -> Result<()> {
 
 fn build_snapshot(job_dir: &JobDir, tail_lines: u64, max_bytes: u64) -> Snapshot {
     Snapshot {
-        stdout: job_dir.tail_log("stdout.log", tail_lines, max_bytes),
-        stderr: job_dir.tail_log("stderr.log", tail_lines, max_bytes),
+        stdout_tail: job_dir.tail_log("stdout.log", tail_lines, max_bytes),
+        stderr_tail: job_dir.tail_log("stderr.log", tail_lines, max_bytes),
         encoding: "utf-8-lossy".to_string(),
     }
 }
 
 /// Internal supervisor sub-command.
 ///
-/// Runs the target command, streams stdout/stderr to log files, and
+/// Runs the target command, streams stdout/stderr to individual log files
+/// (`stdout.log`, `stderr.log`) **and** to the combined `full.log`, then
 /// updates `state.json` when the process finishes.
 pub fn supervise(job_id: &str, root: &Path, command: &[String]) -> Result<()> {
+    use std::io::{BufRead, BufReader, Write};
+    use std::sync::{Arc, Mutex};
+
     if command.is_empty() {
         anyhow::bail!("supervisor: no command");
     }
 
     let job_dir = JobDir::open(root, job_id)?;
 
-    let stdout_file = std::fs::File::create(job_dir.stdout_path()).context("create stdout.log")?;
-    let stderr_file = std::fs::File::create(job_dir.stderr_path()).context("create stderr.log")?;
+    // Create the full.log file (shared between stdout/stderr threads).
+    let full_log_file =
+        std::fs::File::create(job_dir.full_log_path()).context("create full.log")?;
+    let full_log = Arc::new(Mutex::new(full_log_file));
 
+    // Spawn the child with piped stdout/stderr so we can tee to logs.
     let mut child = Command::new(&command[0])
         .args(&command[1..])
         .stdin(std::process::Stdio::null())
-        .stdout(stdout_file)
-        .stderr(stderr_file)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .context("supervisor: spawn child")?;
 
@@ -151,18 +158,54 @@ pub fn supervise(job_id: &str, root: &Path, command: &[String]) -> Result<()> {
     };
     job_dir.write_state(&state)?;
 
+    // Take stdout/stderr handles before moving child.
+    let child_stdout = child.stdout.take().expect("child stdout piped");
+    let child_stderr = child.stderr.take().expect("child stderr piped");
+
+    // Thread: read stdout, write to stdout.log and full.log.
+    let stdout_log_path = job_dir.stdout_path();
+    let full_log_stdout = Arc::clone(&full_log);
+    let t_stdout = std::thread::spawn(move || {
+        let mut stdout_file =
+            std::fs::File::create(&stdout_log_path).expect("create stdout.log in thread");
+        let reader = BufReader::new(child_stdout);
+        for line in reader.lines() {
+            let line = line.unwrap_or_default();
+            let _ = writeln!(stdout_file, "{line}");
+            if let Ok(mut fl) = full_log_stdout.lock() {
+                let _ = writeln!(fl, "{line}");
+            }
+        }
+    });
+
+    // Thread: read stderr, write to stderr.log and full.log.
+    let stderr_log_path = job_dir.stderr_path();
+    let full_log_stderr = Arc::clone(&full_log);
+    let t_stderr = std::thread::spawn(move || {
+        let mut stderr_file =
+            std::fs::File::create(&stderr_log_path).expect("create stderr.log in thread");
+        let reader = BufReader::new(child_stderr);
+        for line in reader.lines() {
+            let line = line.unwrap_or_default();
+            let _ = writeln!(stderr_file, "{line}");
+            if let Ok(mut fl) = full_log_stderr.lock() {
+                let _ = writeln!(fl, "{line}");
+            }
+        }
+    });
+
     // Wait for child to finish.
     let exit_status = child.wait().context("wait for child")?;
+
+    // Join logging threads.
+    let _ = t_stdout.join();
+    let _ = t_stderr.join();
+
     let exit_code = exit_status.code();
     let finished_at = now_rfc3339();
-    let final_status = if exit_status.success() {
-        JobStatus::Exited
-    } else {
-        JobStatus::Exited // non-zero exit still "exited"
-    };
 
     let state = JobState {
-        state: final_status,
+        state: JobStatus::Exited, // non-zero exit still "exited"
         pid: Some(pid),
         exit_code,
         finished_at: Some(finished_at),
@@ -179,20 +222,15 @@ pub fn now_rfc3339_pub() -> String {
 
 fn now_rfc3339() -> String {
     // Use a simple approach that works without chrono.
-    // Format: seconds since UNIX epoch as ISO 8601 approximation.
     let d = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
-    let secs = d.as_secs();
-    // Convert to a human-readable RFC 3339-like string.
-    format_rfc3339(secs)
+    format_rfc3339(d.as_secs())
 }
 
 fn format_rfc3339(secs: u64) -> String {
     // Manual conversion of Unix timestamp to UTC date-time string.
     let mut s = secs;
-    let subsec = s % 1;
-    let _ = subsec;
     let seconds = s % 60;
     s /= 60;
     let minutes = s % 60;
