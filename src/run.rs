@@ -12,7 +12,7 @@ use std::process::Command;
 use tracing::{debug, info};
 use ulid::Ulid;
 
-use crate::jobstore::{resolve_root, JobDir};
+use crate::jobstore::{JobDir, resolve_root};
 use crate::schema::{
     JobMeta, JobMetaJob, JobState, JobStateJob, JobStateResult, JobStatus, Response, RunData,
     Snapshot,
@@ -72,11 +72,16 @@ impl<'a> Default for RunOpts<'a> {
     }
 }
 
+/// Maximum allowed value for `snapshot_after` in milliseconds (10 seconds).
+const MAX_SNAPSHOT_AFTER_MS: u64 = 10_000;
+
 /// Execute `run`: spawn job, possibly wait for snapshot, return JSON.
 pub fn execute(opts: RunOpts) -> Result<()> {
     if opts.command.is_empty() {
         anyhow::bail!("no command specified for run");
     }
+
+    let elapsed_start = std::time::Instant::now();
 
     let root = resolve_root(opts.root);
     std::fs::create_dir_all(&root)
@@ -89,7 +94,7 @@ pub fn execute(opts: RunOpts) -> Result<()> {
     let env_keys: Vec<String> = opts
         .env_vars
         .iter()
-        .map(|kv| kv.splitn(2, '=').next().unwrap_or(kv.as_str()).to_string())
+        .map(|kv| kv.split('=').next().unwrap_or(kv.as_str()).to_string())
         .collect();
 
     // Apply masking: replace values of masked keys with "***" in env_vars for metadata.
@@ -232,14 +237,26 @@ pub fn execute(opts: RunOpts) -> Result<()> {
         }
     }
 
-    // Optionally wait for snapshot.
-    let snapshot = if opts.snapshot_after > 0 {
-        debug!(ms = opts.snapshot_after, "waiting for snapshot");
-        std::thread::sleep(std::time::Duration::from_millis(opts.snapshot_after));
-        Some(build_snapshot(&job_dir, opts.tail_lines, opts.max_bytes))
+    // Compute absolute paths for stdout.log and stderr.log.
+    let stdout_log_path = job_dir.stdout_path().display().to_string();
+    let stderr_log_path = job_dir.stderr_path().display().to_string();
+
+    // Clamp snapshot_after to MAX_SNAPSHOT_AFTER_MS.
+    let effective_snapshot_after = opts.snapshot_after.min(MAX_SNAPSHOT_AFTER_MS);
+
+    // Optionally wait for snapshot and measure waited_ms.
+    let (snapshot, waited_ms) = if effective_snapshot_after > 0 {
+        debug!(ms = effective_snapshot_after, "waiting for snapshot");
+        let wait_start = std::time::Instant::now();
+        std::thread::sleep(std::time::Duration::from_millis(effective_snapshot_after));
+        let waited_ms = wait_start.elapsed().as_millis() as u64;
+        let snap = build_snapshot(&job_dir, opts.tail_lines, opts.max_bytes);
+        (Some(snap), waited_ms)
     } else {
-        None
+        (None, 0u64)
     };
+
+    let elapsed_ms = elapsed_start.elapsed().as_millis() as u64;
 
     let response = Response::new(
         "run",
@@ -250,6 +267,10 @@ pub fn execute(opts: RunOpts) -> Result<()> {
             // which variables were set (with secret values replaced by "***").
             env_vars: masked_env_vars,
             snapshot,
+            stdout_log_path,
+            stderr_log_path,
+            waited_ms,
+            elapsed_ms,
         },
     );
     response.print();
@@ -261,12 +282,25 @@ fn build_snapshot(job_dir: &JobDir, tail_lines: u64, max_bytes: u64) -> Snapshot
         job_dir.tail_log_with_truncated("stdout.log", tail_lines, max_bytes);
     let (stderr_tail, stderr_truncated) =
         job_dir.tail_log_with_truncated("stderr.log", tail_lines, max_bytes);
+    let stdout_observed_bytes = observed_bytes(&job_dir.stdout_path());
+    let stderr_observed_bytes = observed_bytes(&job_dir.stderr_path());
+    let stdout_included_bytes = stdout_tail.len() as u64;
+    let stderr_included_bytes = stderr_tail.len() as u64;
     Snapshot {
         stdout_tail,
         stderr_tail,
         truncated: stdout_truncated || stderr_truncated,
         encoding: "utf-8-lossy".to_string(),
+        stdout_observed_bytes,
+        stderr_observed_bytes,
+        stdout_included_bytes,
+        stderr_included_bytes,
     }
+}
+
+/// Return the file size in bytes, or 0 if the file does not exist or cannot be read.
+fn observed_bytes(path: &std::path::Path) -> u64 {
+    std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
 }
 
 /// Options for the `_supervise` internal sub-command.
@@ -583,31 +617,31 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
                 let elapsed = start.elapsed();
 
                 // Check for timeout.
-                if let Some(td) = timeout_dur {
-                    if elapsed >= td {
-                        info!(job_id = %job_id_str, "timeout reached, sending SIGTERM");
-                        // Send SIGTERM.
+                if let Some(td) = timeout_dur
+                    && elapsed >= td
+                {
+                    info!(job_id = %job_id_str, "timeout reached, sending SIGTERM");
+                    // Send SIGTERM.
+                    #[cfg(unix)]
+                    {
+                        unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+                    }
+                    // If kill_after > 0, wait kill_after ms then SIGKILL.
+                    if kill_after_ms > 0 {
+                        std::thread::sleep(std::time::Duration::from_millis(kill_after_ms));
+                        info!(job_id = %job_id_str, "kill-after elapsed, sending SIGKILL");
                         #[cfg(unix)]
                         {
-                            unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+                            unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
                         }
-                        // If kill_after > 0, wait kill_after ms then SIGKILL.
-                        if kill_after_ms > 0 {
-                            std::thread::sleep(std::time::Duration::from_millis(kill_after_ms));
-                            info!(job_id = %job_id_str, "kill-after elapsed, sending SIGKILL");
-                            #[cfg(unix)]
-                            {
-                                unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
-                            }
-                        } else {
-                            // Immediate SIGKILL.
-                            #[cfg(unix)]
-                            {
-                                unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
-                            }
+                    } else {
+                        // Immediate SIGKILL.
+                        #[cfg(unix)]
+                        {
+                            unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
                         }
-                        break;
                     }
+                    break;
                 }
 
                 // Progress-every: update updated_at periodically.
@@ -617,14 +651,13 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
                     let poll_ms = poll_interval.as_millis() as u64;
                     if elapsed_ms % pd_ms < poll_ms {
                         // Read, update updated_at, write back.
-                        if let Ok(raw) = std::fs::read(&state_path_clone) {
-                            if let Ok(mut st) =
+                        if let Ok(raw) = std::fs::read(&state_path_clone)
+                            && let Ok(mut st) =
                                 serde_json::from_slice::<crate::schema::JobState>(&raw)
-                            {
-                                st.updated_at = now_rfc3339();
-                                if let Ok(s) = serde_json::to_string_pretty(&st) {
-                                    let _ = std::fs::write(&state_path_clone, s);
-                                }
+                        {
+                            st.updated_at = now_rfc3339();
+                            if let Ok(s) = serde_json::to_string_pretty(&st) {
+                                let _ = std::fs::write(&state_path_clone, s);
                             }
                         }
                     }
@@ -747,7 +780,7 @@ fn format_rfc3339(secs: u64) -> String {
 }
 
 fn is_leap(year: u64) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+    (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
 }
 
 /// Windows-only: create a named Job Object and assign the given child process
@@ -762,10 +795,10 @@ fn is_leap(year: u64) -> bool {
 /// management is a Windows MUST requirement (design.md).
 #[cfg(windows)]
 fn assign_to_job_object(job_id: &str, pid: u32) -> Result<String> {
-    use windows::core::HSTRING;
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::JobObjects::{AssignProcessToJobObject, CreateJobObjectW};
     use windows::Win32::System::Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE};
+    use windows::core::HSTRING;
 
     let job_name = format!("AgentExec-{job_id}");
     let hname = HSTRING::from(job_name.as_str());

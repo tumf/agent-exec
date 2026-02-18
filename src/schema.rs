@@ -98,6 +98,14 @@ pub struct RunData {
     /// Present when `snapshot_after` elapsed before `run` returned.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snapshot: Option<Snapshot>,
+    /// Absolute path to stdout.log for this job.
+    pub stdout_log_path: String,
+    /// Absolute path to stderr.log for this job.
+    pub stderr_log_path: String,
+    /// Milliseconds actually waited for snapshot (0 when snapshot_after=0).
+    pub waited_ms: u64,
+    /// Wall-clock milliseconds from run invocation start to JSON output.
+    pub elapsed_ms: u64,
 }
 
 /// Response for `status` command.
@@ -121,6 +129,18 @@ pub struct TailData {
     /// True when the output was truncated by tail_lines or max_bytes constraints.
     pub truncated: bool,
     pub encoding: String,
+    /// Absolute path to stdout.log for this job.
+    pub stdout_log_path: String,
+    /// Absolute path to stderr.log for this job.
+    pub stderr_log_path: String,
+    /// Size of stdout.log in bytes at the time of the tail read (0 if file absent).
+    pub stdout_observed_bytes: u64,
+    /// Size of stderr.log in bytes at the time of the tail read (0 if file absent).
+    pub stderr_observed_bytes: u64,
+    /// UTF-8 byte length of the stdout_tail string included in this response.
+    pub stdout_included_bytes: u64,
+    /// UTF-8 byte length of the stderr_tail string included in this response.
+    pub stderr_included_bytes: u64,
 }
 
 /// Response for `wait` command.
@@ -147,6 +167,14 @@ pub struct Snapshot {
     /// True when the output was truncated by tail_lines or max_bytes constraints.
     pub truncated: bool,
     pub encoding: String,
+    /// Size of stdout.log in bytes at the time of the snapshot (0 if file absent).
+    pub stdout_observed_bytes: u64,
+    /// Size of stderr.log in bytes at the time of the snapshot (0 if file absent).
+    pub stderr_observed_bytes: u64,
+    /// UTF-8 byte length of the stdout_tail string included in this snapshot.
+    pub stdout_included_bytes: u64,
+    /// UTF-8 byte length of the stderr_tail string included in this snapshot.
+    pub stderr_included_bytes: u64,
 }
 
 // ---------- Persisted job metadata / state ----------

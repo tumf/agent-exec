@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 
-use crate::jobstore::{resolve_root, JobDir};
+use crate::jobstore::{JobDir, resolve_root};
 use crate::schema::{Response, TailData};
 
 /// Options for the `tail` sub-command.
@@ -32,11 +32,24 @@ pub fn execute(opts: TailOpts) -> Result<()> {
     let root = resolve_root(opts.root);
     let job_dir = JobDir::open(&root, opts.job_id)?;
 
+    let stdout_log_path = job_dir.stdout_path();
+    let stderr_log_path = job_dir.stderr_path();
+
     let (stdout_tail, stdout_truncated) =
         job_dir.tail_log_with_truncated("stdout.log", opts.tail_lines, opts.max_bytes);
     let (stderr_tail, stderr_truncated) =
         job_dir.tail_log_with_truncated("stderr.log", opts.tail_lines, opts.max_bytes);
     let truncated = stdout_truncated || stderr_truncated;
+
+    // Byte metrics: observed file sizes and included tail sizes.
+    let stdout_observed_bytes = std::fs::metadata(&stdout_log_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+    let stderr_observed_bytes = std::fs::metadata(&stderr_log_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+    let stdout_included_bytes = stdout_tail.len() as u64;
+    let stderr_included_bytes = stderr_tail.len() as u64;
 
     let response = Response::new(
         "tail",
@@ -46,6 +59,12 @@ pub fn execute(opts: TailOpts) -> Result<()> {
             stderr_tail,
             truncated,
             encoding: "utf-8-lossy".to_string(),
+            stdout_log_path: stdout_log_path.display().to_string(),
+            stderr_log_path: stderr_log_path.display().to_string(),
+            stdout_observed_bytes,
+            stderr_observed_bytes,
+            stdout_included_bytes,
+            stderr_included_bytes,
         },
     );
     response.print();

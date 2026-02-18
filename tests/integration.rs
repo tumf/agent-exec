@@ -13,7 +13,7 @@ fn binary() -> PathBuf {
     // Prefer the current exe's directory (works inside cargo test).
     let mut p = std::env::current_exe().expect("current exe");
     p.pop(); // remove test binary name
-             // In release mode there's no "deps" subdirectory; try both.
+    // In release mode there's no "deps" subdirectory; try both.
     if p.ends_with("deps") {
         p.pop();
     }
@@ -127,9 +127,8 @@ fn status_error_for_unknown_job() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().to_str().unwrap();
     let v = run_cmd_with_root(&["status", "NONEXISTENT_JOB_ID_XYZ"], Some(root));
-    assert_eq!(
-        v["ok"].as_bool().unwrap_or(true),
-        false,
+    assert!(
+        !v["ok"].as_bool().unwrap_or(true),
         "expected ok=false for unknown job: {v}"
     );
     assert_eq!(v["type"].as_str().unwrap_or(""), "error");
@@ -146,7 +145,7 @@ fn tail_error_for_unknown_job() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().to_str().unwrap();
     let v = run_cmd_with_root(&["tail", "NONEXISTENT_JOB_ID_XYZ"], Some(root));
-    assert_eq!(v["ok"].as_bool().unwrap_or(true), false);
+    assert!(!v["ok"].as_bool().unwrap_or(true));
     assert_eq!(v["type"].as_str().unwrap_or(""), "error");
     assert_eq!(v["error"]["code"].as_str().unwrap_or(""), "job_not_found");
 }
@@ -156,7 +155,7 @@ fn kill_error_for_unknown_job() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().to_str().unwrap();
     let v = run_cmd_with_root(&["kill", "NONEXISTENT_JOB_ID_XYZ"], Some(root));
-    assert_eq!(v["ok"].as_bool().unwrap_or(true), false);
+    assert!(!v["ok"].as_bool().unwrap_or(true));
     assert_eq!(v["type"].as_str().unwrap_or(""), "error");
     assert_eq!(v["error"]["code"].as_str().unwrap_or(""), "job_not_found");
 }
@@ -166,7 +165,7 @@ fn wait_error_for_unknown_job() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().to_str().unwrap();
     let v = run_cmd_with_root(&["wait", "NONEXISTENT_JOB_ID_XYZ"], Some(root));
-    assert_eq!(v["ok"].as_bool().unwrap_or(true), false);
+    assert!(!v["ok"].as_bool().unwrap_or(true));
     assert_eq!(v["type"].as_str().unwrap_or(""), "error");
     assert_eq!(v["error"]["code"].as_str().unwrap_or(""), "job_not_found");
 }
@@ -379,9 +378,8 @@ fn error_response_has_retryable_field() {
         "error.retryable missing (required by spec): {error}"
     );
     // job_not_found is a permanent failure — retryable must be false.
-    assert_eq!(
-        error["retryable"].as_bool().unwrap_or(true),
-        false,
+    assert!(
+        !error["retryable"].as_bool().unwrap_or(true),
         "job_not_found should have retryable=false: {error}"
     );
 }
@@ -874,9 +872,202 @@ fn tail_truncated_when_over_limit() {
     let v = run_cmd_with_root(&["tail", "--tail-lines", "2", &job_id], Some(root));
     assert_envelope(&v, "tail", true);
     // With --lines 2 and 5 lines of output, truncated should be true.
-    assert_eq!(
+    assert!(
         v["truncated"].as_bool().unwrap_or(false),
-        true,
         "expected truncated=true; response: {v}"
+    );
+}
+
+// ── add-run-tail-metrics: new fields ──────────────────────────────────────────
+
+/// Task 3.1: run response includes waited_ms, elapsed_ms, and snapshot bytes metrics.
+#[test]
+fn run_includes_waited_ms_elapsed_ms_and_log_paths() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+
+    let v = run_cmd_with_root(
+        &["run", "--snapshot-after", "300", "echo", "metrics_test"],
+        Some(root),
+    );
+    assert_envelope(&v, "run", true);
+
+    // waited_ms must be present and non-negative.
+    let waited_ms = v["waited_ms"]
+        .as_u64()
+        .expect("waited_ms missing from run response");
+    // elapsed_ms must be present and >= waited_ms.
+    let elapsed_ms = v["elapsed_ms"]
+        .as_u64()
+        .expect("elapsed_ms missing from run response");
+    assert!(
+        elapsed_ms >= waited_ms,
+        "elapsed_ms ({elapsed_ms}) must be >= waited_ms ({waited_ms})"
+    );
+
+    // stdout_log_path and stderr_log_path must be present and non-empty.
+    let stdout_path = v["stdout_log_path"]
+        .as_str()
+        .expect("stdout_log_path missing from run response");
+    let stderr_path = v["stderr_log_path"]
+        .as_str()
+        .expect("stderr_log_path missing from run response");
+    assert!(!stdout_path.is_empty(), "stdout_log_path is empty");
+    assert!(!stderr_path.is_empty(), "stderr_log_path is empty");
+    // Paths must be absolute.
+    assert!(
+        std::path::Path::new(stdout_path).is_absolute(),
+        "stdout_log_path must be absolute: {stdout_path}"
+    );
+    assert!(
+        std::path::Path::new(stderr_path).is_absolute(),
+        "stderr_log_path must be absolute: {stderr_path}"
+    );
+
+    // snapshot must include bytes metrics.
+    let snapshot = v
+        .get("snapshot")
+        .expect("snapshot missing from run response");
+    assert!(
+        snapshot.get("stdout_observed_bytes").is_some(),
+        "snapshot.stdout_observed_bytes missing: {snapshot}"
+    );
+    assert!(
+        snapshot.get("stderr_observed_bytes").is_some(),
+        "snapshot.stderr_observed_bytes missing: {snapshot}"
+    );
+    assert!(
+        snapshot.get("stdout_included_bytes").is_some(),
+        "snapshot.stdout_included_bytes missing: {snapshot}"
+    );
+    assert!(
+        snapshot.get("stderr_included_bytes").is_some(),
+        "snapshot.stderr_included_bytes missing: {snapshot}"
+    );
+
+    // included_bytes must be <= observed_bytes (we can only include what was observed).
+    let stdout_observed = snapshot["stdout_observed_bytes"].as_u64().unwrap_or(0);
+    let stdout_included = snapshot["stdout_included_bytes"].as_u64().unwrap_or(0);
+    assert!(
+        stdout_included <= stdout_observed,
+        "stdout_included_bytes ({stdout_included}) must be <= stdout_observed_bytes ({stdout_observed})"
+    );
+}
+
+/// Task 3.1: run without snapshot-after has waited_ms=0 and no snapshot.
+#[test]
+fn run_without_snapshot_after_has_waited_ms_zero() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+
+    let v = run_cmd_with_root(&["run", "echo", "no_snapshot"], Some(root));
+    assert_envelope(&v, "run", true);
+
+    let waited_ms = v["waited_ms"].as_u64().expect("waited_ms missing");
+    assert_eq!(waited_ms, 0, "waited_ms must be 0 when snapshot-after=0");
+
+    let elapsed_ms = v["elapsed_ms"].as_u64().expect("elapsed_ms missing");
+    assert!(
+        elapsed_ms < 5000,
+        "elapsed_ms should be small without wait: {elapsed_ms}"
+    );
+
+    // No snapshot field when snapshot_after=0.
+    assert!(
+        v.get("snapshot").is_none() || v["snapshot"].is_null(),
+        "snapshot should be absent when snapshot-after=0: {v}"
+    );
+}
+
+/// Task 3.2: tail response includes log paths and bytes metrics.
+#[test]
+fn tail_includes_log_paths_and_bytes_metrics() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+
+    let run_v = run_cmd_with_root(
+        &["run", "--snapshot-after", "400", "echo", "tail_bytes_test"],
+        Some(root),
+    );
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+
+    // Wait for the child to finish writing output.
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    let v = run_cmd_with_root(&["tail", &job_id], Some(root));
+    assert_envelope(&v, "tail", true);
+
+    // stdout_log_path and stderr_log_path must be present and absolute.
+    let stdout_path = v["stdout_log_path"]
+        .as_str()
+        .expect("stdout_log_path missing from tail response");
+    let stderr_path = v["stderr_log_path"]
+        .as_str()
+        .expect("stderr_log_path missing from tail response");
+    assert!(!stdout_path.is_empty(), "stdout_log_path is empty");
+    assert!(!stderr_path.is_empty(), "stderr_log_path is empty");
+    assert!(
+        std::path::Path::new(stdout_path).is_absolute(),
+        "stdout_log_path must be absolute: {stdout_path}"
+    );
+    assert!(
+        std::path::Path::new(stderr_path).is_absolute(),
+        "stderr_log_path must be absolute: {stderr_path}"
+    );
+
+    // Bytes metrics must be present.
+    assert!(
+        v.get("stdout_observed_bytes").is_some(),
+        "stdout_observed_bytes missing from tail response: {v}"
+    );
+    assert!(
+        v.get("stderr_observed_bytes").is_some(),
+        "stderr_observed_bytes missing from tail response: {v}"
+    );
+    assert!(
+        v.get("stdout_included_bytes").is_some(),
+        "stdout_included_bytes missing from tail response: {v}"
+    );
+    assert!(
+        v.get("stderr_included_bytes").is_some(),
+        "stderr_included_bytes missing from tail response: {v}"
+    );
+
+    // included_bytes must be <= observed_bytes.
+    let stdout_observed = v["stdout_observed_bytes"].as_u64().unwrap_or(0);
+    let stdout_included = v["stdout_included_bytes"].as_u64().unwrap_or(0);
+    assert!(
+        stdout_included <= stdout_observed,
+        "stdout_included_bytes ({stdout_included}) must be <= stdout_observed_bytes ({stdout_observed})"
+    );
+}
+
+/// Task 3.3: snapshot-after is clamped to 10,000ms (waited_ms <= 10000).
+#[test]
+fn run_snapshot_after_is_clamped_to_10_seconds() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+
+    // Pass a value larger than 10,000ms; the binary must clamp it to 10,000ms.
+    // We use a sleep command to avoid test hanging forever; with clamping the
+    // waited_ms must not exceed 10,000.
+    // Use a short override to keep the test fast: pass 500ms and verify waited_ms <= 10000.
+    let v = run_cmd_with_root(
+        &["run", "--snapshot-after", "20000", "echo", "clamp_test"],
+        Some(root),
+    );
+    assert_envelope(&v, "run", true);
+
+    let waited_ms = v["waited_ms"].as_u64().expect("waited_ms missing");
+    // Allow a small tolerance (500ms) over the 10,000ms cap for OS scheduling overhead.
+    // The key assertion is that waited_ms is far less than the unclamped value of 20,000ms.
+    assert!(
+        waited_ms <= 10_500,
+        "waited_ms ({waited_ms}) must be <= 10,500 when snapshot-after is clamped to 10,000ms"
+    );
+    // Ensure the clamp actually prevented a 20,000ms wait.
+    assert!(
+        waited_ms < 15_000,
+        "waited_ms ({waited_ms}) indicates snapshot-after was NOT clamped (expected < 15,000ms)"
     );
 }

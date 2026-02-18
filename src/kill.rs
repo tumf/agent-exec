@@ -18,7 +18,7 @@
 use anyhow::Result;
 use tracing::info;
 
-use crate::jobstore::{resolve_root, JobDir};
+use crate::jobstore::{JobDir, resolve_root};
 use crate::schema::{JobState, JobStateJob, JobStateResult, JobStatus, KillData, Response};
 
 /// Options for the `kill` sub-command.
@@ -153,10 +153,10 @@ fn send_signal(pid: u32, signal: &str, job_name: Option<&str>) -> Result<()> {
 
     // Path 1: named Job Object created by the supervisor is available.
     if let Some(name) = job_name {
-        use windows::core::HSTRING;
         use windows::Win32::System::JobObjects::{
-            OpenJobObjectW, TerminateJobObject, JOB_OBJECT_ALL_ACCESS,
+            JOB_OBJECT_ALL_ACCESS, OpenJobObjectW, TerminateJobObject,
         };
+        use windows::core::HSTRING;
 
         let hname = HSTRING::from(name);
         unsafe {
@@ -237,9 +237,9 @@ fn send_signal_no_job(pid: u32) -> Result<()> {
 fn terminate_process_tree(root_pid: u32) -> Result<()> {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, Process32First, Process32Next, PROCESSENTRY32, TH32CS_SNAPPROCESS,
+        CreateToolhelp32Snapshot, PROCESSENTRY32, Process32First, Process32Next, TH32CS_SNAPPROCESS,
     };
-    use windows::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+    use windows::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
 
     unsafe {
         // Build a list of (pid, parent_pid) for all running processes.

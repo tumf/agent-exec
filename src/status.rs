@@ -3,7 +3,7 @@
 use anyhow::Result;
 use tracing::debug;
 
-use crate::jobstore::{resolve_root, JobDir};
+use crate::jobstore::{JobDir, resolve_root};
 use crate::schema::{Response, StatusData};
 
 /// Options for the `status` sub-command.
