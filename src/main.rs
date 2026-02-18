@@ -146,6 +146,17 @@ enum Command {
         job_id: String,
     },
 
+    /// List all jobs under the root directory.
+    List {
+        /// Override jobs root directory.
+        #[arg(long)]
+        root: Option<String>,
+
+        /// Maximum number of jobs to return (0 = no limit).
+        #[arg(long, default_value = "0")]
+        limit: u64,
+    },
+
     /// [Internal] Supervise a child process — not for direct use.
     #[command(name = "_supervise", hide = true)]
     Supervise {
@@ -314,6 +325,13 @@ fn run(cli: Cli) -> Result<()> {
                 job_id: &job_id,
                 root: root.as_deref(),
                 signal: &signal,
+            })?;
+        }
+
+        Command::List { root, limit } => {
+            agent_shell::list::execute(agent_shell::list::ListOpts {
+                root: root.as_deref(),
+                limit,
             })?;
         }
 
