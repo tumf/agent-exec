@@ -7,6 +7,17 @@ use serde::{Deserialize, Serialize};
 
 pub const SCHEMA_VERSION: &str = "0.1";
 
+/// Serialize `value` to a JSON string and print it as a single line to stdout.
+///
+/// This is the single place where stdout JSON output is written, ensuring the
+/// stdout-is-JSON-only contract is enforced uniformly across all response types.
+fn print_json_to_stdout(value: &impl Serialize) {
+    println!(
+        "{}",
+        serde_json::to_string(value).expect("JSON serialization failed")
+    );
+}
+
 /// Top-level envelope used for every successful response.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Response<T: Serialize> {
@@ -30,10 +41,7 @@ impl<T: Serialize> Response<T> {
 
     /// Serialize to a JSON string and print to stdout.
     pub fn print(&self) {
-        println!(
-            "{}",
-            serde_json::to_string(self).expect("JSON serialization failed")
-        );
+        print_json_to_stdout(self);
     }
 }
 
@@ -77,10 +85,7 @@ impl ErrorResponse {
     }
 
     pub fn print(&self) {
-        println!(
-            "{}",
-            serde_json::to_string(self).expect("JSON serialization failed")
-        );
+        print_json_to_stdout(self);
     }
 }
 
