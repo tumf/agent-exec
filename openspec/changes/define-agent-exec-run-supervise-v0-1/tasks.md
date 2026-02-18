@@ -20,3 +20,8 @@
 - [x] `--progress-every` のみ指定したジョブで子プロセス終了後に `_supervise` が停止しない問題を修正する（`src/run.rs` の watcher ループに終了条件を追加し、`status`/`wait` が `running` のまま残らないことを統合テストで確認する）。
 - [x] CLI に `--inherit-env` オプションを追加し、`--no-inherit-env` との同時指定を clap の排他制約で拒否する（spec の「同時指定不可」要件を満たす）。
 - [x] `--mask` を JSON 出力と表示用メタデータへ適用する実装を追加し、`--env SECRET=... --mask SECRET` で値が `***` にマスクされることを統合テストで検証する。
+
+## Acceptance #2 Failure Follow-up
+
+- [x] `--mask` の spec シナリオ（`run` の JSON に SECRET 値が `***` で表示される）を満たす。`RunData` に `env_vars` フィールドを追加し、`run --env SECRET=... --mask SECRET` のレスポンスに生値が含まれず `***` が出ることを統合テスト `run_json_response_includes_masked_env_vars` で検証する。
+- [x] `_supervise` の `--mask` 経路を死コードにしない。`SuperviseOpts.mask` フィールドと `_supervise` CLI の `--mask` 引数を削除し、マスキングの責務を `run` 側（JSON レスポンス + meta.json）に集約する。コードコメントで責務の分担を明記した。

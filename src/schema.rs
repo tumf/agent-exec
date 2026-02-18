@@ -91,6 +91,10 @@ impl ErrorResponse {
 pub struct RunData {
     pub job_id: String,
     pub state: String,
+    /// Environment variables passed to the job, with masked values replaced by "***".
+    /// Omitted from JSON when empty.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub env_vars: Vec<String>,
     /// Present when `snapshot_after` elapsed before `run` returned.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snapshot: Option<Snapshot>,

@@ -91,7 +91,7 @@ pub fn execute(opts: RunOpts) -> Result<()> {
         command: opts.command.clone(),
         started_at: started_at.clone(),
         root: root.display().to_string(),
-        env_vars: masked_env_vars,
+        env_vars: masked_env_vars.clone(),
         mask: opts.mask.clone(),
     };
 
@@ -139,9 +139,8 @@ pub fn execute(opts: RunOpts) -> Result<()> {
     if !opts.inherit_env {
         supervisor_cmd.arg("--no-inherit-env");
     }
-    for key in &opts.mask {
-        supervisor_cmd.arg("--mask").arg(key);
-    }
+    // Note: masking is handled by `run` (meta.json + JSON response). The supervisor
+    // receives the real env var values so the child process can use them as intended.
     if opts.progress_every_ms > 0 {
         supervisor_cmd
             .arg("--progress-every")
@@ -177,6 +176,9 @@ pub fn execute(opts: RunOpts) -> Result<()> {
         RunData {
             job_id,
             state: JobStatus::Running.as_str().to_string(),
+            // Include masked env_vars in the JSON response so callers can inspect
+            // which variables were set (with secret values replaced by "***").
+            env_vars: masked_env_vars,
             snapshot,
         },
     );
@@ -198,6 +200,10 @@ fn build_snapshot(job_dir: &JobDir, tail_lines: u64, max_bytes: u64) -> Snapshot
 }
 
 /// Options for the `_supervise` internal sub-command.
+///
+/// Masking is the responsibility of `run` (which writes masked values to meta.json
+/// and includes them in the JSON response). The supervisor only needs the real
+/// environment variable values to launch the child process correctly.
 #[derive(Debug)]
 pub struct SuperviseOpts<'a> {
     pub job_id: &'a str,
@@ -211,14 +217,12 @@ pub struct SuperviseOpts<'a> {
     pub kill_after_ms: u64,
     /// Working directory for the child process.
     pub cwd: Option<&'a str>,
-    /// Environment variables as KEY=VALUE strings.
+    /// Environment variables as KEY=VALUE strings (real values, not masked).
     pub env_vars: Vec<String>,
     /// Paths to env files, applied in order.
     pub env_files: Vec<String>,
     /// Whether to inherit the current process environment.
     pub inherit_env: bool,
-    /// Keys to mask in output.
-    pub mask: Vec<String>,
     /// Interval (ms) for state.json updated_at refresh; 0 = disabled.
     pub progress_every_ms: u64,
 }

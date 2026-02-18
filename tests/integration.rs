@@ -701,6 +701,55 @@ fn mask_replaces_env_var_value_with_stars() {
     );
 }
 
+/// Spec (Acceptance #2): `run` JSON response must include masked env_vars field,
+/// with the masked key's value replaced by "***". The real secret value must not
+/// appear in the `run` stdout JSON response.
+#[test]
+fn run_json_response_includes_masked_env_vars() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+
+    let bin = binary();
+    let output = std::process::Command::new(&bin)
+        .env("AGENT_EXEC_ROOT", root)
+        .args([
+            "run",
+            "--env",
+            "SECRET=super_secret_run_value",
+            "--mask",
+            "SECRET",
+            "--",
+            "echo",
+            "done",
+        ])
+        .output()
+        .expect("run binary");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("stdout is not valid JSON: {e}\nstdout: {stdout}"));
+
+    assert_envelope(&v, "run", true);
+
+    // env_vars must be present in the run JSON response.
+    let env_vars = v["env_vars"]
+        .as_array()
+        .expect("env_vars missing in run JSON response");
+
+    // The masked key must appear as "SECRET=***" (not the real value).
+    let has_masked = env_vars.iter().any(|v| v.as_str() == Some("SECRET=***"));
+    assert!(
+        has_masked,
+        "expected SECRET=*** in run JSON env_vars, got: {v}"
+    );
+
+    // The real secret value must NOT appear in the run JSON response.
+    assert!(
+        !stdout.contains("super_secret_run_value"),
+        "real secret value should not appear in run JSON stdout: {stdout}"
+    );
+}
+
 /// Spec: tail returns truncated=true when output exceeds constraints.
 #[test]
 fn tail_truncated_when_over_limit() {

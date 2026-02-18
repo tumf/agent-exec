@@ -187,10 +187,6 @@ enum Command {
         #[arg(long = "inherit-env", default_value = "false", action = clap::ArgAction::SetTrue, conflicts_with = "no_inherit_env", id = "supervise_inherit_env")]
         inherit_env: bool,
 
-        /// Keys to mask in output.
-        #[arg(long = "mask", value_name = "KEY")]
-        mask: Vec<String>,
-
         /// Interval (ms) for state.json updated_at refresh; 0 = disabled.
         #[arg(long, default_value = "0")]
         progress_every: u64,
@@ -339,7 +335,6 @@ fn run(cli: Cli) -> Result<()> {
             env_files,
             no_inherit_env,
             inherit_env,
-            mask,
             progress_every,
             command,
         } => {
@@ -361,7 +356,6 @@ fn run(cli: Cli) -> Result<()> {
                 env_vars,
                 env_files,
                 inherit_env: should_inherit,
-                mask,
                 progress_every_ms: progress_every,
             })?;
         }
