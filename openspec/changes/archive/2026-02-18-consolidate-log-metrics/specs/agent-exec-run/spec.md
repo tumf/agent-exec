@@ -1,6 +1,6 @@
 # agent-exec-run Specification (Delta)
 
-## MODIFIED Requirements
+## ADDED Requirements
 
 ### Requirement: run と tail の bytes メトリクスの一貫性
 
