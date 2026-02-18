@@ -29,8 +29,8 @@ enum Command {
         #[arg(long)]
         root: Option<String>,
 
-        /// Wait N ms before returning (0 = return immediately).
-        #[arg(long, default_value = "0")]
+        /// Wait N ms before returning (0 = return immediately, default = 200ms).
+        #[arg(long, default_value = "200")]
         snapshot_after: u64,
 
         /// Number of tail lines to include in snapshot.
