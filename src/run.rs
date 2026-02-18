@@ -86,7 +86,50 @@ pub fn execute(opts: RunOpts) -> Result<()> {
     debug!(supervisor_pid, "supervisor spawned");
 
     // Write initial state with supervisor PID so `status` can track it.
+    // On Windows, this also pre-records the deterministic Job Object name
+    // (AgentExec-{job_id}) so that callers can find it immediately after run returns.
     job_dir.init_state(supervisor_pid)?;
+
+    // On Windows, poll state.json until the supervisor confirms Job Object
+    // assignment (state pid changes to child pid or state changes to "failed").
+    // This handshake ensures `run` can detect Job Object assignment failures
+    // before returning.  We wait up to 5 seconds (500 × 10ms intervals).
+    #[cfg(windows)]
+    {
+        let handshake_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            if let Ok(current_state) = job_dir.read_state() {
+                // Supervisor has updated state once the pid changes from
+                // supervisor_pid to the child pid (success), or state becomes
+                // "failed" (Job Object assignment error).
+                let supervisor_updated = current_state
+                    .pid
+                    .map(|p| p != supervisor_pid)
+                    .unwrap_or(false)
+                    || current_state.state == JobStatus::Failed;
+                if supervisor_updated {
+                    if current_state.state == JobStatus::Failed {
+                        // Supervisor failed to assign the child to a Job Object
+                        // and has already killed the child and updated state.json.
+                        // Report failure to the caller.
+                        anyhow::bail!(
+                            "supervisor failed to assign child process to Job Object \
+                             (Windows MUST requirement); see stderr for details"
+                        );
+                    }
+                    debug!("supervisor confirmed Job Object assignment via state.json handshake");
+                    break;
+                }
+            }
+            if std::time::Instant::now() >= handshake_deadline {
+                // Supervisor did not confirm within 5 seconds. Proceed with
+                // the initial state (deterministic job name already written).
+                debug!("supervisor handshake timed out; proceeding with initial state");
+                break;
+            }
+        }
+    }
 
     // Optionally wait for snapshot.
     let snapshot = if opts.snapshot_after > 0 {
@@ -156,17 +199,44 @@ pub fn supervise(job_id: &str, root: &Path, command: &[String]) -> Result<()> {
     // On Windows, assign child to a named Job Object for process-tree management.
     // The job name is derived from the job_id so that `kill` can look it up.
     // Assignment is a MUST requirement on Windows: if it fails, the supervisor
-    // exits with an error rather than continuing without reliable tree management.
+    // kills the child process and updates state.json to "failed" before returning
+    // an error, so that the run front-end (which may have already returned) can
+    // detect the failure via state.json on next poll.
     #[cfg(windows)]
     let windows_job_name = {
-        let name = assign_to_job_object(job_id, pid).with_context(|| {
-            format!(
-                "supervisor: failed to assign pid {pid} to Job Object \
-                 (Windows MUST requirement); consider running outside a \
-                 nested Job Object environment"
-            )
-        })?;
-        Some(name)
+        match assign_to_job_object(job_id, pid) {
+            Ok(name) => Some(name),
+            Err(e) => {
+                // Job Object assignment failed. Per design.md this is a MUST
+                // requirement on Windows. Kill the child process and update
+                // state.json to "failed" so the run front-end can detect it.
+                let kill_err = child.kill();
+                let _ = child.wait(); // reap to avoid zombies
+
+                let failed_state = JobState {
+                    state: JobStatus::Failed,
+                    pid: Some(pid),
+                    exit_code: None,
+                    finished_at: Some(now_rfc3339()),
+                    windows_job_name: None,
+                };
+                // Best-effort: if writing state fails, we still propagate the
+                // original assignment error.
+                let _ = job_dir.write_state(&failed_state);
+
+                if let Err(ke) = kill_err {
+                    return Err(anyhow::anyhow!(
+                        "supervisor: failed to assign pid {pid} to Job Object \
+                         (Windows MUST requirement): {e}; also failed to kill child: {ke}"
+                    ));
+                }
+                return Err(anyhow::anyhow!(
+                    "supervisor: failed to assign pid {pid} to Job Object \
+                     (Windows MUST requirement); child process was killed; \
+                     consider running outside a nested Job Object environment: {e}"
+                ));
+            }
+        }
     };
     #[cfg(not(windows))]
     let windows_job_name: Option<String> = None;

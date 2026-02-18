@@ -164,22 +164,25 @@ impl JobDir {
     /// process is spawned, so `pid` is the supervisor's PID. The child process
     /// PID and, on Windows, the Job Object name are not yet known at this point.
     ///
-    /// On Windows the supervisor process will overwrite this state shortly after
-    /// it starts: once the child process has been spawned and assigned to a named
-    /// Job Object (a MUST requirement per design.md), `supervise()` calls
-    /// `write_state` with the real child PID and the `windows_job_name` field
-    /// populated.  From that point forward, the running `state.json` always
-    /// contains the Job Object identifier.
+    /// On Windows, the Job Object name is derived deterministically from the
+    /// job_id as `"AgentExec-{job_id}"`. This name is written immediately to
+    /// `state.json` so that callers reading state after `run` returns can
+    /// always find the Job Object identifier, without waiting for the supervisor
+    /// to perform its first `write_state` call. The supervisor will confirm the
+    /// same name (or update to `failed`) after it successfully assigns the child
+    /// process to the named Job Object.
     pub fn init_state(&self, pid: u32) -> Result<JobState> {
+        #[cfg(windows)]
+        let windows_job_name = Some(format!("AgentExec-{}", self.job_id));
+        #[cfg(not(windows))]
+        let windows_job_name: Option<String> = None;
+
         let state = JobState {
             state: JobStatus::Running,
             pid: Some(pid),
             exit_code: None,
             finished_at: None,
-            // windows_job_name is not available here (supervisor PID only).
-            // The supervisor will overwrite this with the Job Object name after
-            // the child process is spawned and assigned.
-            windows_job_name: None,
+            windows_job_name,
         };
         self.write_state(&state)?;
         Ok(state)
@@ -242,5 +245,62 @@ mod tests {
             root_str.contains("agent-exec"),
             "expected agent-exec in path, got {root_str}"
         );
+    }
+
+    /// On non-Windows platforms, `init_state` must write `windows_job_name: None`
+    /// (the field is omitted from JSON via `skip_serializing_if`).
+    /// On Windows, `init_state` must write the deterministic Job Object name
+    /// `"AgentExec-{job_id}"` so that `state.json` always contains the identifier
+    /// immediately after `run` returns, without waiting for the supervisor update.
+    #[test]
+    fn init_state_writes_deterministic_job_name_on_windows() {
+        let tmp = std::env::temp_dir().join(format!(
+            "agent-exec-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let job_id = "01TESTJOBID0000000000000";
+        let meta = crate::schema::JobMeta {
+            job_id: job_id.to_string(),
+            schema_version: crate::schema::SCHEMA_VERSION.to_string(),
+            command: vec!["echo".to_string()],
+            started_at: "2024-01-01T00:00:00Z".to_string(),
+            root: tmp.display().to_string(),
+        };
+        let job_dir = JobDir::create(&tmp, job_id, &meta).unwrap();
+        let state = job_dir.init_state(1234).unwrap();
+
+        // Verify in-memory state.
+        #[cfg(windows)]
+        assert_eq!(
+            state.windows_job_name.as_deref(),
+            Some("AgentExec-01TESTJOBID0000000000000"),
+            "Windows: init_state must set deterministic job name immediately"
+        );
+        #[cfg(not(windows))]
+        assert_eq!(
+            state.windows_job_name, None,
+            "non-Windows: init_state must not set windows_job_name"
+        );
+
+        // Verify persisted state on disk.
+        let persisted = job_dir.read_state().unwrap();
+        #[cfg(windows)]
+        assert_eq!(
+            persisted.windows_job_name.as_deref(),
+            Some("AgentExec-01TESTJOBID0000000000000"),
+            "Windows: persisted state.json must contain windows_job_name"
+        );
+        #[cfg(not(windows))]
+        assert_eq!(
+            persisted.windows_job_name, None,
+            "non-Windows: persisted state.json must not contain windows_job_name"
+        );
+
+        // Cleanup.
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

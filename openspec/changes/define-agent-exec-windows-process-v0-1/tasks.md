@@ -28,3 +28,10 @@
 
 - [x] `src/run.rs` の `supervise` で Job Object 割り当て失敗時に処理を継続しないように修正し、Windows の MUST 要件（子プロセスを Job Object に割り当てる）を満たす
 - [x] `src/jobstore.rs` の `init_state` と `src/run.rs` の `supervise` 更新ロジックを見直し、Windows で実行中の `state.json` が常に Job Object 識別情報を含むようにする
+
+## Acceptance #2 Failure Follow-up
+
+- [x] `src/jobstore.rs` の `init_state` が `windows_job_name: None` を書き込み（`src/jobstore.rs:173-183`）、`run` がその直後に返る（`src/run.rs:89-109`）ため、Windows の実行中 `state.json` に Job Object 識別子が常時含まれる要件を満たしていない。初期 state に決定論的な Job 名を記録するか、識別子付き state が書かれるまで `run` 完了を遅延させる。
+  - 修正: `init_state` を変更し、Windows では `"AgentExec-{job_id}"` を決定論的に `windows_job_name` に設定するよう実装。`run` から返った直後でも `state.json` に Job Object 識別子が含まれる。
+- [x] Windows で Job Object 割り当て失敗時、`supervise` は `Err` で終了するが（`src/run.rs:162-168`）、その前に起動した子プロセス（`src/run.rs:145-153`）の停止と失敗 state 反映が行われない。割り当て失敗時に子プロセスを確実に終了し、`state.json` を `failed` 等に更新し、`run` 側でも失敗を検知できるハンドシェイクを実装する。
+  - 修正: Job Object 割り当て失敗時に `child.kill()` + `child.wait()` で子プロセスを確実に終了し、`state.json` を `Failed` 状態に更新してから `Err` を返すよう実装。`run` 側でも Windows で最大 5 秒のポーリングハンドシェイクを追加し、`state.json` が `failed` になった場合に失敗を検知してエラーを返すよう実装。
