@@ -299,29 +299,18 @@ pub fn execute(opts: RunOpts) -> Result<()> {
 }
 
 fn build_snapshot(job_dir: &JobDir, tail_lines: u64, max_bytes: u64) -> Snapshot {
-    let (stdout_tail, stdout_truncated) =
-        job_dir.tail_log_with_truncated("stdout.log", tail_lines, max_bytes);
-    let (stderr_tail, stderr_truncated) =
-        job_dir.tail_log_with_truncated("stderr.log", tail_lines, max_bytes);
-    let stdout_observed_bytes = observed_bytes(&job_dir.stdout_path());
-    let stderr_observed_bytes = observed_bytes(&job_dir.stderr_path());
-    let stdout_included_bytes = stdout_tail.len() as u64;
-    let stderr_included_bytes = stderr_tail.len() as u64;
+    let stdout = job_dir.read_tail_metrics("stdout.log", tail_lines, max_bytes);
+    let stderr = job_dir.read_tail_metrics("stderr.log", tail_lines, max_bytes);
     Snapshot {
-        stdout_tail,
-        stderr_tail,
-        truncated: stdout_truncated || stderr_truncated,
+        truncated: stdout.truncated || stderr.truncated,
         encoding: "utf-8-lossy".to_string(),
-        stdout_observed_bytes,
-        stderr_observed_bytes,
-        stdout_included_bytes,
-        stderr_included_bytes,
+        stdout_observed_bytes: stdout.observed_bytes,
+        stderr_observed_bytes: stderr.observed_bytes,
+        stdout_included_bytes: stdout.included_bytes,
+        stderr_included_bytes: stderr.included_bytes,
+        stdout_tail: stdout.tail,
+        stderr_tail: stderr.tail,
     }
-}
-
-/// Return the file size in bytes, or 0 if the file does not exist or cannot be read.
-fn observed_bytes(path: &std::path::Path) -> u64 {
-    std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
 }
 
 /// Options for the `_supervise` internal sub-command.
