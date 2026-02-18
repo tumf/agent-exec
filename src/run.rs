@@ -13,7 +13,10 @@ use tracing::{debug, info};
 use ulid::Ulid;
 
 use crate::jobstore::{resolve_root, JobDir};
-use crate::schema::{JobMeta, JobState, JobStatus, Response, RunData, Snapshot};
+use crate::schema::{
+    JobMeta, JobMetaJob, JobState, JobStateJob, JobStateResult, JobStatus, Response, RunData,
+    Snapshot,
+};
 
 /// Options for the `run` sub-command.
 #[derive(Debug)]
@@ -67,7 +70,7 @@ pub fn execute(opts: RunOpts) -> Result<()> {
         .collect();
 
     let meta = JobMeta {
-        job_id: job_id.clone(),
+        job: JobMetaJob { id: job_id.clone() },
         schema_version: crate::schema::SCHEMA_VERSION.to_string(),
         command: opts.command.clone(),
         created_at: created_at.clone(),
@@ -115,13 +118,17 @@ pub fn execute(opts: RunOpts) -> Result<()> {
 
     // Write initial state with supervisor PID so `status` can track it.
     let initial_state = crate::schema::JobState {
-        job_id: job_id.clone(),
-        status: JobStatus::Running,
-        started_at: created_at.clone(),
+        job: JobStateJob {
+            id: job_id.clone(),
+            status: JobStatus::Running,
+            started_at: created_at.clone(),
+        },
+        result: JobStateResult {
+            exit_code: None,
+            signal: None,
+            duration_ms: None,
+        },
         pid: Some(supervisor_pid),
-        exit_code: None,
-        signal: None,
-        duration_ms: None,
         finished_at: None,
         updated_at: now_rfc3339(),
     };
@@ -194,13 +201,17 @@ pub fn supervise(job_id: &str, root: &Path, command: &[String]) -> Result<()> {
 
     // Update state.json with real child PID.
     let state = JobState {
-        job_id: job_id.to_string(),
-        status: JobStatus::Running,
-        started_at: started_at.clone(),
+        job: JobStateJob {
+            id: job_id.to_string(),
+            status: JobStatus::Running,
+            started_at: started_at.clone(),
+        },
+        result: JobStateResult {
+            exit_code: None,
+            signal: None,
+            duration_ms: None,
+        },
         pid: Some(pid),
-        exit_code: None,
-        signal: None,
-        duration_ms: None,
         finished_at: None,
         updated_at: now_rfc3339(),
     };
@@ -256,13 +267,17 @@ pub fn supervise(job_id: &str, root: &Path, command: &[String]) -> Result<()> {
     let finished_at = now_rfc3339();
 
     let state = JobState {
-        job_id: job_id.to_string(),
-        status: JobStatus::Exited, // non-zero exit still "exited"
-        started_at,
+        job: JobStateJob {
+            id: job_id.to_string(),
+            status: JobStatus::Exited, // non-zero exit still "exited"
+            started_at,
+        },
+        result: JobStateResult {
+            exit_code,
+            signal: None,
+            duration_ms: Some(duration_ms),
+        },
         pid: Some(pid),
-        exit_code,
-        signal: None,
-        duration_ms: Some(duration_ms),
         finished_at: Some(finished_at),
         updated_at: now_rfc3339(),
     };

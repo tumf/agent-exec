@@ -294,30 +294,33 @@ fn state_json_required_fields_present_with_null_for_options() {
     let raw = std::fs::read_to_string(&state_path).unwrap();
     let state: serde_json::Value = serde_json::from_str(&raw).unwrap();
 
-    // Required fields from spec must be present (not absent) even if null.
+    // Required fields from spec: nested structure with job.id, job.status, job.started_at,
+    // result.exit_code, result.signal, result.duration_ms, and top-level updated_at.
+    let job = state.get("job").expect("job block missing from state.json");
+    assert!(job.get("id").is_some(), "job.id missing from state.json");
     assert!(
-        state.get("job_id").is_some(),
-        "job_id missing from state.json"
+        job.get("status").is_some(),
+        "job.status missing from state.json"
     );
     assert!(
-        state.get("status").is_some(),
-        "status missing from state.json"
+        job.get("started_at").is_some(),
+        "job.started_at missing from state.json"
+    );
+
+    let result = state
+        .get("result")
+        .expect("result block missing from state.json");
+    assert!(
+        result.get("exit_code").is_some(),
+        "result.exit_code missing from state.json (must be null)"
     );
     assert!(
-        state.get("started_at").is_some(),
-        "started_at missing from state.json"
+        result.get("signal").is_some(),
+        "result.signal missing from state.json (must be null)"
     );
     assert!(
-        state.get("exit_code").is_some(),
-        "exit_code missing from state.json (must be null)"
-    );
-    assert!(
-        state.get("signal").is_some(),
-        "signal missing from state.json (must be null)"
-    );
-    assert!(
-        state.get("duration_ms").is_some(),
-        "duration_ms missing from state.json (must be null)"
+        result.get("duration_ms").is_some(),
+        "result.duration_ms missing from state.json (must be null)"
     );
     assert!(
         state.get("updated_at").is_some(),
@@ -327,22 +330,22 @@ fn state_json_required_fields_present_with_null_for_options() {
     // While the job was just spawned, these should be null (running).
     // (They may already be set if the echo finished before this read; that's fine.)
     // What we verify is that the keys are always present regardless.
-    let exit_code = &state["exit_code"];
-    let signal = &state["signal"];
-    let duration_ms = &state["duration_ms"];
+    let exit_code = &result["exit_code"];
+    let signal = &result["signal"];
+    let duration_ms = &result["duration_ms"];
 
     // They must be either null or a concrete value, never absent.
     assert!(
         exit_code.is_null() || exit_code.is_number(),
-        "exit_code must be null or number, got {exit_code}"
+        "result.exit_code must be null or number, got {exit_code}"
     );
     assert!(
         signal.is_null() || signal.is_string(),
-        "signal must be null or string, got {signal}"
+        "result.signal must be null or string, got {signal}"
     );
     assert!(
         duration_ms.is_null() || duration_ms.is_number(),
-        "duration_ms must be null or number, got {duration_ms}"
+        "result.duration_ms must be null or number, got {duration_ms}"
     );
 }
 

@@ -265,7 +265,9 @@ mod tests {
 
     fn make_meta(job_id: &str, root: &std::path::Path) -> crate::schema::JobMeta {
         crate::schema::JobMeta {
-            job_id: job_id.to_string(),
+            job: crate::schema::JobMetaJob {
+                id: job_id.to_string(),
+            },
             schema_version: "0.1".to_string(),
             command: vec!["echo".to_string(), "hello".to_string()],
             created_at: "2024-01-01T00:00:00Z".to_string(),
@@ -288,7 +290,7 @@ mod tests {
         // meta.json must exist and be parseable.
         assert!(job_dir.meta_path().exists(), "meta.json not found");
         let loaded_meta = job_dir.read_meta().unwrap();
-        assert_eq!(loaded_meta.job_id, "test-job-01");
+        assert_eq!(loaded_meta.job_id(), "test-job-01");
         assert_eq!(loaded_meta.command, vec!["echo", "hello"]);
 
         // env_keys must contain key names only (not values).
@@ -324,13 +326,17 @@ mod tests {
         let job_dir = JobDir::create(root, "test-job-03", &meta).unwrap();
 
         let state = crate::schema::JobState {
-            job_id: "test-job-03".to_string(),
-            status: crate::schema::JobStatus::Running,
-            started_at: "2024-01-01T00:00:00Z".to_string(),
+            job: crate::schema::JobStateJob {
+                id: "test-job-03".to_string(),
+                status: crate::schema::JobStatus::Running,
+                started_at: "2024-01-01T00:00:00Z".to_string(),
+            },
+            result: crate::schema::JobStateResult {
+                exit_code: None,
+                signal: None,
+                duration_ms: None,
+            },
             pid: Some(12345),
-            exit_code: None,
-            signal: None,
-            duration_ms: None,
             finished_at: None,
             updated_at: "2024-01-01T00:00:01Z".to_string(),
         };
@@ -340,7 +346,7 @@ mod tests {
         assert!(job_dir.state_path().exists(), "state.json not found");
         let loaded = job_dir.read_state().unwrap();
         assert_eq!(loaded.updated_at, "2024-01-01T00:00:01Z");
-        assert_eq!(loaded.job_id, "test-job-03");
+        assert_eq!(loaded.job_id(), "test-job-03");
 
         // Also verify the raw JSON contains the updated_at field.
         let raw = std::fs::read_to_string(job_dir.state_path()).unwrap();
@@ -362,13 +368,17 @@ mod tests {
 
         for i in 0..10 {
             let state = crate::schema::JobState {
-                job_id: "test-job-04".to_string(),
-                status: crate::schema::JobStatus::Running,
-                started_at: "2024-01-01T00:00:00Z".to_string(),
+                job: crate::schema::JobStateJob {
+                    id: "test-job-04".to_string(),
+                    status: crate::schema::JobStatus::Running,
+                    started_at: "2024-01-01T00:00:00Z".to_string(),
+                },
+                result: crate::schema::JobStateResult {
+                    exit_code: None,
+                    signal: None,
+                    duration_ms: None,
+                },
                 pid: Some(100 + i),
-                exit_code: None,
-                signal: None,
-                duration_ms: None,
                 finished_at: None,
                 updated_at: format!("2024-01-01T00:00:{:02}Z", i),
             };
@@ -394,7 +404,9 @@ mod tests {
 
         // Re-write meta atomically.
         let updated_meta = crate::schema::JobMeta {
-            job_id: "test-job-05".to_string(),
+            job: crate::schema::JobMetaJob {
+                id: "test-job-05".to_string(),
+            },
             schema_version: "0.1".to_string(),
             command: vec!["ls".to_string()],
             created_at: "2024-06-01T12:00:00Z".to_string(),

@@ -45,15 +45,15 @@ pub fn execute(opts: WaitOpts) -> Result<()> {
 
     loop {
         let state = job_dir.read_state()?;
-        debug!(job_id = %opts.job_id, state = ?state.status, "wait poll");
+        debug!(job_id = %opts.job_id, state = ?state.status(), "wait poll");
 
-        if state.status != JobStatus::Running {
+        if *state.status() != JobStatus::Running {
             let response = Response::new(
                 "wait",
                 WaitData {
                     job_id: opts.job_id.to_string(),
-                    state: state.status.as_str().to_string(),
-                    exit_code: state.exit_code,
+                    state: state.status().as_str().to_string(),
+                    exit_code: state.exit_code(),
                 },
             );
             response.print();
