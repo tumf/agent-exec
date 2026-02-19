@@ -1368,3 +1368,126 @@ fn snapshot_after_waits_until_deadline_despite_early_output() {
         "snapshot.stdout_tail should contain 'hello'; got: {stdout_tail:?}"
     );
 }
+
+// ── run --wait ─────────────────────────────────────────────────────────────────
+
+/// run --wait waits for the job to complete and returns terminal state info.
+#[test]
+fn run_wait_returns_terminal_state() {
+    let h = TestHarness::new();
+    // Use --snapshot-after 0 to skip the initial snapshot delay.
+    // --wait causes run to block until the process finishes.
+    let v = h.run(&[
+        "run",
+        "--snapshot-after",
+        "0",
+        "--wait",
+        "echo",
+        "run_wait_test",
+    ]);
+    assert_envelope(&v, "run", true);
+
+    // state must be a terminal state (exited, killed, or failed).
+    let state = v["state"].as_str().unwrap_or("");
+    assert!(
+        state == "exited" || state == "killed" || state == "failed",
+        "state must be terminal when --wait is used; got: {state:?}"
+    );
+
+    // finished_at must be present and non-empty.
+    let finished_at = v["finished_at"].as_str().unwrap_or("");
+    assert!(
+        !finished_at.is_empty(),
+        "finished_at must be present in run --wait response; got: {v}"
+    );
+
+    // final_snapshot must be present with correct structure.
+    let final_snapshot = v
+        .get("final_snapshot")
+        .expect("final_snapshot must be present in run --wait response");
+    assert_eq!(
+        final_snapshot["encoding"].as_str().unwrap_or(""),
+        "utf-8-lossy",
+        "final_snapshot.encoding must be 'utf-8-lossy'"
+    );
+    assert!(
+        final_snapshot.get("stdout_tail").is_some(),
+        "final_snapshot.stdout_tail must be present"
+    );
+    assert!(
+        final_snapshot.get("stderr_tail").is_some(),
+        "final_snapshot.stderr_tail must be present"
+    );
+
+    // stdout_tail should contain the echo output.
+    let stdout_tail = final_snapshot["stdout_tail"].as_str().unwrap_or("");
+    assert!(
+        stdout_tail.contains("run_wait_test"),
+        "final_snapshot.stdout_tail should contain 'run_wait_test'; got: {stdout_tail:?}"
+    );
+}
+
+/// run --wait with a non-zero exit code returns the exit code.
+#[test]
+fn run_wait_returns_exit_code() {
+    let h = TestHarness::new();
+    let v = h.run(&[
+        "run",
+        "--snapshot-after",
+        "0",
+        "--wait",
+        "sh",
+        "-c",
+        "exit 42",
+    ]);
+    assert_envelope(&v, "run", true);
+
+    // state must be terminal.
+    let state = v["state"].as_str().unwrap_or("");
+    assert!(
+        state == "exited" || state == "killed" || state == "failed",
+        "state must be terminal; got: {state:?}"
+    );
+
+    // exit_code must be present.
+    assert!(
+        v.get("exit_code").is_some(),
+        "exit_code must be present in run --wait response; got: {v}"
+    );
+    let exit_code = v["exit_code"].as_i64().unwrap_or(-999);
+    assert_eq!(exit_code, 42, "exit_code must be 42; got: {exit_code}");
+
+    // finished_at must be present.
+    assert!(
+        v["finished_at"].as_str().is_some_and(|s| !s.is_empty()),
+        "finished_at must be present; got: {v}"
+    );
+
+    // final_snapshot must be present.
+    assert!(
+        v.get("final_snapshot").is_some(),
+        "final_snapshot must be present; got: {v}"
+    );
+}
+
+/// run without --wait does not return finished_at or final_snapshot.
+#[test]
+fn run_without_wait_omits_wait_fields() {
+    let h = TestHarness::new();
+    let v = h.run(&["run", "--snapshot-after", "0", "echo", "no_wait"]);
+    assert_envelope(&v, "run", true);
+
+    // Without --wait, these fields must be absent.
+    assert!(
+        v.get("finished_at").is_none(),
+        "finished_at must NOT be present when --wait is not used; got: {v}"
+    );
+    assert!(
+        v.get("final_snapshot").is_none(),
+        "final_snapshot must NOT be present when --wait is not used; got: {v}"
+    );
+    assert!(
+        v.get("exit_code").is_none(),
+        "exit_code must NOT be present when --wait is not used; got: {v}"
+    );
+}

@@ -49,6 +49,11 @@ pub struct RunOpts<'a> {
     pub log: Option<&'a str>,
     /// Interval (ms) for state.json updated_at refresh; 0 = disabled.
     pub progress_every_ms: u64,
+    /// If true, wait for the job to reach a terminal state before returning.
+    /// The response will include exit_code, finished_at, and final_snapshot.
+    pub wait: bool,
+    /// Poll interval in milliseconds when `wait` is true.
+    pub wait_poll_ms: u64,
 }
 
 impl<'a> Default for RunOpts<'a> {
@@ -68,6 +73,8 @@ impl<'a> Default for RunOpts<'a> {
             mask: vec![],
             log: None,
             progress_every_ms: 0,
+            wait: false,
+            wait_poll_ms: 200,
         }
     }
 }
@@ -277,13 +284,34 @@ pub fn execute(opts: RunOpts) -> Result<()> {
         (None, 0u64)
     };
 
+    // If --wait is set, wait for the job to reach a terminal state.
+    // Unlike snapshot_after, there is no upper bound on wait time.
+    let (final_state, exit_code_opt, finished_at_opt, final_snapshot_opt) = if opts.wait {
+        debug!("--wait: polling for terminal state");
+        let poll = std::time::Duration::from_millis(opts.wait_poll_ms.max(1));
+        loop {
+            std::thread::sleep(poll);
+            if let Ok(st) = job_dir.read_state()
+                && *st.status() != JobStatus::Running
+            {
+                let snap = build_snapshot(&job_dir, opts.tail_lines, opts.max_bytes);
+                let ec = st.exit_code();
+                let fa = st.finished_at.clone();
+                let state_str = st.status().as_str().to_string();
+                break (state_str, ec, fa, Some(snap));
+            }
+        }
+    } else {
+        (JobStatus::Running.as_str().to_string(), None, None, None)
+    };
+
     let elapsed_ms = elapsed_start.elapsed().as_millis() as u64;
 
     let response = Response::new(
         "run",
         RunData {
             job_id,
-            state: JobStatus::Running.as_str().to_string(),
+            state: final_state,
             // Include masked env_vars in the JSON response so callers can inspect
             // which variables were set (with secret values replaced by "***").
             env_vars: masked_env_vars,
@@ -292,6 +320,9 @@ pub fn execute(opts: RunOpts) -> Result<()> {
             stderr_log_path,
             waited_ms,
             elapsed_ms,
+            exit_code: exit_code_opt,
+            finished_at: finished_at_opt,
+            final_snapshot: final_snapshot_opt,
         },
     );
     response.print();

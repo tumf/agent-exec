@@ -81,6 +81,15 @@ enum Command {
         #[arg(long, default_value = "0")]
         progress_every: u64,
 
+        /// Wait for the job to reach a terminal state before returning.
+        /// When set, the response includes exit_code, finished_at, and final_snapshot.
+        #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue)]
+        wait: bool,
+
+        /// Poll interval in milliseconds when --wait is used.
+        #[arg(long, default_value = "200")]
+        wait_poll_ms: u64,
+
         /// Command and arguments to run.
         #[arg(required = true, trailing_var_arg = true)]
         command: Vec<String>,
@@ -261,6 +270,8 @@ fn run(cli: Cli) -> Result<()> {
             mask,
             log,
             progress_every,
+            wait,
+            wait_poll_ms,
             command,
         } => {
             // --inherit-env and --no-inherit-env are mutually exclusive (enforced by clap).
@@ -282,6 +293,8 @@ fn run(cli: Cli) -> Result<()> {
                 mask,
                 log: log.as_deref(),
                 progress_every_ms: progress_every,
+                wait,
+                wait_poll_ms,
             })?;
         }
 
