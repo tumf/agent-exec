@@ -141,4 +141,3 @@ Given リポジトリの `README.md` を読む
 When 利用例セクションを確認する
 Then `run`/`status`/`tail`/`wait`/`kill`/`list` の例が含まれる
 And stdout が JSON-only である旨が明記されている
-

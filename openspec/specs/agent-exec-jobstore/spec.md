@@ -56,4 +56,3 @@ Then `job.status` が `running` であり、`updated_at` が含まれる
 Given 実行中のジョブがある
 When `state.json` が更新される
 Then 途中で破損した JSON が観測されない
-
