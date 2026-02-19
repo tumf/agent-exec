@@ -1,3 +1,5 @@
+# Add Install Skills
+
 ## Why
 
 agent-exec にはエージェント向けスキルの導入機構がなく、CLI 利用者が手作業で .agents 配下を整備する必要があります。slack-rs の install-skills と整合するインストール経路を追加し、非対話・JSON-only の契約を保ったままスキル配布を自動化するために本変更を行います。
