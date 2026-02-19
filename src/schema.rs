@@ -239,6 +239,7 @@ pub struct JobMetaJob {
 /// Values MUST NOT be stored to avoid leaking secrets.
 /// `env_vars` stores KEY=VALUE strings with masked values replaced by "***".
 /// `mask` stores the list of keys whose values are masked.
+/// `cwd` stores the effective working directory at job creation time (canonicalized).
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct JobMeta {
     pub job: JobMetaJob,
@@ -255,6 +256,10 @@ pub struct JobMeta {
     /// Keys whose values are masked in output.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub mask: Vec<String>,
+    /// Effective working directory at job creation time (canonicalized absolute path).
+    /// Used by `list` to filter jobs by cwd. Absent for jobs created before this feature.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub cwd: Option<String>,
 }
 
 impl JobMeta {
