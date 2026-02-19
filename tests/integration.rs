@@ -1136,6 +1136,61 @@ fn list_response_contains_root_field() {
     assert!(!resp_root.is_empty(), "root field is empty");
 }
 
+/// Spec: `list --state running` returns only running jobs; exited jobs are excluded.
+#[test]
+fn list_filters_by_state_running() {
+    let h = TestHarness::new();
+
+    // Start a long-running job (sleep 60); it should appear as "running".
+    let long_run = h.run(&["run", "--snapshot-after", "0", "sleep", "60"]);
+    let long_job_id = long_run["job_id"]
+        .as_str()
+        .expect("job_id missing")
+        .to_string();
+
+    // Start a short job (echo) and wait for it to finish; it should appear as "exited".
+    let short_run = h.run(&["run", "--snapshot-after", "500", "echo", "done"]);
+    let short_job_id = short_run["job_id"]
+        .as_str()
+        .expect("job_id missing")
+        .to_string();
+    // Wait to ensure the echo job has completed.
+    h.run(&["wait", "--timeout-ms", "5000", &short_job_id]);
+
+    // list --state running must contain the long job, not the short one.
+    let v = h.run(&["list", "--state", "running"]);
+    assert_envelope(&v, "list", true);
+
+    let jobs = v["jobs"].as_array().expect("jobs missing");
+    let has_long = jobs
+        .iter()
+        .any(|j| j["job_id"].as_str() == Some(&long_job_id));
+    let has_short = jobs
+        .iter()
+        .any(|j| j["job_id"].as_str() == Some(&short_job_id));
+
+    assert!(
+        has_long,
+        "long-running job should appear in --state running; got: {v}"
+    );
+    assert!(
+        !has_short,
+        "exited job should NOT appear in --state running; got: {v}"
+    );
+
+    // All returned jobs must have state == "running".
+    for job in jobs {
+        let state = job["state"].as_str().unwrap_or("");
+        assert_eq!(
+            state, "running",
+            "unexpected state in --state running result: {state}; job: {job}"
+        );
+    }
+
+    // Clean up: kill the long-running job.
+    h.run(&["kill", &long_job_id]);
+}
+
 /// Spec: directories without valid meta.json are counted in skipped, not returned as jobs.
 #[test]
 fn list_skips_invalid_directories() {
