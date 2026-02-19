@@ -5,12 +5,15 @@ TBD - created by archiving change define-agent-exec-contract-v0-1. Update Purpos
 ## Requirements
 ### Requirement: CLI サブコマンド構成
 
-`agent-exec` は `run`/`status`/`tail`/`wait`/`kill`/`list` の 6 サブコマンドを提供しなければならない（MUST）。`list` はジョブ一覧を JSON で返さなければならない（MUST）。
+`agent-exec` は `schema` サブコマンドを提供しなければならない（MUST）。`schema` は stdout に `type="schema"` の JSON を 1 つ出力しなければならない（MUST）。`schema` の JSON は `schema_format` と `schema` を含み、`schema_format` は `json-schema-draft-07` でなければならない（MUST）。
 
-#### Scenario: list の呼び出し形
-Given `agent-exec list --root /tmp/jobs` を実行する
+#### Scenario: schema を取得する
+
+Given `agent-exec schema` を実行する
 When コマンドが完了する
-Then stdout は `type="list"` の JSON を 1 つ出力する
+Then stdout は `type="schema"` の JSON である
+And `schema_format` は `json-schema-draft-07` である
+And `schema` は JSON オブジェクトである
 
 ### Requirement: ヘルプは英語
 
@@ -56,3 +59,4 @@ Then `error.code` と `error.message` と `error.retryable` が含まれる
 Given 存在しない `job_id` に対して `agent-exec status <job_id>` を実行する
 When コマンドが終了する
 Then 終了コードは `1` である
+

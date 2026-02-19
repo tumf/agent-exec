@@ -13,7 +13,7 @@ fn binary() -> PathBuf {
     // Prefer the current exe's directory (works inside cargo test).
     let mut p = std::env::current_exe().expect("current exe");
     p.pop(); // remove test binary name
-    // In release mode there's no "deps" subdirectory; try both.
+             // In release mode there's no "deps" subdirectory; try both.
     if p.ends_with("deps") {
         p.pop();
     }
@@ -1576,5 +1576,89 @@ fn list_all_and_cwd_conflict_exits_with_code_2() {
         "expected exit code 2 when --all and --cwd are both supplied; \
          stderr: {}",
         String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+// ── schema ─────────────────────────────────────────────────────────────────────
+
+/// Task 3.1/3.2: `schema` command returns valid JSON envelope with type="schema".
+#[test]
+fn schema_returns_json_envelope() {
+    // schema does not need a root/harness; run directly.
+    let v = run_cmd_with_root(&["schema"], None);
+    assert_envelope(&v, "schema", true);
+}
+
+/// Task 3.2: `schema` response includes schema_format field set to "json-schema-draft-07".
+#[test]
+fn schema_response_has_schema_format() {
+    let v = run_cmd_with_root(&["schema"], None);
+    assert_envelope(&v, "schema", true);
+
+    let schema_format = v["schema_format"]
+        .as_str()
+        .expect("schema_format missing from schema response");
+    assert_eq!(
+        schema_format, "json-schema-draft-07",
+        "schema_format must be 'json-schema-draft-07'; got: {schema_format}"
+    );
+}
+
+/// Task 3.2: `schema` response includes a non-empty `schema` object field.
+#[test]
+fn schema_response_has_schema_object() {
+    let v = run_cmd_with_root(&["schema"], None);
+    assert_envelope(&v, "schema", true);
+
+    let schema = v
+        .get("schema")
+        .expect("schema field missing from schema response");
+    assert!(
+        schema.is_object(),
+        "schema field must be a JSON object; got: {schema}"
+    );
+    assert!(
+        !schema.as_object().unwrap().is_empty(),
+        "schema field must not be empty; got: {schema}"
+    );
+}
+
+/// Task 3.2: `schema` response includes `generated_at` field.
+#[test]
+fn schema_response_has_generated_at() {
+    let v = run_cmd_with_root(&["schema"], None);
+    assert_envelope(&v, "schema", true);
+
+    let generated_at = v["generated_at"]
+        .as_str()
+        .expect("generated_at missing from schema response");
+    assert!(
+        !generated_at.is_empty(),
+        "generated_at must not be empty; got: {generated_at:?}"
+    );
+}
+
+/// `schema` stdout must be a single JSON object only (no extra output).
+#[test]
+fn schema_stdout_is_single_json_object() {
+    let bin = binary();
+    let output = std::process::Command::new(&bin)
+        .args(["schema"])
+        .output()
+        .expect("run binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(
+        lines.len(),
+        1,
+        "schema stdout should contain exactly 1 line (JSON), got {}: {:?}",
+        lines.len(),
+        lines
+    );
+    let parsed: serde_json::Value =
+        serde_json::from_str(lines[0]).expect("schema stdout line is not valid JSON");
+    assert!(
+        parsed.is_object(),
+        "schema stdout JSON is not an object: {parsed}"
     );
 }
