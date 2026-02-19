@@ -213,6 +213,30 @@ pub struct ListData {
     pub skipped: u64,
 }
 
+// ---------- install-skills response payload ----------
+
+/// Summary of a single installed skill, included in `install_skills` responses.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct InstalledSkillSummary {
+    /// Skill name (directory name under `.agents/skills/`).
+    pub name: String,
+    /// Source string used when the skill was installed.
+    pub source: String,
+    /// Absolute path to the installed skill directory.
+    pub path: String,
+}
+
+/// Response for `install-skills` command.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct InstallSkillsData {
+    /// List of installed skills.
+    pub skills: Vec<InstalledSkillSummary>,
+    /// Whether skills were installed globally (`~/.agents/`) or locally (`./.agents/`).
+    pub global: bool,
+    /// Absolute path to the `.skill-lock.json` file that was updated.
+    pub lock_file_path: String,
+}
+
 /// Snapshot of stdout/stderr tail at a point in time.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Snapshot {
