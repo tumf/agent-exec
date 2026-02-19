@@ -371,6 +371,7 @@ mod tests {
             env_keys: vec!["FOO".to_string()],
             env_vars: vec![],
             mask: vec![],
+            cwd: None,
         }
     }
 
@@ -514,6 +515,7 @@ mod tests {
             env_keys: vec!["PATH".to_string()],
             env_vars: vec![],
             mask: vec![],
+            cwd: None,
         };
         job_dir.write_meta_atomic(&updated_meta).unwrap();
 

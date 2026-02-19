@@ -3,11 +3,24 @@
 //! Enumerates job directories under root, reads meta.json and state.json
 //! for each, and emits a JSON array sorted by started_at descending.
 //! Directories that cannot be parsed as jobs are silently counted in `skipped`.
+//!
+//! ## CWD filtering (filter-list-by-cwd)
+//!
+//! By default, `list` only returns jobs whose `meta.json.cwd` matches the
+//! caller's current working directory.  Two flags override this behaviour:
+//!
+//! - `--cwd <PATH>`: show only jobs created from `<PATH>` (overrides auto-detect).
+//! - `--all`: disable cwd filtering entirely and show all jobs.
+//!
+//! Jobs that were created before this feature (i.e. `meta.json.cwd` is absent)
+//! are treated as having no cwd and will therefore not appear in the default
+//! filtered view.  Use `--all` to see them.
 
 use anyhow::Result;
 use tracing::debug;
 
 use crate::jobstore::resolve_root;
+use crate::run::resolve_effective_cwd;
 use crate::schema::{JobSummary, ListData, Response};
 
 /// Options for the `list` sub-command.
@@ -18,12 +31,37 @@ pub struct ListOpts<'a> {
     pub limit: u64,
     /// Optional state filter: running|exited|killed|failed|unknown.
     pub state: Option<&'a str>,
+    /// Optional cwd filter: show only jobs created from this directory.
+    /// Conflicts with `all`.
+    pub cwd: Option<&'a str>,
+    /// When true, disable cwd filtering and show all jobs.
+    /// Conflicts with `cwd`.
+    pub all: bool,
 }
 
 /// Execute `list`: enumerate jobs and emit JSON.
 pub fn execute(opts: ListOpts) -> Result<()> {
     let root = resolve_root(opts.root);
     let root_str = root.display().to_string();
+
+    // Determine the cwd filter to apply.
+    // Priority: --all (no filter) > --cwd <PATH> > current_dir (default).
+    let cwd_filter: Option<String> = if opts.all {
+        // --all: show every job regardless of cwd.
+        None
+    } else if let Some(cwd_arg) = opts.cwd {
+        // --cwd <PATH>: canonicalize and use as filter.
+        Some(resolve_effective_cwd(Some(cwd_arg)))
+    } else {
+        // Default: filter by current process working directory.
+        Some(resolve_effective_cwd(None))
+    };
+
+    debug!(
+        cwd_filter = ?cwd_filter,
+        all = opts.all,
+        "list: cwd filter determined"
+    );
 
     // If root does not exist, return an empty list (normal termination).
     if !root.exists() {
@@ -82,6 +120,25 @@ pub fn execute(opts: ListOpts) -> Result<()> {
                 continue;
             }
         };
+
+        // Apply cwd filter: if a filter is active, skip jobs whose cwd doesn't match.
+        if let Some(ref filter_cwd) = cwd_filter {
+            match meta.cwd.as_deref() {
+                Some(job_cwd) if job_cwd == filter_cwd => {
+                    // Match: include this job.
+                }
+                _ => {
+                    // No cwd in meta (old job) or different cwd: exclude.
+                    debug!(
+                        path = %path.display(),
+                        job_cwd = ?meta.cwd,
+                        filter_cwd = %filter_cwd,
+                        "list: skipping job (cwd mismatch)"
+                    );
+                    continue;
+                }
+            }
+        }
 
         // state.json is optional: read if available, continue without it if not.
         let state_opt: Option<crate::schema::JobState> = {

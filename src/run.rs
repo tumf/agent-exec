@@ -107,6 +107,11 @@ pub fn execute(opts: RunOpts) -> Result<()> {
     // Apply masking: replace values of masked keys with "***" in env_vars for metadata.
     let masked_env_vars = mask_env_vars(&opts.env_vars, &opts.mask);
 
+    // Resolve the effective working directory for this job.
+    // If --cwd was specified, use that path; otherwise use the current process's working directory.
+    // Canonicalize the path for consistent comparison; fall back to absolute path on failure.
+    let effective_cwd = resolve_effective_cwd(opts.cwd);
+
     let meta = JobMeta {
         job: JobMetaJob { id: job_id.clone() },
         schema_version: crate::schema::SCHEMA_VERSION.to_string(),
@@ -116,6 +121,7 @@ pub fn execute(opts: RunOpts) -> Result<()> {
         env_keys,
         env_vars: masked_env_vars.clone(),
         mask: opts.mask.clone(),
+        cwd: Some(effective_cwd),
     };
 
     let job_dir = JobDir::create(&root, &job_id, &meta)?;
@@ -384,6 +390,34 @@ pub struct SuperviseOpts<'a> {
     pub inherit_env: bool,
     /// Interval (ms) for state.json updated_at refresh; 0 = disabled.
     pub progress_every_ms: u64,
+}
+
+/// Resolve the effective working directory for a job.
+///
+/// If `cwd_override` is `Some`, use that path as the base. Otherwise use the
+/// current process working directory. In either case, attempt to canonicalize
+/// the path for consistent comparison; on failure, fall back to the absolute
+/// path representation (avoids symlink / permission issues on some systems).
+pub fn resolve_effective_cwd(cwd_override: Option<&str>) -> String {
+    let base = match cwd_override {
+        Some(p) => std::path::PathBuf::from(p),
+        None => std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+    };
+
+    // Prefer canonicalized (resolves symlinks); fall back to making the path absolute.
+    match base.canonicalize() {
+        Ok(canonical) => canonical.display().to_string(),
+        Err(_) => {
+            // If base is already absolute, use as-is; otherwise prepend cwd.
+            if base.is_absolute() {
+                base.display().to_string()
+            } else {
+                // Best-effort: join with cwd, ignore errors.
+                let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                cwd.join(base).display().to_string()
+            }
+        }
+    }
 }
 
 /// Mask the values of specified keys in a list of KEY=VALUE strings.

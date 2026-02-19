@@ -1,0 +1,257 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$comment": "2026-02-19T00:00:00Z",
+  "title": "agent-exec CLI response schema",
+  "description": "JSON Schema for all stdout responses produced by agent-exec v0.1.",
+  "definitions": {
+    "Envelope": {
+      "type": "object",
+      "required": ["schema_version", "ok", "type"],
+      "properties": {
+        "schema_version": {
+          "type": "string",
+          "const": "0.1",
+          "description": "Schema version identifier."
+        },
+        "ok": {
+          "type": "boolean",
+          "description": "True for successful responses, false for errors."
+        },
+        "type": {
+          "type": "string",
+          "description": "Response type discriminator."
+        }
+      }
+    },
+    "ErrorDetail": {
+      "type": "object",
+      "required": ["code", "message", "retryable"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "description": "Machine-readable error code (e.g. job_not_found, internal_error)."
+        },
+        "message": {
+          "type": "string",
+          "description": "Human-readable error description."
+        },
+        "retryable": {
+          "type": "boolean",
+          "description": "Whether the caller may retry the same request."
+        }
+      }
+    },
+    "ErrorResponse": {
+      "allOf": [
+        { "$ref": "#/definitions/Envelope" },
+        {
+          "type": "object",
+          "required": ["error"],
+          "properties": {
+            "ok": { "const": false },
+            "type": { "const": "error" },
+            "error": { "$ref": "#/definitions/ErrorDetail" }
+          }
+        }
+      ]
+    },
+    "Snapshot": {
+      "type": "object",
+      "required": [
+        "stdout_tail", "stderr_tail", "truncated", "encoding",
+        "stdout_observed_bytes", "stderr_observed_bytes",
+        "stdout_included_bytes", "stderr_included_bytes"
+      ],
+      "properties": {
+        "stdout_tail": { "type": "string" },
+        "stderr_tail": { "type": "string" },
+        "truncated": { "type": "boolean" },
+        "encoding": { "type": "string" },
+        "stdout_observed_bytes": { "type": "integer", "minimum": 0 },
+        "stderr_observed_bytes": { "type": "integer", "minimum": 0 },
+        "stdout_included_bytes": { "type": "integer", "minimum": 0 },
+        "stderr_included_bytes": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "RunResponse": {
+      "allOf": [
+        { "$ref": "#/definitions/Envelope" },
+        {
+          "type": "object",
+          "required": [
+            "job_id", "state",
+            "stdout_log_path", "stderr_log_path",
+            "waited_ms", "elapsed_ms"
+          ],
+          "properties": {
+            "type": { "const": "run" },
+            "job_id": { "type": "string" },
+            "state": {
+              "type": "string",
+              "enum": ["running", "exited", "killed", "failed", "unknown"]
+            },
+            "env_vars": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "KEY=VALUE strings with masked values replaced by ***."
+            },
+            "snapshot": { "$ref": "#/definitions/Snapshot" },
+            "stdout_log_path": { "type": "string" },
+            "stderr_log_path": { "type": "string" },
+            "waited_ms": { "type": "integer", "minimum": 0 },
+            "elapsed_ms": { "type": "integer", "minimum": 0 }
+          }
+        }
+      ]
+    },
+    "StatusResponse": {
+      "allOf": [
+        { "$ref": "#/definitions/Envelope" },
+        {
+          "type": "object",
+          "required": ["job_id", "state", "started_at"],
+          "properties": {
+            "type": { "const": "status" },
+            "job_id": { "type": "string" },
+            "state": {
+              "type": "string",
+              "enum": ["running", "exited", "killed", "failed", "unknown"]
+            },
+            "exit_code": { "type": ["integer", "null"] },
+            "started_at": { "type": "string", "format": "date-time" },
+            "finished_at": { "type": ["string", "null"], "format": "date-time" }
+          }
+        }
+      ]
+    },
+    "TailResponse": {
+      "allOf": [
+        { "$ref": "#/definitions/Envelope" },
+        {
+          "type": "object",
+          "required": [
+            "job_id", "stdout_tail", "stderr_tail", "truncated", "encoding",
+            "stdout_log_path", "stderr_log_path",
+            "stdout_observed_bytes", "stderr_observed_bytes",
+            "stdout_included_bytes", "stderr_included_bytes"
+          ],
+          "properties": {
+            "type": { "const": "tail" },
+            "job_id": { "type": "string" },
+            "stdout_tail": { "type": "string" },
+            "stderr_tail": { "type": "string" },
+            "truncated": { "type": "boolean" },
+            "encoding": { "type": "string" },
+            "stdout_log_path": { "type": "string" },
+            "stderr_log_path": { "type": "string" },
+            "stdout_observed_bytes": { "type": "integer", "minimum": 0 },
+            "stderr_observed_bytes": { "type": "integer", "minimum": 0 },
+            "stdout_included_bytes": { "type": "integer", "minimum": 0 },
+            "stderr_included_bytes": { "type": "integer", "minimum": 0 }
+          }
+        }
+      ]
+    },
+    "WaitResponse": {
+      "allOf": [
+        { "$ref": "#/definitions/Envelope" },
+        {
+          "type": "object",
+          "required": ["job_id", "state"],
+          "properties": {
+            "type": { "const": "wait" },
+            "job_id": { "type": "string" },
+            "state": {
+              "type": "string",
+              "enum": ["running", "exited", "killed", "failed", "unknown"]
+            },
+            "exit_code": { "type": ["integer", "null"] }
+          }
+        }
+      ]
+    },
+    "KillResponse": {
+      "allOf": [
+        { "$ref": "#/definitions/Envelope" },
+        {
+          "type": "object",
+          "required": ["job_id", "signal"],
+          "properties": {
+            "type": { "const": "kill" },
+            "job_id": { "type": "string" },
+            "signal": { "type": "string" }
+          }
+        }
+      ]
+    },
+    "JobSummary": {
+      "type": "object",
+      "required": ["job_id", "state", "started_at"],
+      "properties": {
+        "job_id": { "type": "string" },
+        "state": {
+          "type": "string",
+          "enum": ["running", "exited", "killed", "failed", "unknown"]
+        },
+        "exit_code": { "type": ["integer", "null"] },
+        "started_at": { "type": "string", "format": "date-time" },
+        "finished_at": { "type": ["string", "null"], "format": "date-time" },
+        "updated_at": { "type": ["string", "null"], "format": "date-time" }
+      }
+    },
+    "ListResponse": {
+      "allOf": [
+        { "$ref": "#/definitions/Envelope" },
+        {
+          "type": "object",
+          "required": ["root", "jobs", "truncated", "skipped"],
+          "properties": {
+            "type": { "const": "list" },
+            "root": { "type": "string" },
+            "jobs": {
+              "type": "array",
+              "items": { "$ref": "#/definitions/JobSummary" }
+            },
+            "truncated": { "type": "boolean" },
+            "skipped": { "type": "integer", "minimum": 0 }
+          }
+        }
+      ]
+    },
+    "SchemaResponse": {
+      "allOf": [
+        { "$ref": "#/definitions/Envelope" },
+        {
+          "type": "object",
+          "required": ["schema_format", "schema", "generated_at"],
+          "properties": {
+            "type": { "const": "schema" },
+            "schema_format": {
+              "type": "string",
+              "const": "json-schema-draft-07",
+              "description": "The JSON Schema specification version."
+            },
+            "schema": {
+              "type": "object",
+              "description": "The full JSON Schema document."
+            },
+            "generated_at": {
+              "type": "string",
+              "description": "RFC 3339 timestamp of when the schema was last updated."
+            }
+          }
+        }
+      ]
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/definitions/ErrorResponse" },
+    { "$ref": "#/definitions/RunResponse" },
+    { "$ref": "#/definitions/StatusResponse" },
+    { "$ref": "#/definitions/TailResponse" },
+    { "$ref": "#/definitions/WaitResponse" },
+    { "$ref": "#/definitions/KillResponse" },
+    { "$ref": "#/definitions/ListResponse" },
+    { "$ref": "#/definitions/SchemaResponse" }
+  ]
+}

@@ -13,7 +13,7 @@ fn binary() -> PathBuf {
     // Prefer the current exe's directory (works inside cargo test).
     let mut p = std::env::current_exe().expect("current exe");
     p.pop(); // remove test binary name
-    // In release mode there's no "deps" subdirectory; try both.
+             // In release mode there's no "deps" subdirectory; try both.
     if p.ends_with("deps") {
         p.pop();
     }
@@ -1551,5 +1551,299 @@ fn run_without_wait_omits_wait_fields() {
     assert!(
         v.get("exit_code").is_none(),
         "exit_code must NOT be present when --wait is not used; got: {v}"
+    );
+}
+
+// ── filter-list-by-cwd: cwd filtering ─────────────────────────────────────────
+
+/// Helper that runs the binary with a custom working directory AND a custom root.
+fn run_cmd_with_root_and_cwd(
+    args: &[&str],
+    root: Option<&str>,
+    cwd: Option<&std::path::Path>,
+) -> (serde_json::Value, std::process::ExitStatus) {
+    let bin = binary();
+    let mut cmd = std::process::Command::new(&bin);
+    cmd.args(args);
+    if let Some(r) = root {
+        cmd.env("AGENT_EXEC_ROOT", r);
+    }
+    if let Some(d) = cwd {
+        cmd.current_dir(d);
+    }
+    let output = cmd.output().expect("run binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let value = if stdout.trim().is_empty() {
+        serde_json::json!({})
+    } else {
+        serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+            panic!(
+                "stdout is not valid JSON: {e}\nstdout: {stdout}\nstderr: {stderr}\nargs: {args:?}"
+            )
+        })
+    };
+    (value, output.status)
+}
+
+/// Task 4.1: default `list` filters by the caller's current working directory.
+///
+/// - Job A is created from dir_a.
+/// - Job B is created from dir_b.
+/// - `list` called from dir_a shows Job A but NOT Job B.
+/// - `list` called from dir_b shows Job B but NOT Job A.
+#[test]
+fn list_default_filters_by_caller_cwd() {
+    let h = TestHarness::new();
+
+    // Create two separate directories to act as distinct cwds.
+    let dir_a = tempfile::tempdir().expect("create dir_a");
+    let dir_b = tempfile::tempdir().expect("create dir_b");
+
+    // Run job A from dir_a.
+    let (va, _) = run_cmd_with_root_and_cwd(
+        &["run", "--snapshot-after", "0", "echo", "job_from_a"],
+        Some(h.root()),
+        Some(dir_a.path()),
+    );
+    let job_a_id = va["job_id"]
+        .as_str()
+        .expect("job_id missing for A")
+        .to_string();
+
+    // Small sleep to ensure distinct timestamps.
+    std::thread::sleep(std::time::Duration::from_millis(10));
+
+    // Run job B from dir_b.
+    let (vb, _) = run_cmd_with_root_and_cwd(
+        &["run", "--snapshot-after", "0", "echo", "job_from_b"],
+        Some(h.root()),
+        Some(dir_b.path()),
+    );
+    let job_b_id = vb["job_id"]
+        .as_str()
+        .expect("job_id missing for B")
+        .to_string();
+
+    // List from dir_a — should see A, not B.
+    let (list_a, _) = run_cmd_with_root_and_cwd(&["list"], Some(h.root()), Some(dir_a.path()));
+    assert_envelope(&list_a, "list", true);
+    let jobs_a = list_a["jobs"].as_array().expect("jobs missing");
+    let has_a = jobs_a
+        .iter()
+        .any(|j| j["job_id"].as_str() == Some(&job_a_id));
+    let has_b_in_a = jobs_a
+        .iter()
+        .any(|j| j["job_id"].as_str() == Some(&job_b_id));
+    assert!(
+        has_a,
+        "Job A should appear when listing from dir_a; list: {list_a}"
+    );
+    assert!(
+        !has_b_in_a,
+        "Job B should NOT appear when listing from dir_a; list: {list_a}"
+    );
+
+    // List from dir_b — should see B, not A.
+    let (list_b, _) = run_cmd_with_root_and_cwd(&["list"], Some(h.root()), Some(dir_b.path()));
+    assert_envelope(&list_b, "list", true);
+    let jobs_b = list_b["jobs"].as_array().expect("jobs missing");
+    let has_b = jobs_b
+        .iter()
+        .any(|j| j["job_id"].as_str() == Some(&job_b_id));
+    let has_a_in_b = jobs_b
+        .iter()
+        .any(|j| j["job_id"].as_str() == Some(&job_a_id));
+    assert!(
+        has_b,
+        "Job B should appear when listing from dir_b; list: {list_b}"
+    );
+    assert!(
+        !has_a_in_b,
+        "Job A should NOT appear when listing from dir_b; list: {list_b}"
+    );
+}
+
+/// Task 4.2a: `list --cwd <PATH>` shows only jobs created from that directory.
+#[test]
+fn list_cwd_flag_filters_by_specified_directory() {
+    let h = TestHarness::new();
+
+    let dir_a = tempfile::tempdir().expect("create dir_a");
+    let dir_b = tempfile::tempdir().expect("create dir_b");
+
+    // Run job A from dir_a, job B from dir_b.
+    let (va, _) = run_cmd_with_root_and_cwd(
+        &["run", "--snapshot-after", "0", "echo", "job_a"],
+        Some(h.root()),
+        Some(dir_a.path()),
+    );
+    let job_a_id = va["job_id"].as_str().expect("job_id missing").to_string();
+
+    std::thread::sleep(std::time::Duration::from_millis(10));
+
+    let (vb, _) = run_cmd_with_root_and_cwd(
+        &["run", "--snapshot-after", "0", "echo", "job_b"],
+        Some(h.root()),
+        Some(dir_b.path()),
+    );
+    let job_b_id = vb["job_id"].as_str().expect("job_id missing").to_string();
+
+    // list --cwd dir_a (from any working directory) should return only job A.
+    let dir_a_str = dir_a.path().to_str().expect("dir_a path is utf-8");
+    let (list_v, _) =
+        run_cmd_with_root_and_cwd(&["list", "--cwd", dir_a_str], Some(h.root()), None);
+    assert_envelope(&list_v, "list", true);
+    let jobs = list_v["jobs"].as_array().expect("jobs missing");
+    let has_a = jobs.iter().any(|j| j["job_id"].as_str() == Some(&job_a_id));
+    let has_b = jobs.iter().any(|j| j["job_id"].as_str() == Some(&job_b_id));
+    assert!(
+        has_a,
+        "Job A should appear with --cwd dir_a; list: {list_v}"
+    );
+    assert!(
+        !has_b,
+        "Job B should NOT appear with --cwd dir_a; list: {list_v}"
+    );
+}
+
+/// Task 4.2b: `list --all` disables cwd filtering and returns all jobs.
+#[test]
+fn list_all_flag_disables_cwd_filter() {
+    let h = TestHarness::new();
+
+    let dir_a = tempfile::tempdir().expect("create dir_a");
+    let dir_b = tempfile::tempdir().expect("create dir_b");
+
+    // Run jobs from two different directories.
+    let (va, _) = run_cmd_with_root_and_cwd(
+        &["run", "--snapshot-after", "0", "echo", "job_a"],
+        Some(h.root()),
+        Some(dir_a.path()),
+    );
+    let job_a_id = va["job_id"].as_str().expect("job_id missing").to_string();
+
+    std::thread::sleep(std::time::Duration::from_millis(10));
+
+    let (vb, _) = run_cmd_with_root_and_cwd(
+        &["run", "--snapshot-after", "0", "echo", "job_b"],
+        Some(h.root()),
+        Some(dir_b.path()),
+    );
+    let job_b_id = vb["job_id"].as_str().expect("job_id missing").to_string();
+
+    // list --all from dir_a should return both A and B.
+    let (list_v, _) =
+        run_cmd_with_root_and_cwd(&["list", "--all"], Some(h.root()), Some(dir_a.path()));
+    assert_envelope(&list_v, "list", true);
+    let jobs = list_v["jobs"].as_array().expect("jobs missing");
+    let has_a = jobs.iter().any(|j| j["job_id"].as_str() == Some(&job_a_id));
+    let has_b = jobs.iter().any(|j| j["job_id"].as_str() == Some(&job_b_id));
+    assert!(has_a, "Job A should appear with --all; list: {list_v}");
+    assert!(has_b, "Job B should appear with --all; list: {list_v}");
+}
+
+/// Task 4.3: `list --all --cwd` is a usage error (exit code 2, clap rejects it).
+#[test]
+fn list_all_and_cwd_conflict_exits_with_code_2() {
+    let h = TestHarness::new();
+    let bin = binary();
+
+    let output = std::process::Command::new(&bin)
+        .env("AGENT_EXEC_ROOT", h.root())
+        .args(["list", "--all", "--cwd", "/tmp"])
+        .output()
+        .expect("run binary");
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "expected exit code 2 when --all and --cwd are both supplied; \
+         stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+// ── schema ─────────────────────────────────────────────────────────────────────
+
+/// Task 3.1/3.2: `schema` command returns valid JSON envelope with type="schema".
+#[test]
+fn schema_returns_json_envelope() {
+    // schema does not need a root/harness; run directly.
+    let v = run_cmd_with_root(&["schema"], None);
+    assert_envelope(&v, "schema", true);
+}
+
+/// Task 3.2: `schema` response includes schema_format field set to "json-schema-draft-07".
+#[test]
+fn schema_response_has_schema_format() {
+    let v = run_cmd_with_root(&["schema"], None);
+    assert_envelope(&v, "schema", true);
+
+    let schema_format = v["schema_format"]
+        .as_str()
+        .expect("schema_format missing from schema response");
+    assert_eq!(
+        schema_format, "json-schema-draft-07",
+        "schema_format must be 'json-schema-draft-07'; got: {schema_format}"
+    );
+}
+
+/// Task 3.2: `schema` response includes a non-empty `schema` object field.
+#[test]
+fn schema_response_has_schema_object() {
+    let v = run_cmd_with_root(&["schema"], None);
+    assert_envelope(&v, "schema", true);
+
+    let schema = v
+        .get("schema")
+        .expect("schema field missing from schema response");
+    assert!(
+        schema.is_object(),
+        "schema field must be a JSON object; got: {schema}"
+    );
+    assert!(
+        !schema.as_object().unwrap().is_empty(),
+        "schema field must not be empty; got: {schema}"
+    );
+}
+
+/// Task 3.2: `schema` response includes `generated_at` field.
+#[test]
+fn schema_response_has_generated_at() {
+    let v = run_cmd_with_root(&["schema"], None);
+    assert_envelope(&v, "schema", true);
+
+    let generated_at = v["generated_at"]
+        .as_str()
+        .expect("generated_at missing from schema response");
+    assert!(
+        !generated_at.is_empty(),
+        "generated_at must not be empty; got: {generated_at:?}"
+    );
+}
+
+/// `schema` stdout must be a single JSON object only (no extra output).
+#[test]
+fn schema_stdout_is_single_json_object() {
+    let bin = binary();
+    let output = std::process::Command::new(&bin)
+        .args(["schema"])
+        .output()
+        .expect("run binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(
+        lines.len(),
+        1,
+        "schema stdout should contain exactly 1 line (JSON), got {}: {:?}",
+        lines.len(),
+        lines
+    );
+    let parsed: serde_json::Value =
+        serde_json::from_str(lines[0]).expect("schema stdout line is not valid JSON");
+    assert!(
+        parsed.is_object(),
+        "schema stdout JSON is not an object: {parsed}"
     );
 }
