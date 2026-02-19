@@ -128,3 +128,19 @@ MUST: 算出規則は既存要件に従い、`observed_bytes` は取得時点の
 Given 同一ジョブに対して `run` の `snapshot` と `tail` を取得する
 When 取得時点のログファイルサイズが観測される
 Then `run` と `tail` の `*_observed_bytes` と `*_included_bytes` は同一の規則で算出される
+
+### Requirement: run の同期待機オプション
+
+`run` は `--wait` が指定された場合、ジョブが終端状態 (`exited|killed|failed`) になるまで待機しなければならない（MUST）。`--wait` 指定時、`snapshot-after` の待機上限 (10,000ms) を適用してはならない（MUST）。
+`--wait` 指定時の `run` JSON は `exit_code`（存在する場合）と `finished_at` を含めなければならない（MUST）。
+`--wait` 指定時の `run` JSON は終了時点のログ末尾を示す `final_snapshot` を含めなければならない（MUST）。`final_snapshot` の構造と制約は既存の `snapshot` と同一でなければならない（MUST）。
+`--wait` 指定時の `waited_ms` は終端状態までの待機時間を示さなければならない（MUST）。
+
+#### Scenario: --wait で終了まで待機する
+
+Given `agent-exec run --wait -- sh -c "echo hi"` を実行する
+When `run` の JSON が返る
+Then `state` は `exited` である
+And `final_snapshot.stdout_tail` に `hi` が含まれる
+And `finished_at` が含まれる
+

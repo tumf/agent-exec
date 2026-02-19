@@ -1369,6 +1369,191 @@ fn snapshot_after_waits_until_deadline_despite_early_output() {
     );
 }
 
+// ── run --wait ─────────────────────────────────────────────────────────────────
+
+/// run --wait waits for the job to complete and returns terminal state info.
+#[test]
+fn run_wait_returns_terminal_state() {
+    let h = TestHarness::new();
+    // Use --snapshot-after 0 to skip the initial snapshot delay.
+    // --wait causes run to block until the process finishes.
+    let v = h.run(&[
+        "run",
+        "--snapshot-after",
+        "0",
+        "--wait",
+        "echo",
+        "run_wait_test",
+    ]);
+    assert_envelope(&v, "run", true);
+
+    // state must be a terminal state (exited, killed, or failed).
+    let state = v["state"].as_str().unwrap_or("");
+    assert!(
+        state == "exited" || state == "killed" || state == "failed",
+        "state must be terminal when --wait is used; got: {state:?}"
+    );
+
+    // finished_at must be present and non-empty.
+    let finished_at = v["finished_at"].as_str().unwrap_or("");
+    assert!(
+        !finished_at.is_empty(),
+        "finished_at must be present in run --wait response; got: {v}"
+    );
+
+    // final_snapshot must be present with correct structure.
+    let final_snapshot = v
+        .get("final_snapshot")
+        .expect("final_snapshot must be present in run --wait response");
+    assert_eq!(
+        final_snapshot["encoding"].as_str().unwrap_or(""),
+        "utf-8-lossy",
+        "final_snapshot.encoding must be 'utf-8-lossy'"
+    );
+    assert!(
+        final_snapshot.get("stdout_tail").is_some(),
+        "final_snapshot.stdout_tail must be present"
+    );
+    assert!(
+        final_snapshot.get("stderr_tail").is_some(),
+        "final_snapshot.stderr_tail must be present"
+    );
+
+    // stdout_tail should contain the echo output.
+    let stdout_tail = final_snapshot["stdout_tail"].as_str().unwrap_or("");
+    assert!(
+        stdout_tail.contains("run_wait_test"),
+        "final_snapshot.stdout_tail should contain 'run_wait_test'; got: {stdout_tail:?}"
+    );
+}
+
+/// run --wait with a non-zero exit code returns the exit code.
+#[test]
+fn run_wait_returns_exit_code() {
+    let h = TestHarness::new();
+    let v = h.run(&[
+        "run",
+        "--snapshot-after",
+        "0",
+        "--wait",
+        "sh",
+        "-c",
+        "exit 42",
+    ]);
+    assert_envelope(&v, "run", true);
+
+    // state must be terminal.
+    let state = v["state"].as_str().unwrap_or("");
+    assert!(
+        state == "exited" || state == "killed" || state == "failed",
+        "state must be terminal; got: {state:?}"
+    );
+
+    // exit_code must be present.
+    assert!(
+        v.get("exit_code").is_some(),
+        "exit_code must be present in run --wait response; got: {v}"
+    );
+    let exit_code = v["exit_code"].as_i64().unwrap_or(-999);
+    assert_eq!(exit_code, 42, "exit_code must be 42; got: {exit_code}");
+
+    // finished_at must be present.
+    assert!(
+        v["finished_at"].as_str().is_some_and(|s| !s.is_empty()),
+        "finished_at must be present; got: {v}"
+    );
+
+    // final_snapshot must be present.
+    assert!(
+        v.get("final_snapshot").is_some(),
+        "final_snapshot must be present; got: {v}"
+    );
+}
+
+/// run --wait returns waited_ms that reflects the actual wait time until terminal state.
+/// This verifies Acceptance #1: waited_ms must include the --wait phase duration.
+#[test]
+fn run_wait_waited_ms_reflects_actual_wait_time() {
+    let h = TestHarness::new();
+    // Use a short sleep (100ms) so the job definitely takes some time.
+    // --snapshot-after 0 ensures snapshot phase contributes 0ms; all waited_ms comes from --wait.
+    let v = h.run(&[
+        "run",
+        "--snapshot-after",
+        "0",
+        "--wait",
+        "sh",
+        "-c",
+        "sleep 0.1",
+    ]);
+    assert_envelope(&v, "run", true);
+
+    // waited_ms must be > 0: the --wait phase must be counted.
+    let waited_ms = v["waited_ms"]
+        .as_u64()
+        .expect("waited_ms missing from run --wait response");
+    assert!(
+        waited_ms > 0,
+        "waited_ms must be > 0 when --wait is used (job takes ~100ms); got: {waited_ms}"
+    );
+}
+
+/// run --wait does not apply the snapshot_after 10,000ms clamp.
+/// This verifies Acceptance #2: --wait skips the snapshot_after phase entirely,
+/// so a large --snapshot-after value does not slow down the response.
+#[test]
+fn run_wait_skips_snapshot_after_clamp() {
+    let h = TestHarness::new();
+    // Pass a large snapshot-after value that would normally be clamped to 10,000ms.
+    // With --wait, the snapshot_after phase should be skipped entirely.
+    // The job completes quickly (echo), so waited_ms should be small.
+    let v = h.run(&[
+        "run",
+        "--snapshot-after",
+        "20000", // Would be clamped to 10,000ms without --wait
+        "--wait",
+        "echo",
+        "skip_clamp_test",
+    ]);
+    assert_envelope(&v, "run", true);
+
+    // With --wait, snapshot_after is skipped, so the command should complete quickly.
+    // waited_ms should be far less than 10,000ms (the clamp limit) or 20,000ms (unclamped).
+    let waited_ms = v["waited_ms"].as_u64().expect("waited_ms missing");
+    assert!(
+        waited_ms < 5_000,
+        "waited_ms ({waited_ms}) must be < 5,000ms: --wait should skip snapshot_after delay"
+    );
+
+    // final_snapshot should still be present (from the --wait phase).
+    assert!(
+        v.get("final_snapshot").is_some(),
+        "final_snapshot must be present in run --wait response; got: {v}"
+    );
+}
+
+/// run without --wait does not return finished_at or final_snapshot.
+#[test]
+fn run_without_wait_omits_wait_fields() {
+    let h = TestHarness::new();
+    let v = h.run(&["run", "--snapshot-after", "0", "echo", "no_wait"]);
+    assert_envelope(&v, "run", true);
+
+    // Without --wait, these fields must be absent.
+    assert!(
+        v.get("finished_at").is_none(),
+        "finished_at must NOT be present when --wait is not used; got: {v}"
+    );
+    assert!(
+        v.get("final_snapshot").is_none(),
+        "final_snapshot must NOT be present when --wait is not used; got: {v}"
+    );
+    assert!(
+        v.get("exit_code").is_none(),
+        "exit_code must NOT be present when --wait is not used; got: {v}"
+    );
+}
+
 // ── filter-list-by-cwd: cwd filtering ─────────────────────────────────────────
 
 /// Helper that runs the binary with a custom working directory AND a custom root.
