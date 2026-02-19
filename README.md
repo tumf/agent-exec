@@ -17,26 +17,32 @@ cargo install --path .
 
 ## Quick Start
 
-### Short-lived job (`run --wait`)
+### Short-lived job (`run` → `wait` → `tail`)
 
-Run a command and wait for it to finish in one step:
+Run a command, wait for it to finish, then read its output:
 
 ```bash
-agent-exec run --wait echo "hello world"
+# 1. Start the job (returns immediately with a job_id)
+JOB=$(agent-exec run echo "hello world" | jq -r .job_id)
+
+# 2. Wait for completion
+agent-exec wait "$JOB"
+
+# 3. Read output
+agent-exec tail "$JOB"
 ```
 
-Example output:
+Example output of `tail`:
 
 ```json
 {
   "schema_version": "0.1",
   "ok": true,
-  "type": "run",
+  "type": "tail",
   "job_id": "01J...",
-  "state": "exited",
-  "exit_code": 0,
   "stdout_tail": "hello world",
-  "stderr_tail": ""
+  "stderr_tail": "",
+  "truncated": false
 }
 ```
 
