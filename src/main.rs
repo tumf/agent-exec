@@ -81,6 +81,15 @@ enum Command {
         #[arg(long, default_value = "0")]
         progress_every: u64,
 
+        /// Wait for the job to reach a terminal state before returning.
+        /// When set, the response includes exit_code, finished_at, and final_snapshot.
+        #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue)]
+        wait: bool,
+
+        /// Poll interval in milliseconds when --wait is used.
+        #[arg(long, default_value = "200")]
+        wait_poll_ms: u64,
+
         /// Command and arguments to run.
         #[arg(required = true, trailing_var_arg = true)]
         command: Vec<String>,
@@ -162,6 +171,14 @@ enum Command {
         /// Filter jobs by state: running|exited|killed|failed|unknown.
         #[arg(long, value_parser = ["running", "exited", "killed", "failed", "unknown"])]
         state: Option<String>,
+
+        /// Filter jobs by working directory (conflicts with --all).
+        #[arg(long, conflicts_with = "all")]
+        cwd: Option<String>,
+
+        /// Show all jobs regardless of working directory (conflicts with --cwd).
+        #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue, conflicts_with = "cwd")]
+        all: bool,
     },
 
     /// [Internal] Supervise a child process — not for direct use.
@@ -264,6 +281,8 @@ fn run(cli: Cli) -> Result<()> {
             mask,
             log,
             progress_every,
+            wait,
+            wait_poll_ms,
             command,
         } => {
             // --inherit-env and --no-inherit-env are mutually exclusive (enforced by clap).
@@ -285,6 +304,8 @@ fn run(cli: Cli) -> Result<()> {
                 mask,
                 log: log.as_deref(),
                 progress_every_ms: progress_every,
+                wait,
+                wait_poll_ms,
             })?;
         }
 
@@ -339,11 +360,19 @@ fn run(cli: Cli) -> Result<()> {
             agent_exec::schema_cmd::execute(agent_exec::schema_cmd::SchemaOpts)?;
         }
 
-        Command::List { root, limit, state } => {
+        Command::List {
+            root,
+            limit,
+            state,
+            cwd,
+            all,
+        } => {
             agent_exec::list::execute(agent_exec::list::ListOpts {
                 root: root.as_deref(),
                 limit,
                 state: state.as_deref(),
+                cwd: cwd.as_deref(),
+                all,
             })?;
         }
 

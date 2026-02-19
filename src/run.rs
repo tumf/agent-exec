@@ -49,6 +49,11 @@ pub struct RunOpts<'a> {
     pub log: Option<&'a str>,
     /// Interval (ms) for state.json updated_at refresh; 0 = disabled.
     pub progress_every_ms: u64,
+    /// If true, wait for the job to reach a terminal state before returning.
+    /// The response will include exit_code, finished_at, and final_snapshot.
+    pub wait: bool,
+    /// Poll interval in milliseconds when `wait` is true.
+    pub wait_poll_ms: u64,
 }
 
 impl<'a> Default for RunOpts<'a> {
@@ -68,6 +73,8 @@ impl<'a> Default for RunOpts<'a> {
             mask: vec![],
             log: None,
             progress_every_ms: 0,
+            wait: false,
+            wait_poll_ms: 200,
         }
     }
 }
@@ -100,6 +107,11 @@ pub fn execute(opts: RunOpts) -> Result<()> {
     // Apply masking: replace values of masked keys with "***" in env_vars for metadata.
     let masked_env_vars = mask_env_vars(&opts.env_vars, &opts.mask);
 
+    // Resolve the effective working directory for this job.
+    // If --cwd was specified, use that path; otherwise use the current process's working directory.
+    // Canonicalize the path for consistent comparison; fall back to absolute path on failure.
+    let effective_cwd = resolve_effective_cwd(opts.cwd);
+
     let meta = JobMeta {
         job: JobMetaJob { id: job_id.clone() },
         schema_version: crate::schema::SCHEMA_VERSION.to_string(),
@@ -109,6 +121,7 @@ pub fn execute(opts: RunOpts) -> Result<()> {
         env_keys,
         env_vars: masked_env_vars.clone(),
         mask: opts.mask.clone(),
+        cwd: Some(effective_cwd),
     };
 
     let job_dir = JobDir::create(&root, &job_id, &meta)?;
@@ -241,15 +254,26 @@ pub fn execute(opts: RunOpts) -> Result<()> {
     let stdout_log_path = job_dir.stdout_path().display().to_string();
     let stderr_log_path = job_dir.stderr_path().display().to_string();
 
-    // Clamp snapshot_after to MAX_SNAPSHOT_AFTER_MS.
-    let effective_snapshot_after = opts.snapshot_after.min(MAX_SNAPSHOT_AFTER_MS);
+    // Clamp snapshot_after to MAX_SNAPSHOT_AFTER_MS, but only when --wait is NOT set.
+    // When --wait is set, we skip the snapshot_after phase entirely (the final_snapshot
+    // from the --wait phase replaces it), so the clamp is irrelevant.
+    let effective_snapshot_after = if opts.wait {
+        // Skip the snapshot_after wait when --wait is active; the terminal-state
+        // poll below will produce the definitive final_snapshot.
+        0
+    } else {
+        opts.snapshot_after.min(MAX_SNAPSHOT_AFTER_MS)
+    };
+
+    // Start a single wait_start timer that spans both the snapshot_after phase
+    // and the optional --wait phase so waited_ms reflects total wait time.
+    let wait_start = std::time::Instant::now();
 
     // Optionally wait for snapshot and measure waited_ms.
     // Uses a polling loop so we can exit early when output is available
     // or the job has finished, rather than always sleeping the full duration.
-    let (snapshot, waited_ms) = if effective_snapshot_after > 0 {
+    let snapshot = if effective_snapshot_after > 0 {
         debug!(ms = effective_snapshot_after, "polling for snapshot");
-        let wait_start = std::time::Instant::now();
         let deadline = wait_start + std::time::Duration::from_millis(effective_snapshot_after);
         // Poll interval: 15ms gives good responsiveness without excessive CPU.
         let poll_interval = std::time::Duration::from_millis(15);
@@ -270,12 +294,36 @@ pub fn execute(opts: RunOpts) -> Result<()> {
                 break;
             }
         }
-        let waited_ms = wait_start.elapsed().as_millis() as u64;
         let snap = build_snapshot(&job_dir, opts.tail_lines, opts.max_bytes);
-        (Some(snap), waited_ms)
+        Some(snap)
     } else {
-        (None, 0u64)
+        None
     };
+
+    // If --wait is set, wait for the job to reach a terminal state.
+    // Unlike snapshot_after, there is no upper bound on wait time.
+    // waited_ms will accumulate the full time spent (snapshot_after + wait phases).
+    let (final_state, exit_code_opt, finished_at_opt, final_snapshot_opt) = if opts.wait {
+        debug!("--wait: polling for terminal state");
+        let poll = std::time::Duration::from_millis(opts.wait_poll_ms.max(1));
+        loop {
+            std::thread::sleep(poll);
+            if let Ok(st) = job_dir.read_state()
+                && *st.status() != JobStatus::Running
+            {
+                let snap = build_snapshot(&job_dir, opts.tail_lines, opts.max_bytes);
+                let ec = st.exit_code();
+                let fa = st.finished_at.clone();
+                let state_str = st.status().as_str().to_string();
+                break (state_str, ec, fa, Some(snap));
+            }
+        }
+    } else {
+        (JobStatus::Running.as_str().to_string(), None, None, None)
+    };
+
+    // waited_ms reflects the total time spent waiting (snapshot_after + --wait phases).
+    let waited_ms = wait_start.elapsed().as_millis() as u64;
 
     let elapsed_ms = elapsed_start.elapsed().as_millis() as u64;
 
@@ -283,7 +331,7 @@ pub fn execute(opts: RunOpts) -> Result<()> {
         "run",
         RunData {
             job_id,
-            state: JobStatus::Running.as_str().to_string(),
+            state: final_state,
             // Include masked env_vars in the JSON response so callers can inspect
             // which variables were set (with secret values replaced by "***").
             env_vars: masked_env_vars,
@@ -292,6 +340,9 @@ pub fn execute(opts: RunOpts) -> Result<()> {
             stderr_log_path,
             waited_ms,
             elapsed_ms,
+            exit_code: exit_code_opt,
+            finished_at: finished_at_opt,
+            final_snapshot: final_snapshot_opt,
         },
     );
     response.print();
@@ -339,6 +390,34 @@ pub struct SuperviseOpts<'a> {
     pub inherit_env: bool,
     /// Interval (ms) for state.json updated_at refresh; 0 = disabled.
     pub progress_every_ms: u64,
+}
+
+/// Resolve the effective working directory for a job.
+///
+/// If `cwd_override` is `Some`, use that path as the base. Otherwise use the
+/// current process working directory. In either case, attempt to canonicalize
+/// the path for consistent comparison; on failure, fall back to the absolute
+/// path representation (avoids symlink / permission issues on some systems).
+pub fn resolve_effective_cwd(cwd_override: Option<&str>) -> String {
+    let base = match cwd_override {
+        Some(p) => std::path::PathBuf::from(p),
+        None => std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+    };
+
+    // Prefer canonicalized (resolves symlinks); fall back to making the path absolute.
+    match base.canonicalize() {
+        Ok(canonical) => canonical.display().to_string(),
+        Err(_) => {
+            // If base is already absolute, use as-is; otherwise prepend cwd.
+            if base.is_absolute() {
+                base.display().to_string()
+            } else {
+                // Best-effort: join with cwd, ignore errors.
+                let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                cwd.join(base).display().to_string()
+            }
+        }
+    }
 }
 
 /// Mask the values of specified keys in a list of KEY=VALUE strings.

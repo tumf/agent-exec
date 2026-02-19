@@ -1,6 +1,6 @@
 # agent-exec-run Spec Delta (add-run-wait)
 
-## MODIFIED Requirements
+## ADDED Requirements
 ### Requirement: run の同期待機オプション
 
 `run` は `--wait` が指定された場合、ジョブが終端状態 (`exited|killed|failed`) になるまで待機しなければならない（MUST）。`--wait` 指定時、`snapshot-after` の待機上限 (10,000ms) を適用してはならない（MUST）。

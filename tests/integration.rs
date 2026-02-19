@@ -13,7 +13,7 @@ fn binary() -> PathBuf {
     // Prefer the current exe's directory (works inside cargo test).
     let mut p = std::env::current_exe().expect("current exe");
     p.pop(); // remove test binary name
-    // In release mode there's no "deps" subdirectory; try both.
+             // In release mode there's no "deps" subdirectory; try both.
     if p.ends_with("deps") {
         p.pop();
     }
@@ -1366,6 +1366,401 @@ fn snapshot_after_waits_until_deadline_despite_early_output() {
     assert!(
         stdout_tail.contains("hello"),
         "snapshot.stdout_tail should contain 'hello'; got: {stdout_tail:?}"
+    );
+}
+
+// ── run --wait ─────────────────────────────────────────────────────────────────
+
+/// run --wait waits for the job to complete and returns terminal state info.
+#[test]
+fn run_wait_returns_terminal_state() {
+    let h = TestHarness::new();
+    // Use --snapshot-after 0 to skip the initial snapshot delay.
+    // --wait causes run to block until the process finishes.
+    let v = h.run(&[
+        "run",
+        "--snapshot-after",
+        "0",
+        "--wait",
+        "echo",
+        "run_wait_test",
+    ]);
+    assert_envelope(&v, "run", true);
+
+    // state must be a terminal state (exited, killed, or failed).
+    let state = v["state"].as_str().unwrap_or("");
+    assert!(
+        state == "exited" || state == "killed" || state == "failed",
+        "state must be terminal when --wait is used; got: {state:?}"
+    );
+
+    // finished_at must be present and non-empty.
+    let finished_at = v["finished_at"].as_str().unwrap_or("");
+    assert!(
+        !finished_at.is_empty(),
+        "finished_at must be present in run --wait response; got: {v}"
+    );
+
+    // final_snapshot must be present with correct structure.
+    let final_snapshot = v
+        .get("final_snapshot")
+        .expect("final_snapshot must be present in run --wait response");
+    assert_eq!(
+        final_snapshot["encoding"].as_str().unwrap_or(""),
+        "utf-8-lossy",
+        "final_snapshot.encoding must be 'utf-8-lossy'"
+    );
+    assert!(
+        final_snapshot.get("stdout_tail").is_some(),
+        "final_snapshot.stdout_tail must be present"
+    );
+    assert!(
+        final_snapshot.get("stderr_tail").is_some(),
+        "final_snapshot.stderr_tail must be present"
+    );
+
+    // stdout_tail should contain the echo output.
+    let stdout_tail = final_snapshot["stdout_tail"].as_str().unwrap_or("");
+    assert!(
+        stdout_tail.contains("run_wait_test"),
+        "final_snapshot.stdout_tail should contain 'run_wait_test'; got: {stdout_tail:?}"
+    );
+}
+
+/// run --wait with a non-zero exit code returns the exit code.
+#[test]
+fn run_wait_returns_exit_code() {
+    let h = TestHarness::new();
+    let v = h.run(&[
+        "run",
+        "--snapshot-after",
+        "0",
+        "--wait",
+        "sh",
+        "-c",
+        "exit 42",
+    ]);
+    assert_envelope(&v, "run", true);
+
+    // state must be terminal.
+    let state = v["state"].as_str().unwrap_or("");
+    assert!(
+        state == "exited" || state == "killed" || state == "failed",
+        "state must be terminal; got: {state:?}"
+    );
+
+    // exit_code must be present.
+    assert!(
+        v.get("exit_code").is_some(),
+        "exit_code must be present in run --wait response; got: {v}"
+    );
+    let exit_code = v["exit_code"].as_i64().unwrap_or(-999);
+    assert_eq!(exit_code, 42, "exit_code must be 42; got: {exit_code}");
+
+    // finished_at must be present.
+    assert!(
+        v["finished_at"].as_str().is_some_and(|s| !s.is_empty()),
+        "finished_at must be present; got: {v}"
+    );
+
+    // final_snapshot must be present.
+    assert!(
+        v.get("final_snapshot").is_some(),
+        "final_snapshot must be present; got: {v}"
+    );
+}
+
+/// run --wait returns waited_ms that reflects the actual wait time until terminal state.
+/// This verifies Acceptance #1: waited_ms must include the --wait phase duration.
+#[test]
+fn run_wait_waited_ms_reflects_actual_wait_time() {
+    let h = TestHarness::new();
+    // Use a short sleep (100ms) so the job definitely takes some time.
+    // --snapshot-after 0 ensures snapshot phase contributes 0ms; all waited_ms comes from --wait.
+    let v = h.run(&[
+        "run",
+        "--snapshot-after",
+        "0",
+        "--wait",
+        "sh",
+        "-c",
+        "sleep 0.1",
+    ]);
+    assert_envelope(&v, "run", true);
+
+    // waited_ms must be > 0: the --wait phase must be counted.
+    let waited_ms = v["waited_ms"]
+        .as_u64()
+        .expect("waited_ms missing from run --wait response");
+    assert!(
+        waited_ms > 0,
+        "waited_ms must be > 0 when --wait is used (job takes ~100ms); got: {waited_ms}"
+    );
+}
+
+/// run --wait does not apply the snapshot_after 10,000ms clamp.
+/// This verifies Acceptance #2: --wait skips the snapshot_after phase entirely,
+/// so a large --snapshot-after value does not slow down the response.
+#[test]
+fn run_wait_skips_snapshot_after_clamp() {
+    let h = TestHarness::new();
+    // Pass a large snapshot-after value that would normally be clamped to 10,000ms.
+    // With --wait, the snapshot_after phase should be skipped entirely.
+    // The job completes quickly (echo), so waited_ms should be small.
+    let v = h.run(&[
+        "run",
+        "--snapshot-after",
+        "20000", // Would be clamped to 10,000ms without --wait
+        "--wait",
+        "echo",
+        "skip_clamp_test",
+    ]);
+    assert_envelope(&v, "run", true);
+
+    // With --wait, snapshot_after is skipped, so the command should complete quickly.
+    // waited_ms should be far less than 10,000ms (the clamp limit) or 20,000ms (unclamped).
+    let waited_ms = v["waited_ms"].as_u64().expect("waited_ms missing");
+    assert!(
+        waited_ms < 5_000,
+        "waited_ms ({waited_ms}) must be < 5,000ms: --wait should skip snapshot_after delay"
+    );
+
+    // final_snapshot should still be present (from the --wait phase).
+    assert!(
+        v.get("final_snapshot").is_some(),
+        "final_snapshot must be present in run --wait response; got: {v}"
+    );
+}
+
+/// run without --wait does not return finished_at or final_snapshot.
+#[test]
+fn run_without_wait_omits_wait_fields() {
+    let h = TestHarness::new();
+    let v = h.run(&["run", "--snapshot-after", "0", "echo", "no_wait"]);
+    assert_envelope(&v, "run", true);
+
+    // Without --wait, these fields must be absent.
+    assert!(
+        v.get("finished_at").is_none(),
+        "finished_at must NOT be present when --wait is not used; got: {v}"
+    );
+    assert!(
+        v.get("final_snapshot").is_none(),
+        "final_snapshot must NOT be present when --wait is not used; got: {v}"
+    );
+    assert!(
+        v.get("exit_code").is_none(),
+        "exit_code must NOT be present when --wait is not used; got: {v}"
+    );
+}
+
+// ── filter-list-by-cwd: cwd filtering ─────────────────────────────────────────
+
+/// Helper that runs the binary with a custom working directory AND a custom root.
+fn run_cmd_with_root_and_cwd(
+    args: &[&str],
+    root: Option<&str>,
+    cwd: Option<&std::path::Path>,
+) -> (serde_json::Value, std::process::ExitStatus) {
+    let bin = binary();
+    let mut cmd = std::process::Command::new(&bin);
+    cmd.args(args);
+    if let Some(r) = root {
+        cmd.env("AGENT_EXEC_ROOT", r);
+    }
+    if let Some(d) = cwd {
+        cmd.current_dir(d);
+    }
+    let output = cmd.output().expect("run binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let value = if stdout.trim().is_empty() {
+        serde_json::json!({})
+    } else {
+        serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+            panic!(
+                "stdout is not valid JSON: {e}\nstdout: {stdout}\nstderr: {stderr}\nargs: {args:?}"
+            )
+        })
+    };
+    (value, output.status)
+}
+
+/// Task 4.1: default `list` filters by the caller's current working directory.
+///
+/// - Job A is created from dir_a.
+/// - Job B is created from dir_b.
+/// - `list` called from dir_a shows Job A but NOT Job B.
+/// - `list` called from dir_b shows Job B but NOT Job A.
+#[test]
+fn list_default_filters_by_caller_cwd() {
+    let h = TestHarness::new();
+
+    // Create two separate directories to act as distinct cwds.
+    let dir_a = tempfile::tempdir().expect("create dir_a");
+    let dir_b = tempfile::tempdir().expect("create dir_b");
+
+    // Run job A from dir_a.
+    let (va, _) = run_cmd_with_root_and_cwd(
+        &["run", "--snapshot-after", "0", "echo", "job_from_a"],
+        Some(h.root()),
+        Some(dir_a.path()),
+    );
+    let job_a_id = va["job_id"]
+        .as_str()
+        .expect("job_id missing for A")
+        .to_string();
+
+    // Small sleep to ensure distinct timestamps.
+    std::thread::sleep(std::time::Duration::from_millis(10));
+
+    // Run job B from dir_b.
+    let (vb, _) = run_cmd_with_root_and_cwd(
+        &["run", "--snapshot-after", "0", "echo", "job_from_b"],
+        Some(h.root()),
+        Some(dir_b.path()),
+    );
+    let job_b_id = vb["job_id"]
+        .as_str()
+        .expect("job_id missing for B")
+        .to_string();
+
+    // List from dir_a — should see A, not B.
+    let (list_a, _) = run_cmd_with_root_and_cwd(&["list"], Some(h.root()), Some(dir_a.path()));
+    assert_envelope(&list_a, "list", true);
+    let jobs_a = list_a["jobs"].as_array().expect("jobs missing");
+    let has_a = jobs_a
+        .iter()
+        .any(|j| j["job_id"].as_str() == Some(&job_a_id));
+    let has_b_in_a = jobs_a
+        .iter()
+        .any(|j| j["job_id"].as_str() == Some(&job_b_id));
+    assert!(
+        has_a,
+        "Job A should appear when listing from dir_a; list: {list_a}"
+    );
+    assert!(
+        !has_b_in_a,
+        "Job B should NOT appear when listing from dir_a; list: {list_a}"
+    );
+
+    // List from dir_b — should see B, not A.
+    let (list_b, _) = run_cmd_with_root_and_cwd(&["list"], Some(h.root()), Some(dir_b.path()));
+    assert_envelope(&list_b, "list", true);
+    let jobs_b = list_b["jobs"].as_array().expect("jobs missing");
+    let has_b = jobs_b
+        .iter()
+        .any(|j| j["job_id"].as_str() == Some(&job_b_id));
+    let has_a_in_b = jobs_b
+        .iter()
+        .any(|j| j["job_id"].as_str() == Some(&job_a_id));
+    assert!(
+        has_b,
+        "Job B should appear when listing from dir_b; list: {list_b}"
+    );
+    assert!(
+        !has_a_in_b,
+        "Job A should NOT appear when listing from dir_b; list: {list_b}"
+    );
+}
+
+/// Task 4.2a: `list --cwd <PATH>` shows only jobs created from that directory.
+#[test]
+fn list_cwd_flag_filters_by_specified_directory() {
+    let h = TestHarness::new();
+
+    let dir_a = tempfile::tempdir().expect("create dir_a");
+    let dir_b = tempfile::tempdir().expect("create dir_b");
+
+    // Run job A from dir_a, job B from dir_b.
+    let (va, _) = run_cmd_with_root_and_cwd(
+        &["run", "--snapshot-after", "0", "echo", "job_a"],
+        Some(h.root()),
+        Some(dir_a.path()),
+    );
+    let job_a_id = va["job_id"].as_str().expect("job_id missing").to_string();
+
+    std::thread::sleep(std::time::Duration::from_millis(10));
+
+    let (vb, _) = run_cmd_with_root_and_cwd(
+        &["run", "--snapshot-after", "0", "echo", "job_b"],
+        Some(h.root()),
+        Some(dir_b.path()),
+    );
+    let job_b_id = vb["job_id"].as_str().expect("job_id missing").to_string();
+
+    // list --cwd dir_a (from any working directory) should return only job A.
+    let dir_a_str = dir_a.path().to_str().expect("dir_a path is utf-8");
+    let (list_v, _) =
+        run_cmd_with_root_and_cwd(&["list", "--cwd", dir_a_str], Some(h.root()), None);
+    assert_envelope(&list_v, "list", true);
+    let jobs = list_v["jobs"].as_array().expect("jobs missing");
+    let has_a = jobs.iter().any(|j| j["job_id"].as_str() == Some(&job_a_id));
+    let has_b = jobs.iter().any(|j| j["job_id"].as_str() == Some(&job_b_id));
+    assert!(
+        has_a,
+        "Job A should appear with --cwd dir_a; list: {list_v}"
+    );
+    assert!(
+        !has_b,
+        "Job B should NOT appear with --cwd dir_a; list: {list_v}"
+    );
+}
+
+/// Task 4.2b: `list --all` disables cwd filtering and returns all jobs.
+#[test]
+fn list_all_flag_disables_cwd_filter() {
+    let h = TestHarness::new();
+
+    let dir_a = tempfile::tempdir().expect("create dir_a");
+    let dir_b = tempfile::tempdir().expect("create dir_b");
+
+    // Run jobs from two different directories.
+    let (va, _) = run_cmd_with_root_and_cwd(
+        &["run", "--snapshot-after", "0", "echo", "job_a"],
+        Some(h.root()),
+        Some(dir_a.path()),
+    );
+    let job_a_id = va["job_id"].as_str().expect("job_id missing").to_string();
+
+    std::thread::sleep(std::time::Duration::from_millis(10));
+
+    let (vb, _) = run_cmd_with_root_and_cwd(
+        &["run", "--snapshot-after", "0", "echo", "job_b"],
+        Some(h.root()),
+        Some(dir_b.path()),
+    );
+    let job_b_id = vb["job_id"].as_str().expect("job_id missing").to_string();
+
+    // list --all from dir_a should return both A and B.
+    let (list_v, _) =
+        run_cmd_with_root_and_cwd(&["list", "--all"], Some(h.root()), Some(dir_a.path()));
+    assert_envelope(&list_v, "list", true);
+    let jobs = list_v["jobs"].as_array().expect("jobs missing");
+    let has_a = jobs.iter().any(|j| j["job_id"].as_str() == Some(&job_a_id));
+    let has_b = jobs.iter().any(|j| j["job_id"].as_str() == Some(&job_b_id));
+    assert!(has_a, "Job A should appear with --all; list: {list_v}");
+    assert!(has_b, "Job B should appear with --all; list: {list_v}");
+}
+
+/// Task 4.3: `list --all --cwd` is a usage error (exit code 2, clap rejects it).
+#[test]
+fn list_all_and_cwd_conflict_exits_with_code_2() {
+    let h = TestHarness::new();
+    let bin = binary();
+
+    let output = std::process::Command::new(&bin)
+        .env("AGENT_EXEC_ROOT", h.root())
+        .args(["list", "--all", "--cwd", "/tmp"])
+        .output()
+        .expect("run binary");
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "expected exit code 2 when --all and --cwd are both supplied; \
+         stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 
