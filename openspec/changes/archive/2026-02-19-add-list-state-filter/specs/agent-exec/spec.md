@@ -1,6 +1,6 @@
 # agent-exec Specification (Change: add-list-state-filter)
 
-## MODIFIED Requirements
+## ADDED Requirements
 
 ### Requirement: list の状態フィルタ
 

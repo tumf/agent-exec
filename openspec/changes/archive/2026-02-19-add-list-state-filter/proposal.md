@@ -20,3 +20,12 @@
 - 許容される `state` は `running|exited|killed|failed|unknown`
 - `--state` 未指定時は現状どおり全件を返す
 - `--state` 指定時は `jobs[].state` が一致するものだけ返す
+
+## Why
+`agent-exec list` は現在全ジョブを返すため、実行中ジョブの監視にはクライアント側フィルタが必要でした。サーバーサイドで状態フィルタを提供することで、監視ツールやスクリプトの実装を簡潔にできます。
+
+## What Changes
+- `list` サブコマンドに `--state <state>` オプションを追加する
+- 許容される値は `running|exited|killed|failed|unknown`（未知の値は usage エラー）
+- フィルタ適用後の件数に対して `--limit` を評価し、`truncated` フラグを設定する
+- `agent-exec` スペックに「Requirement: list の状態フィルタ」要件を追加する
