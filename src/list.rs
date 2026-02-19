@@ -16,6 +16,8 @@ pub struct ListOpts<'a> {
     pub root: Option<&'a str>,
     /// Maximum number of jobs to return; 0 = no limit.
     pub limit: u64,
+    /// Optional state filter: running|exited|killed|failed|unknown.
+    pub state: Option<&'a str>,
 }
 
 /// Execute `list`: enumerate jobs and emit JSON.
@@ -109,6 +111,11 @@ pub fn execute(opts: ListOpts) -> Result<()> {
             finished_at,
             updated_at,
         });
+    }
+
+    // Apply state filter before sorting and limiting.
+    if let Some(filter_state) = opts.state {
+        jobs.retain(|j| j.state == filter_state);
     }
 
     // Sort by started_at descending; tie-break by job_id descending.

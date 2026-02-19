@@ -155,6 +155,10 @@ enum Command {
         /// Maximum number of jobs to return (0 = no limit).
         #[arg(long, default_value = "0")]
         limit: u64,
+
+        /// Filter jobs by state: running|exited|killed|failed|unknown.
+        #[arg(long, value_parser = ["running", "exited", "killed", "failed", "unknown"])]
+        state: Option<String>,
     },
 
     /// [Internal] Supervise a child process — not for direct use.
@@ -328,10 +332,11 @@ fn run(cli: Cli) -> Result<()> {
             })?;
         }
 
-        Command::List { root, limit } => {
+        Command::List { root, limit, state } => {
             agent_exec::list::execute(agent_exec::list::ListOpts {
                 root: root.as_deref(),
                 limit,
+                state: state.as_deref(),
             })?;
         }
 
