@@ -13,7 +13,7 @@ fn binary() -> PathBuf {
     // Prefer the current exe's directory (works inside cargo test).
     let mut p = std::env::current_exe().expect("current exe");
     p.pop(); // remove test binary name
-             // In release mode there's no "deps" subdirectory; try both.
+    // In release mode there's no "deps" subdirectory; try both.
     if p.ends_with("deps") {
         p.pop();
     }
@@ -1845,5 +1845,226 @@ fn schema_stdout_is_single_json_object() {
     assert!(
         parsed.is_object(),
         "schema stdout JSON is not an object: {parsed}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// install-skills tests
+// ---------------------------------------------------------------------------
+
+/// Task 4.1: `install-skills` with `--source self` succeeds and returns the
+/// expected JSON envelope with `type="install_skills"` and `skills[0].name="agent-exec"`.
+#[test]
+fn install_skills_self_source_succeeds() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let agents_dir = tmp.path().join(".agents");
+
+    let bin = binary();
+    let output = std::process::Command::new(&bin)
+        .args(["install-skills", "--source", "self"])
+        .current_dir(tmp.path())
+        .output()
+        .expect("run binary");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stdout.trim().is_empty(),
+        "stdout is empty (stderr: {stderr})"
+    );
+    let v: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("stdout must be valid JSON");
+
+    assert_envelope(&v, "install_skills", true);
+
+    // skills array must have at least one entry with name="agent-exec"
+    let skills = v["skills"].as_array().expect("skills must be an array");
+    assert!(!skills.is_empty(), "skills array must not be empty");
+    assert_eq!(
+        skills[0]["name"].as_str().unwrap_or(""),
+        "agent-exec",
+        "skills[0].name must be 'agent-exec'; got: {v}"
+    );
+    assert_eq!(
+        skills[0]["source_type"].as_str().unwrap_or(""),
+        "self",
+        "skills[0].source_type must be 'self'; got: {v}"
+    );
+    assert!(
+        skills[0]["path"].as_str().is_some(),
+        "skills[0].path must be present; got: {v}"
+    );
+    assert!(
+        v["lock_file_path"].as_str().is_some(),
+        "lock_file_path must be present; got: {v}"
+    );
+
+    // The skill directory must have been created with SKILL.md inside.
+    let skill_dir = agents_dir.join("skills").join("agent-exec");
+    assert!(
+        skill_dir.exists(),
+        "skill directory must exist at {}",
+        skill_dir.display()
+    );
+    assert!(
+        skill_dir.join("SKILL.md").exists(),
+        "SKILL.md must exist inside the installed skill directory"
+    );
+
+    // The lock file must exist.
+    let lock_path = agents_dir.join(".skill-lock.json");
+    assert!(
+        lock_path.exists(),
+        "lock file must exist at {}",
+        lock_path.display()
+    );
+
+    // Lock file must contain a valid JSON array entry for agent-exec with
+    // name, path, and source_type fields (per spec requirement).
+    let lock_content = std::fs::read_to_string(&lock_path).expect("read lock file");
+    let lock: serde_json::Value =
+        serde_json::from_str(&lock_content).expect("lock file must be valid JSON");
+    let lock_skills = lock["skills"]
+        .as_array()
+        .expect("lock skills must be an array");
+    assert!(!lock_skills.is_empty(), "lock skills must not be empty");
+    assert_eq!(
+        lock_skills[0]["name"].as_str().unwrap_or(""),
+        "agent-exec",
+        "lock skills[0].name must be 'agent-exec'"
+    );
+    assert!(
+        lock_skills[0]["path"].as_str().is_some(),
+        "lock skills[0].path must be present; got: {lock}"
+    );
+    assert!(
+        lock_skills[0]["source_type"].as_str().is_some(),
+        "lock skills[0].source_type must be present; got: {lock}"
+    );
+}
+
+/// Task 4.2: `install-skills` with `--source local:<path>` installs a locally
+/// created fake skill into `.agents/skills/<name>/`.
+#[test]
+fn install_skills_local_source_succeeds() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+
+    // Create a fake skill directory.
+    let fake_skill_dir = tmp.path().join("my-fake-skill");
+    std::fs::create_dir_all(&fake_skill_dir).expect("create fake skill dir");
+    std::fs::write(
+        fake_skill_dir.join("SKILL.md"),
+        "# Fake Skill\nTest content.",
+    )
+    .expect("write fake SKILL.md");
+
+    let source_arg = format!("local:{}", fake_skill_dir.display());
+
+    // Install destination is a separate tempdir (simulates cwd).
+    let install_root = tempfile::tempdir().expect("create install root");
+    let agents_dir = install_root.path().join(".agents");
+
+    let bin = binary();
+    let output = std::process::Command::new(&bin)
+        .args(["install-skills", "--source", &source_arg])
+        .current_dir(install_root.path())
+        .output()
+        .expect("run binary");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stdout.trim().is_empty(),
+        "stdout is empty (stderr: {stderr})"
+    );
+    let v: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("stdout must be valid JSON");
+
+    assert_envelope(&v, "install_skills", true);
+
+    let skills = v["skills"].as_array().expect("skills must be an array");
+    assert!(!skills.is_empty(), "skills array must not be empty");
+    assert_eq!(
+        skills[0]["name"].as_str().unwrap_or(""),
+        "my-fake-skill",
+        "skills[0].name must be 'my-fake-skill'; got: {v}"
+    );
+    // source_type must be present in response (spec requirement).
+    assert!(
+        skills[0]["source_type"].as_str().is_some(),
+        "skills[0].source_type must be present; got: {v}"
+    );
+    assert!(
+        skills[0]["path"].as_str().is_some(),
+        "skills[0].path must be present; got: {v}"
+    );
+
+    // The skill should be present in .agents/skills/my-fake-skill/.
+    let skill_dest = agents_dir.join("skills").join("my-fake-skill");
+    // Accept either a directory or a symlink pointing to one.
+    let exists = skill_dest.exists() || skill_dest.symlink_metadata().is_ok();
+    assert!(
+        exists,
+        "installed skill directory must exist at {}",
+        skill_dest.display()
+    );
+
+    // Lock file must record name, path, and source_type (per spec requirement).
+    let lock_path = agents_dir.join(".skill-lock.json");
+    assert!(
+        lock_path.exists(),
+        "lock file must exist at {}",
+        lock_path.display()
+    );
+    let lock_content = std::fs::read_to_string(&lock_path).expect("read lock file");
+    let lock: serde_json::Value =
+        serde_json::from_str(&lock_content).expect("lock file must be valid JSON");
+    let lock_skills = lock["skills"]
+        .as_array()
+        .expect("lock skills must be an array");
+    assert!(!lock_skills.is_empty(), "lock skills must not be empty");
+    assert_eq!(
+        lock_skills[0]["name"].as_str().unwrap_or(""),
+        "my-fake-skill",
+        "lock skills[0].name must be 'my-fake-skill'"
+    );
+    assert!(
+        lock_skills[0]["path"].as_str().is_some(),
+        "lock skills[0].path must be present; got: {lock}"
+    );
+    assert!(
+        lock_skills[0]["source_type"].as_str().is_some(),
+        "lock skills[0].source_type must be present; got: {lock}"
+    );
+}
+
+/// Task 4.3: `install-skills` with an unknown source scheme returns
+/// `error.code="unknown_source_scheme"` and exits with code 1.
+#[test]
+fn install_skills_unknown_source_scheme_returns_error() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+
+    let bin = binary();
+    let output = std::process::Command::new(&bin)
+        .args(["install-skills", "--source", "ftp://example.com/skill"])
+        .current_dir(tmp.path())
+        .output()
+        .expect("run binary");
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "exit code must be 1 for unknown source scheme"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let v: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("stdout must be valid JSON");
+
+    assert_envelope(&v, "error", false);
+    assert_eq!(
+        v["error"]["code"].as_str().unwrap_or(""),
+        "unknown_source_scheme",
+        "error.code must be 'unknown_source_scheme'; got: {v}"
     );
 }

@@ -8,6 +8,7 @@ use tracing_subscriber::EnvFilter;
 
 use agent_exec::jobstore::JobNotFound;
 use agent_exec::schema::ErrorResponse;
+use agent_exec::skills::UnknownSourceScheme;
 
 #[derive(Debug, Parser)]
 #[command(name = "agent-exec")]
@@ -181,6 +182,18 @@ enum Command {
         all: bool,
     },
 
+    /// Install agent skills into .agents/skills/.
+    #[command(name = "install-skills")]
+    InstallSkills {
+        /// Source specification: "self" (built-in) or "local:<path>".
+        #[arg(long, default_value = "self")]
+        source: String,
+
+        /// Install into ~/.agents/ instead of ./.agents/.
+        #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue)]
+        global: bool,
+    },
+
     /// [Internal] Supervise a child process — not for direct use.
     #[command(name = "_supervise", hide = true)]
     Supervise {
@@ -253,10 +266,13 @@ fn main() {
     if let Err(e) = result {
         // Distinguish "job not found" from generic internal errors.
         // "job_not_found" is not retryable: the job does not exist.
+        // "unknown_source_scheme" is not retryable: the source scheme is invalid.
         // "internal_error" is not retryable by default; a transient I/O error
         // would need its own code+retryable=true if we ever surface it.
         if e.downcast_ref::<JobNotFound>().is_some() {
             ErrorResponse::new("job_not_found", format!("{e:#}"), false).print();
+        } else if e.downcast_ref::<UnknownSourceScheme>().is_some() {
+            ErrorResponse::new("unknown_source_scheme", format!("{e:#}"), false).print();
         } else {
             ErrorResponse::new("internal_error", format!("{e:#}"), false).print();
         }
@@ -358,6 +374,13 @@ fn run(cli: Cli) -> Result<()> {
 
         Command::Schema => {
             agent_exec::schema_cmd::execute(agent_exec::schema_cmd::SchemaOpts)?;
+        }
+
+        Command::InstallSkills { source, global } => {
+            agent_exec::install_skills::execute(agent_exec::install_skills::InstallSkillsOpts {
+                source: &source,
+                global,
+            })?;
         }
 
         Command::List {
