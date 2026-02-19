@@ -1,6 +1,6 @@
 # agent-exec Spec Delta (refresh-readme-usage)
 
-## MODIFIED Requirements
+## ADDED Requirements
 ### Requirement: README の利用導線
 
 README は `run/status/tail/wait/kill/list` を対象にしたコピペ可能な使用例を含めなければならない（MUST）。README は stdout が JSON-only であり、stderr が診断ログであることを明記しなければならない（MUST）。
