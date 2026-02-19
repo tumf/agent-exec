@@ -164,6 +164,17 @@ pub struct KillData {
     pub signal: String,
 }
 
+/// Response for `schema` command.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SchemaData {
+    /// The JSON Schema format identifier (e.g. "json-schema-draft-07").
+    pub schema_format: String,
+    /// The JSON Schema document describing all CLI response types.
+    pub schema: serde_json::Value,
+    /// Timestamp when the schema file was last updated (RFC 3339).
+    pub generated_at: String,
+}
+
 /// Summary of a single job, included in `list` responses.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct JobSummary {
