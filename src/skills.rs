@@ -88,8 +88,8 @@ impl Source {
 pub struct LockEntry {
     /// Skill name (directory name under `.agents/skills/`).
     pub name: String,
-    /// Source string used when the skill was installed.
-    pub source: String,
+    /// Source type string used when the skill was installed (e.g. "self", "local").
+    pub source_type: String,
     /// RFC 3339 timestamp of installation.
     pub installed_at: String,
     /// Absolute path to the installed skill directory.

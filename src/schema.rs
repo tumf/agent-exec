@@ -220,8 +220,8 @@ pub struct ListData {
 pub struct InstalledSkillSummary {
     /// Skill name (directory name under `.agents/skills/`).
     pub name: String,
-    /// Source string used when the skill was installed.
-    pub source: String,
+    /// Source type string used when the skill was installed (e.g. "self", "local").
+    pub source_type: String,
     /// Absolute path to the installed skill directory.
     pub path: String,
 }

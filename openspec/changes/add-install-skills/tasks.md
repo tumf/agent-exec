@@ -20,3 +20,8 @@
 - [x] 4.1 `tests/integration.rs` に `install-skills` の成功ケースを追加する（確認: JSON が `type="install_skills"` で `skills[0].name` が `agent-exec`）
 - [x] 4.2 ローカルソース（`local:<path>`）のテストを追加する（確認: 一時ディレクトリに作成した偽スキルが `.agents/skills/<name>` に展開される）
 - [x] 4.3 未知スキームの失敗テストを追加する（確認: `error.code="unknown_source_scheme"` で exit code 1）
+
+## Acceptance #1 Failure Follow-up
+
+- [x] `src/schema.rs` の `InstalledSkillSummary` と `src/install_skills.rs` のレスポンス生成を `source` ではなく `source_type` に変更し、`tests/integration.rs` の `install_skills_*` テストも `source_type` を検証するよう更新する（spec: `openspec/changes/add-install-skills/specs/agent-exec-skills/spec.md` Requirement: 成功レスポンスの構造）。
+- [x] `src/skills.rs` の `LockEntry` と `src/install_skills.rs` の lock 更新処理を `source_type` フィールドで記録するよう修正し、`.agents/.skill-lock.json` に `name`/`path`/`source_type` が残ることを統合テストで検証する（spec: `openspec/changes/add-install-skills/specs/agent-exec-skills/spec.md` Requirement: lock ファイルの更新）。

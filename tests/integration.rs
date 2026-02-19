@@ -1886,9 +1886,13 @@ fn install_skills_self_source_succeeds() {
         "skills[0].name must be 'agent-exec'; got: {v}"
     );
     assert_eq!(
-        skills[0]["source"].as_str().unwrap_or(""),
+        skills[0]["source_type"].as_str().unwrap_or(""),
         "self",
-        "skills[0].source must be 'self'; got: {v}"
+        "skills[0].source_type must be 'self'; got: {v}"
+    );
+    assert!(
+        skills[0]["path"].as_str().is_some(),
+        "skills[0].path must be present; got: {v}"
     );
     assert!(
         v["lock_file_path"].as_str().is_some(),
@@ -1915,7 +1919,8 @@ fn install_skills_self_source_succeeds() {
         lock_path.display()
     );
 
-    // Lock file must contain a valid JSON array entry for agent-exec.
+    // Lock file must contain a valid JSON array entry for agent-exec with
+    // name, path, and source_type fields (per spec requirement).
     let lock_content = std::fs::read_to_string(&lock_path).expect("read lock file");
     let lock: serde_json::Value =
         serde_json::from_str(&lock_content).expect("lock file must be valid JSON");
@@ -1927,6 +1932,14 @@ fn install_skills_self_source_succeeds() {
         lock_skills[0]["name"].as_str().unwrap_or(""),
         "agent-exec",
         "lock skills[0].name must be 'agent-exec'"
+    );
+    assert!(
+        lock_skills[0]["path"].as_str().is_some(),
+        "lock skills[0].path must be present; got: {lock}"
+    );
+    assert!(
+        lock_skills[0]["source_type"].as_str().is_some(),
+        "lock skills[0].source_type must be present; got: {lock}"
     );
 }
 
@@ -1976,6 +1989,15 @@ fn install_skills_local_source_succeeds() {
         "my-fake-skill",
         "skills[0].name must be 'my-fake-skill'; got: {v}"
     );
+    // source_type must be present in response (spec requirement).
+    assert!(
+        skills[0]["source_type"].as_str().is_some(),
+        "skills[0].source_type must be present; got: {v}"
+    );
+    assert!(
+        skills[0]["path"].as_str().is_some(),
+        "skills[0].path must be present; got: {v}"
+    );
 
     // The skill should be present in .agents/skills/my-fake-skill/.
     let skill_dest = agents_dir.join("skills").join("my-fake-skill");
@@ -1985,6 +2007,34 @@ fn install_skills_local_source_succeeds() {
         exists,
         "installed skill directory must exist at {}",
         skill_dest.display()
+    );
+
+    // Lock file must record name, path, and source_type (per spec requirement).
+    let lock_path = agents_dir.join(".skill-lock.json");
+    assert!(
+        lock_path.exists(),
+        "lock file must exist at {}",
+        lock_path.display()
+    );
+    let lock_content = std::fs::read_to_string(&lock_path).expect("read lock file");
+    let lock: serde_json::Value =
+        serde_json::from_str(&lock_content).expect("lock file must be valid JSON");
+    let lock_skills = lock["skills"]
+        .as_array()
+        .expect("lock skills must be an array");
+    assert!(!lock_skills.is_empty(), "lock skills must not be empty");
+    assert_eq!(
+        lock_skills[0]["name"].as_str().unwrap_or(""),
+        "my-fake-skill",
+        "lock skills[0].name must be 'my-fake-skill'"
+    );
+    assert!(
+        lock_skills[0]["path"].as_str().is_some(),
+        "lock skills[0].path must be present; got: {lock}"
+    );
+    assert!(
+        lock_skills[0]["source_type"].as_str().is_some(),
+        "lock skills[0].source_type must be present; got: {lock}"
     );
 }
 

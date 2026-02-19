@@ -35,7 +35,7 @@ pub fn execute(opts: InstallSkillsOpts<'_>) -> Result<()> {
     let mut lock = LockFile::read(&lock_path)?;
     let entry = LockEntry {
         name: installed.name.clone(),
-        source: installed.source_str.clone(),
+        source_type: installed.source_str.clone(),
         installed_at: now_rfc3339(),
         path: installed.path.to_string_lossy().into_owned(),
     };
@@ -46,7 +46,7 @@ pub fn execute(opts: InstallSkillsOpts<'_>) -> Result<()> {
     let data = InstallSkillsData {
         skills: vec![InstalledSkillSummary {
             name: installed.name,
-            source: installed.source_str,
+            source_type: installed.source_str,
             path: installed.path.to_string_lossy().into_owned(),
         }],
         global: opts.global,
