@@ -1470,6 +1470,68 @@ fn run_wait_returns_exit_code() {
     );
 }
 
+/// run --wait returns waited_ms that reflects the actual wait time until terminal state.
+/// This verifies Acceptance #1: waited_ms must include the --wait phase duration.
+#[test]
+fn run_wait_waited_ms_reflects_actual_wait_time() {
+    let h = TestHarness::new();
+    // Use a short sleep (100ms) so the job definitely takes some time.
+    // --snapshot-after 0 ensures snapshot phase contributes 0ms; all waited_ms comes from --wait.
+    let v = h.run(&[
+        "run",
+        "--snapshot-after",
+        "0",
+        "--wait",
+        "sh",
+        "-c",
+        "sleep 0.1",
+    ]);
+    assert_envelope(&v, "run", true);
+
+    // waited_ms must be > 0: the --wait phase must be counted.
+    let waited_ms = v["waited_ms"]
+        .as_u64()
+        .expect("waited_ms missing from run --wait response");
+    assert!(
+        waited_ms > 0,
+        "waited_ms must be > 0 when --wait is used (job takes ~100ms); got: {waited_ms}"
+    );
+}
+
+/// run --wait does not apply the snapshot_after 10,000ms clamp.
+/// This verifies Acceptance #2: --wait skips the snapshot_after phase entirely,
+/// so a large --snapshot-after value does not slow down the response.
+#[test]
+fn run_wait_skips_snapshot_after_clamp() {
+    let h = TestHarness::new();
+    // Pass a large snapshot-after value that would normally be clamped to 10,000ms.
+    // With --wait, the snapshot_after phase should be skipped entirely.
+    // The job completes quickly (echo), so waited_ms should be small.
+    let v = h.run(&[
+        "run",
+        "--snapshot-after",
+        "20000", // Would be clamped to 10,000ms without --wait
+        "--wait",
+        "echo",
+        "skip_clamp_test",
+    ]);
+    assert_envelope(&v, "run", true);
+
+    // With --wait, snapshot_after is skipped, so the command should complete quickly.
+    // waited_ms should be far less than 10,000ms (the clamp limit) or 20,000ms (unclamped).
+    let waited_ms = v["waited_ms"].as_u64().expect("waited_ms missing");
+    assert!(
+        waited_ms < 5_000,
+        "waited_ms ({waited_ms}) must be < 5,000ms: --wait should skip snapshot_after delay"
+    );
+
+    // final_snapshot should still be present (from the --wait phase).
+    assert!(
+        v.get("final_snapshot").is_some(),
+        "final_snapshot must be present in run --wait response; got: {v}"
+    );
+}
+
 /// run without --wait does not return finished_at or final_snapshot.
 #[test]
 fn run_without_wait_omits_wait_fields() {
