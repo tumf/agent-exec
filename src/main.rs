@@ -162,6 +162,14 @@ enum Command {
         /// Filter jobs by state: running|exited|killed|failed|unknown.
         #[arg(long, value_parser = ["running", "exited", "killed", "failed", "unknown"])]
         state: Option<String>,
+
+        /// Filter jobs by working directory (conflicts with --all).
+        #[arg(long, conflicts_with = "all")]
+        cwd: Option<String>,
+
+        /// Show all jobs regardless of working directory (conflicts with --cwd).
+        #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue, conflicts_with = "cwd")]
+        all: bool,
     },
 
     /// [Internal] Supervise a child process — not for direct use.
@@ -339,11 +347,19 @@ fn run(cli: Cli) -> Result<()> {
             agent_exec::schema_cmd::execute(agent_exec::schema_cmd::SchemaOpts)?;
         }
 
-        Command::List { root, limit, state } => {
+        Command::List {
+            root,
+            limit,
+            state,
+            cwd,
+            all,
+        } => {
             agent_exec::list::execute(agent_exec::list::ListOpts {
                 root: root.as_deref(),
                 limit,
                 state: state.as_deref(),
+                cwd: cwd.as_deref(),
+                all,
             })?;
         }
 
