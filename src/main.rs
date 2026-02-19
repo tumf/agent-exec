@@ -146,6 +146,9 @@ enum Command {
         job_id: String,
     },
 
+    /// Print the JSON Schema for all CLI response types.
+    Schema,
+
     /// List all jobs under the root directory.
     List {
         /// Override jobs root directory.
@@ -330,6 +333,10 @@ fn run(cli: Cli) -> Result<()> {
                 root: root.as_deref(),
                 signal: &signal,
             })?;
+        }
+
+        Command::Schema => {
+            agent_exec::schema_cmd::execute(agent_exec::schema_cmd::SchemaOpts)?;
         }
 
         Command::List { root, limit, state } => {
