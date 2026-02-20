@@ -15,6 +15,10 @@ keywords = ["agent", "job", "runner", "cli", "json"]
 categories = ["command-line-utilities", "development-tools"]
 include = [
     "/src/**",
+    "/skills/**",
+    "/schema/**",
+    "/tests/**",
+    "/build.rs",
     "/Cargo.toml",
     "/README.md",
     "/LICENSE",
