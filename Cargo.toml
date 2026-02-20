@@ -3,6 +3,23 @@ name = "agent-exec"
 version = "0.1.0"
 edition = "2024"
 
+# crates.io metadata
+authors = ["tumf <tumf@users.noreply.github.com>"]
+license = "MIT"
+description = "Non-interactive agent job runner. Runs commands as background jobs and returns structured JSON on stdout."
+readme = "README.md"
+repository = "https://github.com/tumf/agent-exec"
+homepage = "https://github.com/tumf/agent-exec"
+documentation = "https://docs.rs/agent-exec"
+keywords = ["agent", "job", "runner", "cli", "json"]
+categories = ["command-line-utilities", "development-tools"]
+include = [
+    "/src/**",
+    "/Cargo.toml",
+    "/README.md",
+    "/LICENSE",
+]
+
 [[bin]]
 name = "agent-exec"
 path = "src/main.rs"
