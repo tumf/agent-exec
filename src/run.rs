@@ -9,7 +9,7 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 use std::process::Command;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use ulid::Ulid;
 
 use crate::jobstore::{JobDir, resolve_root};
@@ -672,6 +672,71 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
                 // original assignment error.
                 let _ = job_dir.write_state(&failed_state);
 
+                // Dispatch completion event for the failed state if notifications are configured.
+                // This mirrors the dispatch logic in the normal exit path so that callers
+                // receive a job.finished event even when the supervisor fails early (Windows only).
+                if opts.notify_command.is_some() || opts.notify_file.is_some() {
+                    let finished_at_ts =
+                        failed_state.finished_at.clone().unwrap_or_else(now_rfc3339);
+                    let stdout_log = job_dir.stdout_path().display().to_string();
+                    let stderr_log = job_dir.stderr_path().display().to_string();
+                    let fail_event = crate::schema::CompletionEvent {
+                        schema_version: crate::schema::SCHEMA_VERSION.to_string(),
+                        event_type: "job.finished".to_string(),
+                        job_id: job_id.to_string(),
+                        state: JobStatus::Failed.as_str().to_string(),
+                        command: meta.command.clone(),
+                        cwd: meta.cwd.clone(),
+                        started_at: started_at.clone(),
+                        finished_at: finished_at_ts,
+                        duration_ms: None,
+                        exit_code: None,
+                        signal: None,
+                        stdout_log_path: stdout_log,
+                        stderr_log_path: stderr_log,
+                    };
+                    let fail_event_json = serde_json::to_string(&fail_event).unwrap_or_default();
+                    let fail_event_path = job_dir.completion_event_path().display().to_string();
+                    let mut fail_delivery_results: Vec<crate::schema::SinkDeliveryResult> =
+                        Vec::new();
+                    if let Err(we) =
+                        job_dir.write_completion_event_atomic(&crate::schema::CompletionEventRecord {
+                            event: fail_event.clone(),
+                            delivery_results: vec![],
+                        })
+                    {
+                        warn!(
+                            job_id,
+                            error = %we,
+                            "failed to write initial completion_event.json for failed job"
+                        );
+                    }
+                    if let Some(ref argv) = opts.notify_command {
+                        fail_delivery_results.push(dispatch_command_sink(
+                            argv,
+                            &fail_event_json,
+                            job_id,
+                            &fail_event_path,
+                        ));
+                    }
+                    if let Some(ref file_path) = opts.notify_file {
+                        fail_delivery_results
+                            .push(dispatch_file_sink(file_path, &fail_event_json));
+                    }
+                    if let Err(we) =
+                        job_dir.write_completion_event_atomic(&crate::schema::CompletionEventRecord {
+                            event: fail_event,
+                            delivery_results: fail_delivery_results,
+                        })
+                    {
+                        warn!(
+                            job_id,
+                            error = %we,
+                            "failed to update completion_event.json with delivery results for failed job"
+                        );
+                    }
+                }
+
                 if let Err(ke) = kill_err {
                     return Err(anyhow::anyhow!(
                         "supervisor: failed to assign pid {pid} to Job Object \
@@ -901,10 +966,12 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
         let mut delivery_results: Vec<crate::schema::SinkDeliveryResult> = Vec::new();
 
         // Write initial completion_event.json before dispatching sinks.
-        let _ = job_dir.write_completion_event_atomic(&crate::schema::CompletionEventRecord {
+        if let Err(e) = job_dir.write_completion_event_atomic(&crate::schema::CompletionEventRecord {
             event: event.clone(),
             delivery_results: vec![],
-        });
+        }) {
+            warn!(job_id, error = %e, "failed to write initial completion_event.json");
+        }
 
         if let Some(ref argv) = opts.notify_command {
             delivery_results.push(dispatch_command_sink(argv, &event_json, job_id, &event_path));
@@ -914,10 +981,12 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
         }
 
         // Update completion_event.json with delivery results.
-        let _ = job_dir.write_completion_event_atomic(&crate::schema::CompletionEventRecord {
+        if let Err(e) = job_dir.write_completion_event_atomic(&crate::schema::CompletionEventRecord {
             event,
             delivery_results,
-        });
+        }) {
+            warn!(job_id, error = %e, "failed to update completion_event.json with delivery results");
+        }
     }
 
     Ok(())

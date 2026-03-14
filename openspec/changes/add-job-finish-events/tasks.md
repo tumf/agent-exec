@@ -13,3 +13,8 @@
 - `webhook` sink を別 proposal で追加する
 - delivery retry / backoff と idempotency key を別 proposal で設計する
 - user-defined labels / metadata passthrough を必要になった時点で拡張する
+
+## Acceptance #1 Failure Follow-up
+
+- [x] `failed` terminal state（例: Windows Job Object 割り当て失敗）でも `job.finished` completion event を 1 回生成し、`completion_event.json` と通知 sink 配送まで実行する
+- [x] `completion_event.json` の初回書き込み/更新書き込みで `write_completion_event_atomic` エラーを握りつぶさず、delivery result か監査可能な経路へ失敗を記録する
