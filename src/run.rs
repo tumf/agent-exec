@@ -54,6 +54,10 @@ pub struct RunOpts<'a> {
     pub wait: bool,
     /// Poll interval in milliseconds when `wait` is true.
     pub wait_poll_ms: u64,
+    /// argv for command notification sink (shell-free); None = no command sink.
+    pub notify_command: Option<Vec<String>>,
+    /// File path for NDJSON notification sink; None = no file sink.
+    pub notify_file: Option<String>,
 }
 
 impl<'a> Default for RunOpts<'a> {
@@ -75,6 +79,8 @@ impl<'a> Default for RunOpts<'a> {
             progress_every_ms: 0,
             wait: false,
             wait_poll_ms: 200,
+            notify_command: None,
+            notify_file: None,
         }
     }
 }
@@ -112,6 +118,16 @@ pub fn execute(opts: RunOpts) -> Result<()> {
     // Canonicalize the path for consistent comparison; fall back to absolute path on failure.
     let effective_cwd = resolve_effective_cwd(opts.cwd);
 
+    let notification =
+        if opts.notify_command.is_some() || opts.notify_file.is_some() {
+            Some(crate::schema::NotificationConfig {
+                notify_command: opts.notify_command.clone(),
+                notify_file: opts.notify_file.clone(),
+            })
+        } else {
+            None
+        };
+
     let meta = JobMeta {
         job: JobMetaJob { id: job_id.clone() },
         schema_version: crate::schema::SCHEMA_VERSION.to_string(),
@@ -122,6 +138,7 @@ pub fn execute(opts: RunOpts) -> Result<()> {
         env_vars: masked_env_vars.clone(),
         mask: opts.mask.clone(),
         cwd: Some(effective_cwd),
+        notification,
     };
 
     let job_dir = JobDir::create(&root, &job_id, &meta)?;
@@ -190,6 +207,13 @@ pub fn execute(opts: RunOpts) -> Result<()> {
         supervisor_cmd
             .arg("--progress-every")
             .arg(opts.progress_every_ms.to_string());
+    }
+    if let Some(ref nc) = opts.notify_command {
+        let json = serde_json::to_string(nc).unwrap_or_default();
+        supervisor_cmd.arg("--notify-command").arg(&json);
+    }
+    if let Some(ref nf) = opts.notify_file {
+        supervisor_cmd.arg("--notify-file").arg(nf);
     }
 
     supervisor_cmd
@@ -390,6 +414,10 @@ pub struct SuperviseOpts<'a> {
     pub inherit_env: bool,
     /// Interval (ms) for state.json updated_at refresh; 0 = disabled.
     pub progress_every_ms: u64,
+    /// argv for command notification sink; None = no command sink.
+    pub notify_command: Option<Vec<String>>,
+    /// File path for NDJSON notification sink; None = no file sink.
+    pub notify_file: Option<String>,
 }
 
 /// Resolve the effective working directory for a job.
@@ -814,25 +842,209 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
     let exit_code = exit_status.code();
     let finished_at = now_rfc3339();
 
+    // Detect signal-killed processes on Unix for accurate state and completion event.
+    #[cfg(unix)]
+    let (terminal_status, signal_name) = {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(sig) = exit_status.signal() {
+            (JobStatus::Killed, Some(sig.to_string()))
+        } else {
+            (JobStatus::Exited, None)
+        }
+    };
+    #[cfg(not(unix))]
+    let (terminal_status, signal_name) = (JobStatus::Exited, None::<String>);
+
     let state = JobState {
         job: JobStateJob {
             id: job_id.to_string(),
-            status: JobStatus::Exited, // non-zero exit still "exited"
-            started_at,
+            status: terminal_status.clone(),
+            started_at: started_at.clone(),
         },
         result: JobStateResult {
             exit_code,
-            signal: None,
+            signal: signal_name.clone(),
             duration_ms: Some(duration_ms),
         },
         pid: Some(pid),
-        finished_at: Some(finished_at),
+        finished_at: Some(finished_at.clone()),
         updated_at: now_rfc3339(),
         windows_job_name: None, // not needed after process exits
     };
     job_dir.write_state(&state)?;
     info!(job_id, ?exit_code, "child process finished");
+
+    // Dispatch completion event to configured notification sinks.
+    // Failure here must not alter job state (delivery result is recorded separately).
+    let has_notification = opts.notify_command.is_some() || opts.notify_file.is_some();
+    if has_notification {
+        let stdout_log = job_dir.stdout_path().display().to_string();
+        let stderr_log = job_dir.stderr_path().display().to_string();
+        let event = crate::schema::CompletionEvent {
+            schema_version: crate::schema::SCHEMA_VERSION.to_string(),
+            event_type: "job.finished".to_string(),
+            job_id: job_id.to_string(),
+            state: terminal_status.as_str().to_string(),
+            command: meta.command.clone(),
+            cwd: meta.cwd.clone(),
+            started_at,
+            finished_at,
+            duration_ms: Some(duration_ms),
+            exit_code,
+            signal: signal_name,
+            stdout_log_path: stdout_log,
+            stderr_log_path: stderr_log,
+        };
+
+        let event_json = serde_json::to_string(&event).unwrap_or_default();
+        let event_path = job_dir.completion_event_path().display().to_string();
+        let mut delivery_results: Vec<crate::schema::SinkDeliveryResult> = Vec::new();
+
+        // Write initial completion_event.json before dispatching sinks.
+        let _ = job_dir.write_completion_event_atomic(&crate::schema::CompletionEventRecord {
+            event: event.clone(),
+            delivery_results: vec![],
+        });
+
+        if let Some(ref argv) = opts.notify_command {
+            delivery_results.push(dispatch_command_sink(argv, &event_json, job_id, &event_path));
+        }
+        if let Some(ref file_path) = opts.notify_file {
+            delivery_results.push(dispatch_file_sink(file_path, &event_json));
+        }
+
+        // Update completion_event.json with delivery results.
+        let _ = job_dir.write_completion_event_atomic(&crate::schema::CompletionEventRecord {
+            event,
+            delivery_results,
+        });
+    }
+
     Ok(())
+}
+
+/// Dispatch the command sink: spawn argv[0] with argv[1..], pass event JSON via stdin,
+/// and set AGENT_EXEC_EVENT_PATH / AGENT_EXEC_JOB_ID / AGENT_EXEC_EVENT_TYPE env vars.
+/// Shell expansion is never used; argv must be a pre-split array.
+fn dispatch_command_sink(
+    argv: &[String],
+    event_json: &str,
+    job_id: &str,
+    event_path: &str,
+) -> crate::schema::SinkDeliveryResult {
+    use std::io::Write;
+    let attempted_at = now_rfc3339();
+    let target = serde_json::to_string(argv).unwrap_or_default();
+
+    if argv.is_empty() {
+        return crate::schema::SinkDeliveryResult {
+            sink_type: "command".to_string(),
+            target,
+            success: false,
+            error: Some("empty argv".to_string()),
+            attempted_at,
+        };
+    }
+
+    let mut cmd = Command::new(&argv[0]);
+    cmd.args(&argv[1..]);
+    cmd.env("AGENT_EXEC_EVENT_PATH", event_path);
+    cmd.env("AGENT_EXEC_JOB_ID", job_id);
+    cmd.env("AGENT_EXEC_EVENT_TYPE", "job.finished");
+    cmd.stdin(std::process::Stdio::piped());
+    cmd.stdout(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::null());
+
+    match cmd.spawn() {
+        Ok(mut child) => {
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(event_json.as_bytes());
+            }
+            match child.wait() {
+                Ok(status) if status.success() => crate::schema::SinkDeliveryResult {
+                    sink_type: "command".to_string(),
+                    target,
+                    success: true,
+                    error: None,
+                    attempted_at,
+                },
+                Ok(status) => crate::schema::SinkDeliveryResult {
+                    sink_type: "command".to_string(),
+                    target,
+                    success: false,
+                    error: Some(format!("exited with status {status}")),
+                    attempted_at,
+                },
+                Err(e) => crate::schema::SinkDeliveryResult {
+                    sink_type: "command".to_string(),
+                    target,
+                    success: false,
+                    error: Some(format!("wait error: {e}")),
+                    attempted_at,
+                },
+            }
+        }
+        Err(e) => crate::schema::SinkDeliveryResult {
+            sink_type: "command".to_string(),
+            target,
+            success: false,
+            error: Some(format!("spawn error: {e}")),
+            attempted_at,
+        },
+    }
+}
+
+/// Dispatch the file sink: append event JSON as a single NDJSON line.
+/// Creates parent directories automatically.
+fn dispatch_file_sink(
+    file_path: &str,
+    event_json: &str,
+) -> crate::schema::SinkDeliveryResult {
+    use std::io::Write;
+    let attempted_at = now_rfc3339();
+    let path = std::path::Path::new(file_path);
+
+    if let Some(parent) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            return crate::schema::SinkDeliveryResult {
+                sink_type: "file".to_string(),
+                target: file_path.to_string(),
+                success: false,
+                error: Some(format!("create parent dir: {e}")),
+                attempted_at,
+            };
+        }
+    }
+
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        Ok(mut f) => match writeln!(f, "{event_json}") {
+            Ok(_) => crate::schema::SinkDeliveryResult {
+                sink_type: "file".to_string(),
+                target: file_path.to_string(),
+                success: true,
+                error: None,
+                attempted_at,
+            },
+            Err(e) => crate::schema::SinkDeliveryResult {
+                sink_type: "file".to_string(),
+                target: file_path.to_string(),
+                success: false,
+                error: Some(format!("write error: {e}")),
+                attempted_at,
+            },
+        },
+        Err(e) => crate::schema::SinkDeliveryResult {
+            sink_type: "file".to_string(),
+            target: file_path.to_string(),
+            success: false,
+            error: Some(format!("open error: {e}")),
+            attempted_at,
+        },
+    }
 }
 
 /// Public alias so other modules can call the timestamp helper.

@@ -255,6 +255,60 @@ pub struct Snapshot {
     pub stderr_included_bytes: u64,
 }
 
+// ---------- Notification / completion event models ----------
+
+/// Notification configuration persisted in meta.json.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct NotificationConfig {
+    /// argv JSON array for command sink (shell-free execution).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notify_command: Option<Vec<String>>,
+    /// File path for NDJSON append sink.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notify_file: Option<String>,
+}
+
+/// The `job.finished` event payload.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CompletionEvent {
+    pub schema_version: String,
+    pub event_type: String,
+    pub job_id: String,
+    pub state: String,
+    pub command: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    pub started_at: String,
+    pub finished_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signal: Option<String>,
+    pub stdout_log_path: String,
+    pub stderr_log_path: String,
+}
+
+/// Delivery result for a single notification sink.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SinkDeliveryResult {
+    pub sink_type: String,
+    pub target: String,
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub attempted_at: String,
+}
+
+/// Persisted in `completion_event.json` after terminal state is reached.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CompletionEventRecord {
+    #[serde(flatten)]
+    pub event: CompletionEvent,
+    pub delivery_results: Vec<SinkDeliveryResult>,
+}
+
 // ---------- Persisted job metadata / state ----------
 
 /// Nested `job` block within `meta.json`.
@@ -304,6 +358,9 @@ pub struct JobMeta {
     /// Used by `list` to filter jobs by cwd. Absent for jobs created before this feature.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub cwd: Option<String>,
+    /// Notification configuration (present only when --notify-command or --notify-file was used).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub notification: Option<NotificationConfig>,
 }
 
 impl JobMeta {
