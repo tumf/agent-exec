@@ -98,6 +98,8 @@ Key options:
 | `--wait-poll-ms <ms>` | 200 | Poll interval used with `--wait` |
 | `--notify-command <COMMAND>` | — | Run a shell command when the job finishes; event JSON is sent on stdin |
 | `--notify-file <PATH>` | — | Append a `job.finished` event as NDJSON |
+| `--config <PATH>` | XDG default | Load shell wrapper config from a specific `config.toml` |
+| `--shell-wrapper <PROG FLAGS>` | platform default | Override shell wrapper for this invocation (e.g. `"bash -lc"`) |
 
 ### `status` — get job state
 
@@ -135,11 +137,50 @@ agent-exec kill [--signal TERM|INT|KILL] <JOB_ID>
 agent-exec list [--state running|exited|killed|failed] [--limit N]
 ```
 
+## Configuration
+
+`agent-exec` reads an optional `config.toml` to configure the shell wrapper used for command-string execution.
+
+### Config file location
+
+- `$XDG_CONFIG_HOME/agent-exec/config.toml` (defaults to `~/.config/agent-exec/config.toml`)
+
+### `config.toml` format
+
+```toml
+[shell]
+unix    = ["sh", "-lc"]   # used on Unix-like platforms
+windows = ["cmd", "/C"]   # used on Windows
+```
+
+Both keys are optional. Absent values fall back to the built-in platform default (`sh -lc` / `cmd /C`).
+
+### Shell wrapper precedence
+
+1. `--shell-wrapper <PROG FLAGS>` CLI flag (highest priority)
+2. `--config <PATH>` explicit config file
+3. Default XDG config file (`~/.config/agent-exec/config.toml`)
+4. Built-in platform default (lowest priority)
+
+The configured wrapper applies to **both** `run` command-string execution and `--notify-command` delivery so the two execution paths stay consistent.
+
+### Override per invocation
+
+```bash
+agent-exec run --shell-wrapper "bash -lc" -- my_script.sh
+```
+
+### Use a custom config file
+
+```bash
+agent-exec run --config /path/to/config.toml -- my_script.sh
+```
+
 ## Job Finished Events
 
 When `run` is called with `--notify-command` or `--notify-file`, `agent-exec` emits a `job.finished` event after the job reaches a terminal state.
 
-- `--notify-command` accepts a shell command string, executes it via `sh -lc` (Unix) or `cmd /C` (Windows), and writes the event JSON to stdin.
+- `--notify-command` accepts a shell command string, executes it via the configured shell wrapper (default: `sh -lc` on Unix, `cmd /C` on Windows), and writes the event JSON to stdin.
 - `--notify-file` appends the event as a single NDJSON line.
 - `completion_event.json` is also written in the job directory with the event plus sink delivery results.
 - Notification delivery is best effort; sink failures do not change the main job state.
@@ -173,7 +214,7 @@ agent-exec run \
 
 #### Notify a Telegram chat directly
 
-Pass a plain shell command string to `--notify-command`. The command runs via `sh -lc` and has access to the event JSON on stdin and the `AGENT_EXEC_EVENT_PATH` environment variable.
+Pass a plain shell command string to `--notify-command`. The command runs via the configured shell wrapper (default: `sh -lc`) and has access to the event JSON on stdin and the `AGENT_EXEC_EVENT_PATH` environment variable.
 
 ```bash
 agent-exec run \

@@ -3,6 +3,7 @@
 /// Provides JSON output types, job-directory management, and the
 /// implementation of the sub-commands: run, status, tail, wait, kill, list,
 /// schema, and install-skills.
+pub mod config;
 pub mod install_skills;
 pub mod jobstore;
 pub mod kill;

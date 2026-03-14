@@ -59,6 +59,9 @@ pub struct RunOpts<'a> {
     pub notify_command: Option<String>,
     /// File path for NDJSON notification sink; None = no file sink.
     pub notify_file: Option<String>,
+    /// Resolved shell wrapper argv used to execute command strings.
+    /// e.g. `["sh", "-lc"]` or `["bash", "-lc"]`.
+    pub shell_wrapper: Vec<String>,
 }
 
 impl<'a> Default for RunOpts<'a> {
@@ -82,6 +85,7 @@ impl<'a> Default for RunOpts<'a> {
             wait_poll_ms: 200,
             notify_command: None,
             notify_file: None,
+            shell_wrapper: crate::config::default_shell_wrapper(),
         }
     }
 }
@@ -214,6 +218,13 @@ pub fn execute(opts: RunOpts) -> Result<()> {
     if let Some(ref nf) = opts.notify_file {
         supervisor_cmd.arg("--notify-file").arg(nf);
     }
+    // Pass the resolved shell wrapper to the supervisor as a JSON array to
+    // preserve argv fidelity (no join/split round-trip).
+    let wrapper_json = serde_json::to_string(&opts.shell_wrapper)
+        .context("serialize shell wrapper")?;
+    supervisor_cmd
+        .arg("--shell-wrapper-resolved")
+        .arg(&wrapper_json);
 
     supervisor_cmd
         .arg("--")
@@ -418,6 +429,8 @@ pub struct SuperviseOpts<'a> {
     pub notify_command: Option<String>,
     /// File path for NDJSON notification sink; None = no file sink.
     pub notify_file: Option<String>,
+    /// Resolved shell wrapper argv used to execute command strings.
+    pub shell_wrapper: Vec<String>,
 }
 
 /// Resolve the effective working directory for a job.
@@ -595,9 +608,19 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
     let full_log_file = std::fs::File::create(&full_log_path).context("create full.log")?;
     let full_log = Arc::new(Mutex::new(full_log_file));
 
-    // Build the child environment.
-    let mut child_cmd = Command::new(&command[0]);
-    child_cmd.args(&command[1..]);
+    // Execute command through the shell wrapper (same launcher as --notify-command).
+    //
+    // Single-element commands are treated as shell command strings and passed
+    // as-is (e.g. `"echo hello && ls"` preserves shell operators).
+    // Multi-element argv have each element POSIX-single-quoted before joining so
+    // that arguments with spaces, `$`, or special characters are preserved through
+    // the shell layer (e.g. `["sh", "-c", "exit 42"]` → `'sh' '-c' 'exit 42'`).
+    let cmd_str = build_cmd_str(command);
+    if opts.shell_wrapper.is_empty() {
+        anyhow::bail!("supervisor: shell wrapper must not be empty");
+    }
+    let mut child_cmd = Command::new(&opts.shell_wrapper[0]);
+    child_cmd.args(&opts.shell_wrapper[1..]).arg(&cmd_str);
 
     if opts.inherit_env {
         // Start with the current environment (default).
@@ -717,6 +740,7 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
                             &fail_event_json,
                             job_id,
                             &fail_event_path,
+                            &opts.shell_wrapper,
                         ));
                     }
                     if let Some(ref file_path) = opts.notify_file {
@@ -980,6 +1004,7 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
                 &event_json,
                 job_id,
                 &event_path,
+                &opts.shell_wrapper,
             ));
         }
         if let Some(ref file_path) = opts.notify_file {
@@ -1000,17 +1025,18 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
     Ok(())
 }
 
-/// Dispatch the command sink: execute the shell command string via the platform shell,
+/// Dispatch the command sink: execute the shell command string via the configured shell wrapper,
 /// pass event JSON via stdin, and set AGENT_EXEC_EVENT_PATH / AGENT_EXEC_JOB_ID /
 /// AGENT_EXEC_EVENT_TYPE env vars.
 ///
-/// On Unix-like platforms the command is run as `sh -lc <shell_cmd>`.
-/// On Windows the command is run as `cmd /C <shell_cmd>`.
+/// The shell wrapper argv (e.g. `["sh", "-lc"]`) is provided by the caller.
+/// The command string is appended as the final argument to the wrapper.
 fn dispatch_command_sink(
     shell_cmd: &str,
     event_json: &str,
     job_id: &str,
     event_path: &str,
+    shell_wrapper: &[String],
 ) -> crate::schema::SinkDeliveryResult {
     use std::io::Write;
     let attempted_at = now_rfc3339();
@@ -1026,18 +1052,18 @@ fn dispatch_command_sink(
         };
     }
 
-    #[cfg(not(windows))]
-    let mut cmd = {
-        let mut c = Command::new("sh");
-        c.arg("-lc").arg(shell_cmd);
-        c
-    };
-    #[cfg(windows)]
-    let mut cmd = {
-        let mut c = Command::new("cmd");
-        c.arg("/C").arg(shell_cmd);
-        c
-    };
+    if shell_wrapper.is_empty() {
+        return crate::schema::SinkDeliveryResult {
+            sink_type: "command".to_string(),
+            target,
+            success: false,
+            error: Some("shell wrapper must not be empty".to_string()),
+            attempted_at,
+        };
+    }
+
+    let mut cmd = Command::new(&shell_wrapper[0]);
+    cmd.args(&shell_wrapper[1..]).arg(shell_cmd);
 
     cmd.env("AGENT_EXEC_EVENT_PATH", event_path);
     cmd.env("AGENT_EXEC_JOB_ID", job_id);
@@ -1274,6 +1300,30 @@ fn assign_to_job_object(job_id: &str, pid: u32) -> Result<String> {
 
     info!(job_id, name = %job_name, "supervisor: child assigned to Job Object");
     Ok(job_name)
+}
+
+/// Build the shell command string passed to the shell wrapper.
+///
+/// - Single-element commands are treated as shell command strings and passed
+///   as-is, preserving shell operators like `&&`, pipes, etc.
+/// - Multi-element commands have each element POSIX-single-quoted before
+///   joining so that argv semantics survive the shell layer, including
+///   arguments that contain spaces, `$`, quotes, or other special characters.
+fn build_cmd_str(command: &[String]) -> String {
+    if command.len() == 1 {
+        command[0].clone()
+    } else {
+        command
+            .iter()
+            .map(|s| posix_single_quote(s))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+/// Wrap a string in POSIX single quotes, escaping any embedded single quotes.
+fn posix_single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 #[cfg(test)]

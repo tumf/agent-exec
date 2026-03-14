@@ -33,8 +33,10 @@ Use these options most often:
 - `--env KEY=VALUE` / `--env-file <file>`: set environment variables
 - `--no-inherit-env`: avoid inheriting the current process environment
 - `--wait` / `--wait-poll-ms <ms>`: return only after the job reaches a terminal state
-- `--notify-command <COMMAND>`: run a shell command on completion; executed via `sh -lc` (Unix) or `cmd /C` (Windows); event JSON is sent to stdin
+- `--notify-command <COMMAND>`: run a shell command on completion via the configured shell wrapper (default: `sh -lc` on Unix, `cmd /C` on Windows); event JSON is sent to stdin
 - `--notify-file <PATH>`: append one NDJSON `job.finished` event per completed job
+- `--config <PATH>`: load shell wrapper settings from a specific `config.toml`
+- `--shell-wrapper <PROG FLAGS>`: override the shell wrapper for this invocation (e.g. `"bash -lc"`); applies to both command-string execution and `--notify-command`
 
 Pass a plain shell command string to `--notify-command`. The command sink also receives:
 
