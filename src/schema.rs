@@ -260,9 +260,9 @@ pub struct Snapshot {
 /// Notification configuration persisted in meta.json.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct NotificationConfig {
-    /// argv JSON array for command sink (shell-free execution).
+    /// Shell command string for command sink; executed via platform shell on completion.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub notify_command: Option<Vec<String>>,
+    pub notify_command: Option<String>,
     /// File path for NDJSON append sink.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notify_file: Option<String>,

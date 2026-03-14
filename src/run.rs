@@ -54,8 +54,9 @@ pub struct RunOpts<'a> {
     pub wait: bool,
     /// Poll interval in milliseconds when `wait` is true.
     pub wait_poll_ms: u64,
-    /// argv for command notification sink (shell-free); None = no command sink.
-    pub notify_command: Option<Vec<String>>,
+    /// Shell command string for command notification sink; executed via platform shell.
+    /// None = no command sink.
+    pub notify_command: Option<String>,
     /// File path for NDJSON notification sink; None = no file sink.
     pub notify_file: Option<String>,
 }
@@ -208,8 +209,7 @@ pub fn execute(opts: RunOpts) -> Result<()> {
             .arg(opts.progress_every_ms.to_string());
     }
     if let Some(ref nc) = opts.notify_command {
-        let json = serde_json::to_string(nc).unwrap_or_default();
-        supervisor_cmd.arg("--notify-command").arg(&json);
+        supervisor_cmd.arg("--notify-command").arg(nc);
     }
     if let Some(ref nf) = opts.notify_file {
         supervisor_cmd.arg("--notify-file").arg(nf);
@@ -413,8 +413,9 @@ pub struct SuperviseOpts<'a> {
     pub inherit_env: bool,
     /// Interval (ms) for state.json updated_at refresh; 0 = disabled.
     pub progress_every_ms: u64,
-    /// argv for command notification sink; None = no command sink.
-    pub notify_command: Option<Vec<String>>,
+    /// Shell command string for command notification sink; executed via platform shell.
+    /// None = no command sink.
+    pub notify_command: Option<String>,
     /// File path for NDJSON notification sink; None = no file sink.
     pub notify_file: Option<String>,
 }
@@ -710,9 +711,9 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
                             "failed to write initial completion_event.json for failed job"
                         );
                     }
-                    if let Some(ref argv) = opts.notify_command {
+                    if let Some(ref shell_cmd) = opts.notify_command {
                         fail_delivery_results.push(dispatch_command_sink(
-                            argv,
+                            shell_cmd,
                             &fail_event_json,
                             job_id,
                             &fail_event_path,
@@ -973,9 +974,9 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
             warn!(job_id, error = %e, "failed to write initial completion_event.json");
         }
 
-        if let Some(ref argv) = opts.notify_command {
+        if let Some(ref shell_cmd) = opts.notify_command {
             delivery_results.push(dispatch_command_sink(
-                argv,
+                shell_cmd,
                 &event_json,
                 job_id,
                 &event_path,
@@ -999,31 +1000,45 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
     Ok(())
 }
 
-/// Dispatch the command sink: spawn argv[0] with argv[1..], pass event JSON via stdin,
-/// and set AGENT_EXEC_EVENT_PATH / AGENT_EXEC_JOB_ID / AGENT_EXEC_EVENT_TYPE env vars.
-/// Shell expansion is never used; argv must be a pre-split array.
+/// Dispatch the command sink: execute the shell command string via the platform shell,
+/// pass event JSON via stdin, and set AGENT_EXEC_EVENT_PATH / AGENT_EXEC_JOB_ID /
+/// AGENT_EXEC_EVENT_TYPE env vars.
+///
+/// On Unix-like platforms the command is run as `sh -lc <shell_cmd>`.
+/// On Windows the command is run as `cmd /C <shell_cmd>`.
 fn dispatch_command_sink(
-    argv: &[String],
+    shell_cmd: &str,
     event_json: &str,
     job_id: &str,
     event_path: &str,
 ) -> crate::schema::SinkDeliveryResult {
     use std::io::Write;
     let attempted_at = now_rfc3339();
-    let target = serde_json::to_string(argv).unwrap_or_default();
+    let target = shell_cmd.to_string();
 
-    if argv.is_empty() {
+    if shell_cmd.trim().is_empty() {
         return crate::schema::SinkDeliveryResult {
             sink_type: "command".to_string(),
             target,
             success: false,
-            error: Some("empty argv".to_string()),
+            error: Some("empty shell command".to_string()),
             attempted_at,
         };
     }
 
-    let mut cmd = Command::new(&argv[0]);
-    cmd.args(&argv[1..]);
+    #[cfg(not(windows))]
+    let mut cmd = {
+        let mut c = Command::new("sh");
+        c.arg("-lc").arg(shell_cmd);
+        c
+    };
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = Command::new("cmd");
+        c.arg("/C").arg(shell_cmd);
+        c
+    };
+
     cmd.env("AGENT_EXEC_EVENT_PATH", event_path);
     cmd.env("AGENT_EXEC_JOB_ID", job_id);
     cmd.env("AGENT_EXEC_EVENT_TYPE", "job.finished");

@@ -96,7 +96,7 @@ Key options:
 | `--mask KEY` | — | Redact secret values from JSON output (repeatable) |
 | `--wait` | false | Block until the job reaches a terminal state |
 | `--wait-poll-ms <ms>` | 200 | Poll interval used with `--wait` |
-| `--notify-command <JSON_ARGV>` | — | Run a command when the job finishes; event JSON is sent on stdin |
+| `--notify-command <COMMAND>` | — | Run a shell command when the job finishes; event JSON is sent on stdin |
 | `--notify-file <PATH>` | — | Append a `job.finished` event as NDJSON |
 
 ### `status` — get job state
@@ -139,7 +139,7 @@ agent-exec list [--state running|exited|killed|failed] [--limit N]
 
 When `run` is called with `--notify-command` or `--notify-file`, `agent-exec` emits a `job.finished` event after the job reaches a terminal state.
 
-- `--notify-command` runs the provided argv without a shell and writes the event JSON to stdin.
+- `--notify-command` accepts a shell command string, executes it via `sh -lc` (Unix) or `cmd /C` (Windows), and writes the event JSON to stdin.
 - `--notify-file` appends the event as a single NDJSON line.
 - `completion_event.json` is also written in the job directory with the event plus sink delivery results.
 - Notification delivery is best effort; sink failures do not change the main job state.
@@ -165,7 +165,7 @@ Command sink example:
 ```bash
 agent-exec run \
   --wait \
-  --notify-command '["/bin/sh","-c","cat > /tmp/agent-exec-event.json"]' \
+  --notify-command 'cat > /tmp/agent-exec-event.json' \
   -- echo hello
 ```
 
@@ -173,25 +173,15 @@ agent-exec run \
 
 #### Notify a Telegram chat directly
 
-For ad-hoc use, wrap the notify step with `sh -lc` and read the persisted event from `AGENT_EXEC_EVENT_PATH`. To keep the command readable, build the JSON argv in a shell variable instead of inlining a large escaped JSON string. `openclaw message send` can be appropriate for either user-facing notifications or lightweight delivery back to an agent-facing session.
+Pass a plain shell command string to `--notify-command`. The command runs via `sh -lc` and has access to the event JSON on stdin and the `AGENT_EXEC_EVENT_PATH` environment variable.
 
 ```bash
-NOTIFY_COMMAND=$(jq -nc --arg chat 'telegram:deployments' '
-  [
-    "sh",
-    "-lc",
-    "openclaw message send --chat \"$1\" --text \"job $(jq -r .job_id \"$AGENT_EXEC_EVENT_PATH\") finished with state=$(jq -r .state \"$AGENT_EXEC_EVENT_PATH\") exit_code=$(jq -r ''.exit_code // \"n/a\"'' \"$AGENT_EXEC_EVENT_PATH\")\"",
-    "sh",
-    $chat
-  ]
-')
-
 agent-exec run \
-  --notify-command "$NOTIFY_COMMAND" \
+  --notify-command 'openclaw message send --chat telegram:deployments --text "job $(jq -r .job_id "$AGENT_EXEC_EVENT_PATH") finished: state=$(jq -r .state "$AGENT_EXEC_EVENT_PATH")"' \
   -- long-running-command --flag value
 ```
 
-For repeated use, a checked-in helper is usually easier to review and maintain than a long inline shell command.
+For repeated use, a checked-in helper script is easier to review and maintain than a long inline command.
 
 #### Return the event to the launching OpenClaw session
 
@@ -199,18 +189,9 @@ This pattern is often more flexible than sending a final user message directly f
 
 ```bash
 SESSION_ID="oc_session_123"
-NOTIFY_COMMAND=$(jq -nc --arg session "$SESSION_ID" '
-  [
-    "sh",
-    "-lc",
-    "openclaw message send --session \"$1\" --text \"$(jq -c . \"$AGENT_EXEC_EVENT_PATH\")\"",
-    "sh",
-    $session
-  ]
-')
 
 agent-exec run \
-  --notify-command "$NOTIFY_COMMAND" \
+  --notify-command "openclaw message send --session $SESSION_ID --text \"\$(jq -c . \"\$AGENT_EXEC_EVENT_PATH\")\"" \
   -- ./scripts/run-heavy-task.sh
 ```
 
@@ -220,18 +201,9 @@ If you want explicit agent re-entry instead of lightweight message delivery, cal
 
 ```bash
 SESSION_ID="oc_session_123"
-NOTIFY_COMMAND=$(jq -nc --arg session "$SESSION_ID" '
-  [
-    "sh",
-    "-lc",
-    "openclaw agent --session-id \"$1\" --deliver \"$(jq -c . \"$AGENT_EXEC_EVENT_PATH\")\"",
-    "sh",
-    $session
-  ]
-')
 
 agent-exec run \
-  --notify-command "$NOTIFY_COMMAND" \
+  --notify-command "openclaw agent --session-id $SESSION_ID --deliver \"\$(jq -c . \"\$AGENT_EXEC_EVENT_PATH\")\"" \
   -- ./scripts/run-heavy-task.sh
 ```
 
@@ -251,7 +223,7 @@ A separate worker can tail or batch-process the NDJSON file, retry failed downst
 
 ### Operational guidance
 
-- `--notify-command` must be a JSON argv array, not a shell string.
+- `--notify-command` accepts a plain shell command string; no JSON encoding is needed.
 - Keep notify commands small, fast, and idempotent.
 - Common sink failures include quoting mistakes, PATH or env mismatches, downstream non-zero exits, and wrong chat, session, or delivery-mode targets.
 - If you need heavier orchestration, let the notify sink hand off to a checked-in helper or durable worker.

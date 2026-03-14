@@ -2157,14 +2157,13 @@ fn notify_command_sink_receives_event_via_stdin() {
     let captured_str = captured_file.to_str().unwrap();
 
     // Hook command: read stdin and write to captured_file.
-    // Use sh -c to compose the command from a single string.
-    let hook_argv = serde_json::to_string(&["/bin/sh", "-c", &format!("cat > {captured_str}")])
-        .expect("serialize argv");
+    // --notify-command now accepts a shell command string directly.
+    let hook_cmd = format!("cat > {captured_str}");
 
     let v = h.run(&[
         "run",
         "--notify-command",
-        &hook_argv,
+        &hook_cmd,
         "--wait",
         "--",
         "echo",
@@ -2204,13 +2203,13 @@ fn notify_command_sink_receives_event_via_stdin() {
 #[test]
 fn notify_failure_does_not_change_job_state() {
     let h = TestHarness::new();
-    let hook_argv =
-        serde_json::to_string(&["/no/such/binary/agent_exec_test"]).expect("serialize argv");
+    // --notify-command now accepts a shell command string directly.
+    let hook_cmd = "/no/such/binary/agent_exec_test";
 
     let v = h.run(&[
         "run",
         "--notify-command",
-        &hook_argv,
+        hook_cmd,
         "--wait",
         "--",
         "echo",
