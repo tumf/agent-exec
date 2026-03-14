@@ -34,8 +34,10 @@ If the job is killed by a signal, expect `state` to become `killed`; `signal` ma
 
 Use these `run` options:
 
-- `--notify-command <COMMAND>`: execute a shell command string (`sh -lc` on Unix, `cmd /C` on Windows) and write the event JSON to stdin
+- `--notify-command <COMMAND>`: execute a shell command string via the configured shell wrapper (default: `sh -lc` on Unix, `cmd /C` on Windows) and write the event JSON to stdin
 - `--notify-file <PATH>`: append one NDJSON line per completed job
+- `--config <PATH>`: load shell wrapper config from a specific `config.toml` (XDG default: `~/.config/agent-exec/config.toml`)
+- `--shell-wrapper <PROG FLAGS>`: override shell wrapper for this invocation; affects both command-string execution and `--notify-command`
 
 ### Choosing a sink
 

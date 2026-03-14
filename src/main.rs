@@ -91,8 +91,8 @@ enum Command {
         #[arg(long, default_value = "200")]
         wait_poll_ms: u64,
 
-        /// Shell command string to run on job completion; executed via the platform shell
-        /// (`sh -lc` on Unix, `cmd /C` on Windows). Event JSON is sent to stdin.
+        /// Shell command string to run on job completion; executed via the configured shell
+        /// wrapper. Event JSON is sent to stdin.
         /// Also sets AGENT_EXEC_EVENT_PATH, AGENT_EXEC_JOB_ID, and AGENT_EXEC_EVENT_TYPE.
         #[arg(long, value_name = "COMMAND")]
         notify_command: Option<String>,
@@ -100,6 +100,15 @@ enum Command {
         /// File path that receives one NDJSON `job.finished` event per completed job.
         #[arg(long, value_name = "PATH")]
         notify_file: Option<String>,
+
+        /// Path to a config.toml file to load (overrides XDG default).
+        #[arg(long, value_name = "PATH")]
+        config: Option<String>,
+
+        /// Shell wrapper program and flags used to execute command strings
+        /// (e.g. "bash -lc"). Overrides the config file and built-in default.
+        #[arg(long, value_name = "PROGRAM AND FLAGS")]
+        shell_wrapper: Option<String>,
 
         /// Command and arguments to run.
         #[arg(required = true, trailing_var_arg = true)]
@@ -249,8 +258,8 @@ enum Command {
         #[arg(long, default_value = "0")]
         progress_every: u64,
 
-        /// Shell command string to run on job completion; executed via the platform shell
-        /// (`sh -lc` on Unix, `cmd /C` on Windows). Event JSON is sent to stdin.
+        /// Shell command string to run on job completion; executed via the configured shell
+        /// wrapper. Event JSON is sent to stdin.
         /// Also sets AGENT_EXEC_EVENT_PATH, AGENT_EXEC_JOB_ID, and AGENT_EXEC_EVENT_TYPE.
         #[arg(long, value_name = "COMMAND")]
         notify_command: Option<String>,
@@ -258,6 +267,10 @@ enum Command {
         /// File path that receives one NDJSON `job.finished` event per completed job.
         #[arg(long, value_name = "PATH")]
         notify_file: Option<String>,
+
+        /// Resolved shell wrapper argv joined as a string (set by `run`, not by users).
+        #[arg(long, value_name = "PROGRAM AND FLAGS")]
+        shell_wrapper: Option<String>,
 
         #[arg(required = true, trailing_var_arg = true)]
         command: Vec<String>,
@@ -321,12 +334,19 @@ fn run(cli: Cli) -> Result<()> {
             wait_poll_ms,
             notify_command,
             notify_file,
+            config,
+            shell_wrapper,
             command,
         } => {
             // --inherit-env and --no-inherit-env are mutually exclusive (enforced by clap).
             // If neither is specified, default is to inherit (inherit_env=true).
             // If --no-inherit-env is set, inherit_env=false.
             let should_inherit = !no_inherit_env;
+            // Resolve the shell wrapper using CLI override, config file, or defaults.
+            let resolved_wrapper = agent_exec::config::resolve_shell_wrapper(
+                shell_wrapper.as_deref(),
+                config.as_deref(),
+            )?;
             agent_exec::run::execute(agent_exec::run::RunOpts {
                 command,
                 root: root.as_deref(),
@@ -346,6 +366,7 @@ fn run(cli: Cli) -> Result<()> {
                 wait_poll_ms,
                 notify_command,
                 notify_file,
+                shell_wrapper: resolved_wrapper,
             })?;
         }
 
@@ -437,9 +458,16 @@ fn run(cli: Cli) -> Result<()> {
             progress_every,
             notify_command,
             notify_file,
+            shell_wrapper,
             command,
         } => {
             let should_inherit = !no_inherit_env;
+            // Resolve shell wrapper; the supervisor receives a pre-joined string
+            // from `run`, so we parse it back. If absent, fall back to defaults.
+            let resolved_wrapper = agent_exec::config::resolve_shell_wrapper(
+                shell_wrapper.as_deref(),
+                None,
+            )?;
             agent_exec::run::supervise(agent_exec::run::SuperviseOpts {
                 job_id: &job_id,
                 root: std::path::Path::new(&root),
@@ -454,6 +482,7 @@ fn run(cli: Cli) -> Result<()> {
                 progress_every_ms: progress_every,
                 notify_command,
                 notify_file,
+                shell_wrapper: resolved_wrapper,
             })?;
         }
     }

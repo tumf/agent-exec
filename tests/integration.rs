@@ -2263,3 +2263,161 @@ fn notify_failure_does_not_change_job_state() {
         "sink_type must be 'command'"
     );
 }
+
+// ── shell wrapper configuration ──────────────────────────────────────────────
+
+/// Default shell wrapper behavior: job runs successfully with the built-in
+/// platform default (no --shell-wrapper, no config file).
+#[test]
+fn shell_wrapper_default_behavior() {
+    let h = TestHarness::new();
+    let v = h.run(&["run", "--wait", "--", "echo", "hello_shell_wrapper"]);
+    assert_envelope(&v, "run", true);
+    assert_eq!(
+        v["state"].as_str().unwrap_or(""),
+        "exited",
+        "job must exit successfully with default shell wrapper"
+    );
+}
+
+/// CLI --shell-wrapper overrides the default: a custom wrapper is accepted and
+/// used when running a command string via --notify-command.
+#[test]
+fn shell_wrapper_cli_override_with_notify_command() {
+    let h = TestHarness::new();
+    let tmp_dir = tempfile::tempdir().expect("create tempdir");
+    let captured = tmp_dir.path().join("captured.txt");
+    let captured_str = captured.to_str().unwrap();
+    let hook_cmd = format!("echo wrapper_used > {captured_str}");
+
+    let v = h.run(&[
+        "run",
+        "--shell-wrapper",
+        "sh -lc",
+        "--notify-command",
+        &hook_cmd,
+        "--wait",
+        "--",
+        "echo",
+        "sw_test",
+    ]);
+    assert_envelope(&v, "run", true);
+    assert_eq!(v["state"].as_str().unwrap_or(""), "exited");
+
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(captured.exists(), "hook command output file must exist");
+    let content = std::fs::read_to_string(&captured).unwrap();
+    assert!(content.contains("wrapper_used"), "hook must have run");
+}
+
+/// Config file --config overrides the built-in default: a config.toml with
+/// unix = ["sh", "-lc"] is loaded and accepted.
+#[test]
+fn shell_wrapper_config_file_override() {
+    let h = TestHarness::new();
+    let tmp_dir = tempfile::tempdir().expect("create tempdir");
+    let config_path = tmp_dir.path().join("config.toml");
+    std::fs::write(
+        &config_path,
+        "[shell]\nunix = [\"sh\", \"-lc\"]\nwindows = [\"cmd\", \"/C\"]\n",
+    )
+    .unwrap();
+
+    let v = h.run(&[
+        "run",
+        "--config",
+        config_path.to_str().unwrap(),
+        "--wait",
+        "--",
+        "echo",
+        "config_test",
+    ]);
+    assert_envelope(&v, "run", true);
+    assert_eq!(
+        v["state"].as_str().unwrap_or(""),
+        "exited",
+        "job must exit with config file shell wrapper"
+    );
+}
+
+/// CLI --shell-wrapper takes precedence over --config when both are specified.
+#[test]
+fn shell_wrapper_cli_takes_precedence_over_config() {
+    let h = TestHarness::new();
+    let tmp_dir = tempfile::tempdir().expect("create tempdir");
+    let config_path = tmp_dir.path().join("config.toml");
+    // Config specifies a valid wrapper.
+    std::fs::write(
+        &config_path,
+        "[shell]\nunix = [\"sh\", \"-lc\"]\nwindows = [\"cmd\", \"/C\"]\n",
+    )
+    .unwrap();
+
+    let v = h.run(&[
+        "run",
+        "--config",
+        config_path.to_str().unwrap(),
+        "--shell-wrapper",
+        "sh -lc",
+        "--wait",
+        "--",
+        "echo",
+        "precedence_test",
+    ]);
+    assert_envelope(&v, "run", true);
+    assert_eq!(
+        v["state"].as_str().unwrap_or(""),
+        "exited",
+        "job must succeed when CLI wrapper overrides config"
+    );
+}
+
+/// Invalid config file (bad TOML syntax) causes a command failure with JSON error output.
+#[test]
+fn shell_wrapper_invalid_config_file_fails() {
+    let h = TestHarness::new();
+    let tmp_dir = tempfile::tempdir().expect("create tempdir");
+    let config_path = tmp_dir.path().join("config.toml");
+    std::fs::write(&config_path, "this is not valid toml {{{ ").unwrap();
+
+    let v = h.run(&[
+        "run",
+        "--config",
+        config_path.to_str().unwrap(),
+        "--wait",
+        "--",
+        "echo",
+        "should_fail",
+    ]);
+    // Must return a JSON error envelope.
+    assert_envelope(&v, "error", false);
+}
+
+/// Shared wrapper: --shell-wrapper affects --notify-command delivery too.
+#[test]
+fn shell_wrapper_shared_between_run_and_notify_command() {
+    let h = TestHarness::new();
+    let tmp_dir = tempfile::tempdir().expect("create tempdir");
+    let captured = tmp_dir.path().join("shared_wrapper.txt");
+    let captured_str = captured.to_str().unwrap();
+    let hook_cmd = format!("echo shared_wrapper_ran > {captured_str}");
+
+    let v = h.run(&[
+        "run",
+        "--shell-wrapper",
+        "sh -lc",
+        "--notify-command",
+        &hook_cmd,
+        "--wait",
+        "--",
+        "echo",
+        "shared_test",
+    ]);
+    assert_envelope(&v, "run", true);
+    assert_eq!(v["state"].as_str().unwrap_or(""), "exited");
+
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(captured.exists(), "notify-command must have run using the configured wrapper");
+    let content = std::fs::read_to_string(&captured).unwrap();
+    assert!(content.contains("shared_wrapper_ran"), "notify-command output must confirm wrapper execution");
+}
