@@ -118,15 +118,14 @@ pub fn execute(opts: RunOpts) -> Result<()> {
     // Canonicalize the path for consistent comparison; fall back to absolute path on failure.
     let effective_cwd = resolve_effective_cwd(opts.cwd);
 
-    let notification =
-        if opts.notify_command.is_some() || opts.notify_file.is_some() {
-            Some(crate::schema::NotificationConfig {
-                notify_command: opts.notify_command.clone(),
-                notify_file: opts.notify_file.clone(),
-            })
-        } else {
-            None
-        };
+    let notification = if opts.notify_command.is_some() || opts.notify_file.is_some() {
+        Some(crate::schema::NotificationConfig {
+            notify_command: opts.notify_command.clone(),
+            notify_file: opts.notify_file.clone(),
+        })
+    } else {
+        None
+    };
 
     let meta = JobMeta {
         job: JobMetaJob { id: job_id.clone() },
@@ -699,12 +698,12 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
                     let fail_event_path = job_dir.completion_event_path().display().to_string();
                     let mut fail_delivery_results: Vec<crate::schema::SinkDeliveryResult> =
                         Vec::new();
-                    if let Err(we) =
-                        job_dir.write_completion_event_atomic(&crate::schema::CompletionEventRecord {
+                    if let Err(we) = job_dir.write_completion_event_atomic(
+                        &crate::schema::CompletionEventRecord {
                             event: fail_event.clone(),
                             delivery_results: vec![],
-                        })
-                    {
+                        },
+                    ) {
                         warn!(
                             job_id,
                             error = %we,
@@ -720,15 +719,14 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
                         ));
                     }
                     if let Some(ref file_path) = opts.notify_file {
-                        fail_delivery_results
-                            .push(dispatch_file_sink(file_path, &fail_event_json));
+                        fail_delivery_results.push(dispatch_file_sink(file_path, &fail_event_json));
                     }
-                    if let Err(we) =
-                        job_dir.write_completion_event_atomic(&crate::schema::CompletionEventRecord {
+                    if let Err(we) = job_dir.write_completion_event_atomic(
+                        &crate::schema::CompletionEventRecord {
                             event: fail_event,
                             delivery_results: fail_delivery_results,
-                        })
-                    {
+                        },
+                    ) {
                         warn!(
                             job_id,
                             error = %we,
@@ -966,25 +964,34 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
         let mut delivery_results: Vec<crate::schema::SinkDeliveryResult> = Vec::new();
 
         // Write initial completion_event.json before dispatching sinks.
-        if let Err(e) = job_dir.write_completion_event_atomic(&crate::schema::CompletionEventRecord {
-            event: event.clone(),
-            delivery_results: vec![],
-        }) {
+        if let Err(e) =
+            job_dir.write_completion_event_atomic(&crate::schema::CompletionEventRecord {
+                event: event.clone(),
+                delivery_results: vec![],
+            })
+        {
             warn!(job_id, error = %e, "failed to write initial completion_event.json");
         }
 
         if let Some(ref argv) = opts.notify_command {
-            delivery_results.push(dispatch_command_sink(argv, &event_json, job_id, &event_path));
+            delivery_results.push(dispatch_command_sink(
+                argv,
+                &event_json,
+                job_id,
+                &event_path,
+            ));
         }
         if let Some(ref file_path) = opts.notify_file {
             delivery_results.push(dispatch_file_sink(file_path, &event_json));
         }
 
         // Update completion_event.json with delivery results.
-        if let Err(e) = job_dir.write_completion_event_atomic(&crate::schema::CompletionEventRecord {
-            event,
-            delivery_results,
-        }) {
+        if let Err(e) =
+            job_dir.write_completion_event_atomic(&crate::schema::CompletionEventRecord {
+                event,
+                delivery_results,
+            })
+        {
             warn!(job_id, error = %e, "failed to update completion_event.json with delivery results");
         }
     }
@@ -1065,24 +1072,21 @@ fn dispatch_command_sink(
 
 /// Dispatch the file sink: append event JSON as a single NDJSON line.
 /// Creates parent directories automatically.
-fn dispatch_file_sink(
-    file_path: &str,
-    event_json: &str,
-) -> crate::schema::SinkDeliveryResult {
+fn dispatch_file_sink(file_path: &str, event_json: &str) -> crate::schema::SinkDeliveryResult {
     use std::io::Write;
     let attempted_at = now_rfc3339();
     let path = std::path::Path::new(file_path);
 
-    if let Some(parent) = path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            return crate::schema::SinkDeliveryResult {
-                sink_type: "file".to_string(),
-                target: file_path.to_string(),
-                success: false,
-                error: Some(format!("create parent dir: {e}")),
-                attempted_at,
-            };
-        }
+    if let Some(parent) = path.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        return crate::schema::SinkDeliveryResult {
+            sink_type: "file".to_string(),
+            target: file_path.to_string(),
+            success: false,
+            error: Some(format!("create parent dir: {e}")),
+            attempted_at,
+        };
     }
 
     match std::fs::OpenOptions::new()

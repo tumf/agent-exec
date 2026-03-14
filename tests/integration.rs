@@ -2254,9 +2254,8 @@ fn notify_failure_does_not_change_job_state() {
         .as_array()
         .expect("delivery_results must be an array");
     assert!(!results.is_empty(), "delivery_results must be non-empty");
-    assert_eq!(
-        results[0]["success"].as_bool().unwrap_or(true),
-        false,
+    assert!(
+        !results[0]["success"].as_bool().unwrap_or(true),
         "delivery must have failed"
     );
     assert_eq!(

@@ -94,6 +94,10 @@ Key options:
 | `--cwd <dir>` | inherited | Working directory |
 | `--env KEY=VALUE` | — | Set environment variable (repeatable) |
 | `--mask KEY` | — | Redact secret values from JSON output (repeatable) |
+| `--wait` | false | Block until the job reaches a terminal state |
+| `--wait-poll-ms <ms>` | 200 | Poll interval used with `--wait` |
+| `--notify-command <JSON_ARGV>` | — | Run a command when the job finishes; event JSON is sent on stdin |
+| `--notify-file <PATH>` | — | Append a `job.finished` event as NDJSON |
 
 ### `status` — get job state
 
@@ -130,6 +134,59 @@ agent-exec kill [--signal TERM|INT|KILL] <JOB_ID>
 ```bash
 agent-exec list [--state running|exited|killed|failed] [--limit N]
 ```
+
+## Job Finished Events
+
+When `run` is called with `--notify-command` or `--notify-file`, `agent-exec` emits a `job.finished` event after the job reaches a terminal state.
+
+- `--notify-command` runs the provided argv without a shell and writes the event JSON to stdin.
+- `--notify-file` appends the event as a single NDJSON line.
+- `completion_event.json` is also written in the job directory with the event plus sink delivery results.
+
+Example:
+
+```bash
+agent-exec run \
+  --wait \
+  --notify-file /tmp/agent-exec-events.ndjson \
+  -- echo hello
+```
+
+Command sink example:
+
+```bash
+agent-exec run \
+  --wait \
+  --notify-command '["/bin/sh","-c","cat > /tmp/agent-exec-event.json"]' \
+  -- echo hello
+```
+
+For command sinks, the event JSON is written to stdin and these environment variables are set:
+
+- `AGENT_EXEC_EVENT_PATH`: path to the persisted `completion_event.json`
+- `AGENT_EXEC_JOB_ID`: finished job id
+- `AGENT_EXEC_EVENT_TYPE`: currently `job.finished`
+
+Example `job.finished` payload:
+
+```json
+{
+  "schema_version": "0.1",
+  "event_type": "job.finished",
+  "job_id": "01J...",
+  "state": "exited",
+  "command": ["echo", "hello"],
+  "cwd": "/path/to/cwd",
+  "started_at": "2026-03-15T12:00:00Z",
+  "finished_at": "2026-03-15T12:00:00Z",
+  "duration_ms": 12,
+  "exit_code": 0,
+  "stdout_log_path": "/jobs/01J.../stdout.log",
+  "stderr_log_path": "/jobs/01J.../stderr.log"
+}
+```
+
+If the job is killed by a signal, `state` becomes `killed`, `exit_code` may be absent, and `signal` is populated when available.
 
 ## Logging
 

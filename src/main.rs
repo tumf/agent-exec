@@ -87,15 +87,16 @@ enum Command {
         #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue)]
         wait: bool,
 
-        /// Poll interval in milliseconds when --wait is used.
+        /// Poll interval in milliseconds while waiting for a terminal state.
         #[arg(long, default_value = "200")]
         wait_poll_ms: u64,
 
-        /// JSON array of argv strings for command notification sink (e.g. '["/bin/hook"]').
+        /// JSON array of argv strings to run on job completion; event JSON is sent to stdin.
+        /// Also sets AGENT_EXEC_EVENT_PATH, AGENT_EXEC_JOB_ID, and AGENT_EXEC_EVENT_TYPE.
         #[arg(long, value_name = "JSON_ARGV")]
         notify_command: Option<String>,
 
-        /// File path for NDJSON notification sink.
+        /// File path that receives one NDJSON `job.finished` event per completed job.
         #[arg(long, value_name = "PATH")]
         notify_file: Option<String>,
 
@@ -247,11 +248,12 @@ enum Command {
         #[arg(long, default_value = "0")]
         progress_every: u64,
 
-        /// JSON array of argv strings for command notification sink.
+        /// JSON array of argv strings to run on job completion; event JSON is sent to stdin.
+        /// Also sets AGENT_EXEC_EVENT_PATH, AGENT_EXEC_JOB_ID, and AGENT_EXEC_EVENT_TYPE.
         #[arg(long, value_name = "JSON_ARGV")]
         notify_command: Option<String>,
 
-        /// File path for NDJSON notification sink.
+        /// File path that receives one NDJSON `job.finished` event per completed job.
         #[arg(long, value_name = "PATH")]
         notify_file: Option<String>,
 
@@ -324,8 +326,9 @@ fn run(cli: Cli) -> Result<()> {
             // If --no-inherit-env is set, inherit_env=false.
             let should_inherit = !no_inherit_env;
             let notify_command_parsed = if let Some(ref s) = notify_command {
-                let v: Vec<String> = serde_json::from_str(s)
-                    .map_err(|e| anyhow::anyhow!("--notify-command: expected JSON array of strings: {e}"))?;
+                let v: Vec<String> = serde_json::from_str(s).map_err(|e| {
+                    anyhow::anyhow!("--notify-command: expected JSON array of strings: {e}")
+                })?;
                 Some(v)
             } else {
                 None
@@ -444,8 +447,9 @@ fn run(cli: Cli) -> Result<()> {
         } => {
             let should_inherit = !no_inherit_env;
             let notify_command_parsed = if let Some(ref s) = notify_command {
-                let v: Vec<String> = serde_json::from_str(s)
-                    .map_err(|e| anyhow::anyhow!("--notify-command: expected JSON array of strings: {e}"))?;
+                let v: Vec<String> = serde_json::from_str(s).map_err(|e| {
+                    anyhow::anyhow!("--notify-command: expected JSON array of strings: {e}")
+                })?;
                 Some(v)
             } else {
                 None

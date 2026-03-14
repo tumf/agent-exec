@@ -1,108 +1,85 @@
-# agent-exec Skill
+---
+name: agent-exec
+description: Run and manage non-interactive background jobs with the `agent-exec` CLI. Use when Claude needs to run a command in the background, return a job id immediately, poll or wait for completion, tail logs, inspect or kill jobs, list jobs by state or working directory, install the built-in skill, or trigger job-finished notifications via `job.finished` events.
+---
 
-Agent skill for running background jobs and managing their lifecycle via the `agent-exec` CLI.
+# agent-exec
 
-## Overview
+Use `agent-exec` when a command should run as a managed job instead of an inline shell process.
 
-`agent-exec` is a non-interactive job runner designed for use by AI agents. All output is JSON-only on stdout; diagnostic logs go to stderr.
+## Follow these rules
 
-## Commands
+- Keep stdout machine-readable. `agent-exec` prints one JSON object to stdout; diagnostic logs belong on stderr.
+- Prefer `agent-exec run` for long-running or pollable work, then use `status`, `tail`, `wait`, `kill`, or `list` as needed.
+- Use `--wait` when the caller needs terminal state in the initial response.
+- Use `--mask KEY` for secrets passed via `--env`; masked values appear as `***` in JSON and persisted metadata.
+- Use `--notify-command` or `--notify-file` when another process must react to job completion.
 
-### `run` — Start a background job
+Read `references/cli-contract.md` when you need the exact response envelope, exit-code behavior, or `run`/`list` contract details.
+
+Read `references/completion-events.md` when you need the `job.finished` payload shape, sink behavior, or `completion_event.json` semantics.
+
+## Run a job
 
 ```bash
 agent-exec run [OPTIONS] -- <COMMAND> [ARGS...]
 ```
 
-Returns a JSON response immediately with a `job_id`. Use `--wait` to block until completion.
+Use these options most often:
 
-Key options:
-- `--root <DIR>` — Override the jobs root directory
-- `--snapshot-after <MS>` — Wait N ms before returning with a log snapshot (default: 10000)
-- `--tail-lines <N>` — Lines to include in snapshot (default: 50)
-- `--timeout <MS>` — Kill the job after N ms (0 = no timeout)
-- `--cwd <DIR>` — Working directory for the command
-- `--env KEY=VALUE` — Set an environment variable (repeatable)
-- `--mask KEY` — Mask a secret value in output (repeatable)
-- `--wait` — Block until the job finishes
+- `--snapshot-after <ms>`: delay the initial response briefly to include a snapshot
+- `--timeout <ms>` / `--kill-after <ms>`: enforce termination deadlines
+- `--cwd <dir>`: run from a specific directory
+- `--env KEY=VALUE` / `--env-file <file>`: set environment variables
+- `--no-inherit-env`: avoid inheriting the current process environment
+- `--wait` / `--wait-poll-ms <ms>`: return only after the job reaches a terminal state
+- `--notify-command <JSON_ARGV>`: run a command on completion; send event JSON to stdin
+- `--notify-file <PATH>`: append one NDJSON `job.finished` event per completed job
 
-### `status` — Get job status
+Use `--notify-command` with a JSON argv array, not a shell string. The command sink also receives:
 
-```bash
-agent-exec status <JOB_ID>
-```
+- `AGENT_EXEC_EVENT_PATH`
+- `AGENT_EXEC_JOB_ID`
+- `AGENT_EXEC_EVENT_TYPE`
 
-### `tail` — Read stdout/stderr tail
+## Inspect a job
 
-```bash
-agent-exec tail [--tail-lines N] <JOB_ID>
-```
+Use these commands after `run`:
 
-### `wait` — Wait for a job to finish
+- `agent-exec status <JOB_ID>`: read current state (`running`, `exited`, `killed`, `failed`)
+- `agent-exec tail [--tail-lines N] [--max-bytes N] <JOB_ID>`: read stdout/stderr tails
+- `agent-exec wait [--timeout-ms N] [--poll-ms N] <JOB_ID>`: block until terminal state
+- `agent-exec kill [--signal TERM|INT|KILL] <JOB_ID>`: request termination
 
-```bash
-agent-exec wait [--timeout-ms N] <JOB_ID>
-```
-
-### `kill` — Send a signal to a job
+## List jobs
 
 ```bash
-agent-exec kill [--signal TERM|INT|KILL] <JOB_ID>
+agent-exec list [--state running|exited|killed|failed|unknown] [--cwd DIR] [--all] [--limit N]
 ```
 
-### `list` — List all jobs
+- By default, `list` filters to the caller's current working directory.
+- Use `--cwd <dir>` to filter by a specific directory.
+- Use `--all` to disable cwd filtering.
 
-```bash
-agent-exec list [--state running|exited|killed|failed] [--cwd DIR]
-```
+## Handle completion events
 
-### `install-skills` — Install agent skills
+Read `references/completion-events.md` for the full `job.finished` payload, sink environment variables, and persistence details.
+
+## Install the built-in skill
 
 ```bash
 agent-exec install-skills [--source self|local:<path>] [--global]
 ```
 
-Installs agent skills into `.agents/skills/` (or `~/.agents/skills/` with `--global`).
-Updates `.agents/.skill-lock.json` to track installed skills.
+- Use `self` to install the built-in `agent-exec` skill.
+- Use `local:<path>` to install a local skill directory.
+- Expect installation into `./.agents/skills/` by default or `~/.agents/skills/` with `--global`.
+- Expect `.agents/.skill-lock.json` to be created or updated.
 
-Sources:
-- `self` — Install the built-in `agent-exec` skill (default)
-- `local:<path>` — Install a skill from a local directory
+## Respect the contract
 
-## JSON Response Format
-
-All responses share a common envelope:
-
-```json
-{
-  "schema_version": "0.1",
-  "ok": true,
-  "type": "<command>",
-  ...
-}
-```
-
-Errors:
-
-```json
-{
-  "schema_version": "0.1",
-  "ok": false,
-  "type": "error",
-  "error": {
-    "code": "<error_code>",
-    "message": "<description>",
-    "retryable": false
-  }
-}
-```
-
-## Environment Variables
-
-- `AGENT_EXEC_ROOT` — Override the default jobs root directory
-
-## Exit Codes
-
-- `0` — Success
-- `1` — Expected failure (JSON error response emitted to stdout)
-- `2` — Usage error (clap argument parsing failure)
+- Treat exit code `0` as success.
+- Treat exit code `1` as an expected failure with a JSON error envelope on stdout.
+- Treat exit code `2` as a clap usage error.
+- Do not emit extra stdout text around `agent-exec` responses.
+- Read `references/cli-contract.md` before changing assumptions about response fields.
