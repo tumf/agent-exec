@@ -42,6 +42,12 @@ Use `--notify-command` with a JSON argv array, not a shell string. The command s
 - `AGENT_EXEC_JOB_ID`
 - `AGENT_EXEC_EVENT_TYPE`
 
+Choose the sink based on who needs the event next:
+
+- Use `--notify-command` when a small, fast, direct action should happen immediately after completion, such as posting to a chat, calling a webhook helper, or routing the event back to a launcher session.
+- Use `--notify-file` when another durable worker should consume events later, retries matter, or several downstream systems may need the same event.
+- Prefer checked-in helper scripts over large inline shell or Python snippets so quoting, dependencies, and reply-target logic stay reviewable.
+
 ## Inspect a job
 
 Use these commands after `run`:
@@ -64,6 +70,18 @@ agent-exec list [--state running|exited|killed|failed|unknown] [--cwd DIR] [--al
 ## Handle completion events
 
 Read `references/completion-events.md` for the full `job.finished` payload, sink environment variables, and persistence details.
+
+Suggested patterns:
+
+- Notify a chat directly: use `--notify-command` with a checked-in helper that reads event JSON from stdin and sends a short success or failure message.
+- Return the event to the launching OpenClaw session: use `--notify-command` to call a helper that forwards the event to the original session or conversation id; let the launcher inspect logs and decide what to say next.
+- Append to a file for a durable worker: use `--notify-file` when a separate process should handle retries, fanout, or slower downstream APIs.
+
+Operational reminders:
+
+- Notification delivery is best effort. Sink failure does not change the main job state.
+- Check `completion_event.json.delivery_results` when delivery success matters.
+- Keep notify commands idempotent and quick; long or fragile sink logic belongs in a script or worker.
 
 ## Install the built-in skill
 

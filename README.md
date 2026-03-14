@@ -142,6 +142,14 @@ When `run` is called with `--notify-command` or `--notify-file`, `agent-exec` em
 - `--notify-command` runs the provided argv without a shell and writes the event JSON to stdin.
 - `--notify-file` appends the event as a single NDJSON line.
 - `completion_event.json` is also written in the job directory with the event plus sink delivery results.
+- Notification delivery is best effort; sink failures do not change the main job state.
+- When delivery success matters, inspect `completion_event.json.delivery_results`.
+
+Choose the sink based on the next consumer:
+
+- Use `--notify-command` for small, direct reactions such as posting to chat or forwarding the event back to the launching OpenClaw session.
+- Use `--notify-file` when you want a durable queue-like handoff to a separate worker that can retry or fan out.
+- Prefer checked-in helper scripts over large inline shell or Python snippets.
 
 Example:
 
@@ -160,6 +168,86 @@ agent-exec run \
   --notify-command '["/bin/sh","-c","cat > /tmp/agent-exec-event.json"]' \
   -- echo hello
 ```
+
+### OpenClaw examples
+
+#### Notify a Telegram chat directly
+
+Use a small checked-in helper so the notify command stays easy to review:
+
+```bash
+agent-exec run \
+  --notify-command '["./scripts/notify-telegram.sh"]' \
+  -- long-running-command --flag value
+```
+
+Example helper shape:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+tmp=$(mktemp)
+trap 'rm -f "$tmp"' EXIT
+cat > "$tmp"
+
+job_id=$(jq -r '.job_id' "$tmp")
+state=$(jq -r '.state' "$tmp")
+exit_code=$(jq -r '.exit_code // "n/a"' "$tmp")
+
+openclaw message send \
+  --chat telegram:deployments \
+  --text "job ${job_id} finished with state=${state} exit_code=${exit_code}"
+```
+
+#### Return the event to the launching OpenClaw session
+
+This pattern is often more flexible than sending a final user message directly from the notify command. The launching session can inspect logs, decide whether the result is meaningful, and summarize it in context.
+
+```bash
+SESSION_ID="oc_session_123"
+
+agent-exec run \
+  --notify-command "[\"./scripts/return-to-openclaw-session.sh\",\"${SESSION_ID}\"]" \
+  -- ./scripts/run-heavy-task.sh
+```
+
+Example helper shape:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+session_id="$1"
+tmp=$(mktemp)
+trap 'rm -f "$tmp"' EXIT
+cat > "$tmp"
+
+openclaw message send \
+  --session "$session_id" \
+  --text "$(jq -c . "$tmp")"
+```
+
+With this pattern, the receiving OpenClaw session can read the event payload, inspect `stdout_log_path` or `stderr_log_path`, and decide whether to reply, retry, or trigger follow-up work.
+
+#### Durable file-based worker
+
+Use `--notify-file` when you want retries or fanout outside the main job lifecycle:
+
+```bash
+agent-exec run \
+  --notify-file /var/lib/agent-exec/events.ndjson \
+  -- ./scripts/run-heavy-task.sh
+```
+
+A separate worker can tail or batch-process the NDJSON file, retry failed downstream sends, and route events to chat, webhooks, or OpenClaw sessions without coupling that logic to the main job completion path.
+
+### Operational guidance
+
+- `--notify-command` must be a JSON argv array, not a shell string.
+- Keep notify commands small, fast, and idempotent.
+- Common sink failures include quoting mistakes, PATH or env mismatches, downstream non-zero exits, and wrong chat or session targets.
+- If you need heavier orchestration, let the notify sink hand off to a checked-in helper or durable worker.
 
 For command sinks, the event JSON is written to stdin and these environment variables are set:
 

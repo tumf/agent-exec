@@ -37,6 +37,12 @@ Use these `run` options:
 - `--notify-command <JSON_ARGV>`: spawn a command without a shell and write the event JSON to stdin
 - `--notify-file <PATH>`: append one NDJSON line per completed job
 
+### Choosing a sink
+
+- Use `--notify-command` for immediate, low-latency reactions such as posting to chat, invoking a webhook helper, or returning the event to the launching OpenClaw session.
+- Use `--notify-file` when a durable worker should process events later, retries are important, or multiple downstream consumers need the same event stream.
+- Prefer checked-in helper scripts over large inline shell or Python snippets. Small wrappers are easier to quote correctly, review, and reuse.
+
 Command sinks also receive:
 
 - `AGENT_EXEC_EVENT_PATH`: path to persisted `completion_event.json`
@@ -49,3 +55,23 @@ Command sinks also receive:
 - Expect `completion_event.json` to include the event plus `delivery_results` for each sink.
 - Treat notification delivery as best effort; sink failures do not change the final job state.
 - Inspect `delivery_results` when notification success matters.
+
+### Best practices
+
+- Keep command sinks small, fast, and idempotent.
+- Use stdin for the full event JSON and the environment variables for cheap routing metadata.
+- Treat command sinks as a trigger, not a workflow engine; move retries, fanout, and heavier logic into a checked-in helper or a separate worker.
+
+### Common failure modes
+
+- Wrong quoting when passing `--notify-command`; it must be a JSON argv array, not a shell pipeline string.
+- PATH or environment mismatch inside the sink process; use absolute paths or wrapper scripts when possible.
+- Downstream command exits non-zero even though the main job succeeded.
+- Wrong reply target, chat id, or OpenClaw session id in the notify helper.
+- Notify helper assumes delivery success without checking `completion_event.json.delivery_results` afterward.
+
+### OpenClaw-oriented patterns
+
+- Notify a chat directly: a helper reads the event from stdin and sends a user-facing completion message.
+- Return the event to the launching OpenClaw session: a helper forwards the event back to the original session so the launching agent can inspect stdout or stderr tails, summarize results, and choose follow-up actions.
+- Durable file worker: append events with `--notify-file` and let a separate process handle retries, fanout, or rate-limited APIs.
