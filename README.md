@@ -173,32 +173,25 @@ agent-exec run \
 
 #### Notify a Telegram chat directly
 
-Use a small checked-in helper so the notify command stays easy to review. `openclaw message send` can be appropriate for either user-facing notifications or lightweight delivery back to an agent-facing session.
+For ad-hoc use, wrap the notify step with `sh -lc` and read the persisted event from `AGENT_EXEC_EVENT_PATH`. To keep the command readable, build the JSON argv in a shell variable instead of inlining a large escaped JSON string. `openclaw message send` can be appropriate for either user-facing notifications or lightweight delivery back to an agent-facing session.
 
 ```bash
+NOTIFY_COMMAND=$(jq -nc --arg chat 'telegram:deployments' '
+  [
+    "sh",
+    "-lc",
+    "openclaw message send --chat \"$1\" --text \"job $(jq -r .job_id \"$AGENT_EXEC_EVENT_PATH\") finished with state=$(jq -r .state \"$AGENT_EXEC_EVENT_PATH\") exit_code=$(jq -r ''.exit_code // \"n/a\"'' \"$AGENT_EXEC_EVENT_PATH\")\"",
+    "sh",
+    $chat
+  ]
+')
+
 agent-exec run \
-  --notify-command '["./scripts/notify-telegram.sh"]' \
+  --notify-command "$NOTIFY_COMMAND" \
   -- long-running-command --flag value
 ```
 
-Example helper shape:
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-tmp=$(mktemp)
-trap 'rm -f "$tmp"' EXIT
-cat > "$tmp"
-
-job_id=$(jq -r '.job_id' "$tmp")
-state=$(jq -r '.state' "$tmp")
-exit_code=$(jq -r '.exit_code // "n/a"' "$tmp")
-
-openclaw message send \
-  --chat telegram:deployments \
-  --text "job ${job_id} finished with state=${state} exit_code=${exit_code}"
-```
+For repeated use, a checked-in helper is usually easier to review and maintain than a long inline shell command.
 
 #### Return the event to the launching OpenClaw session
 
@@ -206,44 +199,40 @@ This pattern is often more flexible than sending a final user message directly f
 
 ```bash
 SESSION_ID="oc_session_123"
+NOTIFY_COMMAND=$(jq -nc --arg session "$SESSION_ID" '
+  [
+    "sh",
+    "-lc",
+    "openclaw message send --session \"$1\" --text \"$(jq -c . \"$AGENT_EXEC_EVENT_PATH\")\"",
+    "sh",
+    $session
+  ]
+')
 
 agent-exec run \
-  --notify-command "[\"./scripts/return-to-openclaw-session.sh\",\"${SESSION_ID}\"]" \
+  --notify-command "$NOTIFY_COMMAND" \
   -- ./scripts/run-heavy-task.sh
-```
-
-Example helper shape using `openclaw message send`:
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-session_id="$1"
-tmp=$(mktemp)
-trap 'rm -f "$tmp"' EXIT
-cat > "$tmp"
-
-openclaw message send \
-  --session "$session_id" \
-  --text "$(jq -c . "$tmp")"
 ```
 
 With this pattern, the receiving OpenClaw session can read the event payload, inspect `stdout_log_path` or `stderr_log_path`, and decide whether to reply, retry, or trigger follow-up work.
 
-If you want explicit agent re-entry instead of lightweight message delivery, use a helper like this:
+If you want explicit agent re-entry instead of lightweight message delivery, call `openclaw agent --deliver` directly:
 
 ```bash
-#!/usr/bin/env bash
-set -euo pipefail
+SESSION_ID="oc_session_123"
+NOTIFY_COMMAND=$(jq -nc --arg session "$SESSION_ID" '
+  [
+    "sh",
+    "-lc",
+    "openclaw agent --session-id \"$1\" --deliver \"$(jq -c . \"$AGENT_EXEC_EVENT_PATH\")\"",
+    "sh",
+    $session
+  ]
+')
 
-session_id="$1"
-tmp=$(mktemp)
-trap 'rm -f "$tmp"' EXIT
-cat > "$tmp"
-
-openclaw agent \
-  --session-id "$session_id" \
-  --deliver "$(jq -c . "$tmp")"
+agent-exec run \
+  --notify-command "$NOTIFY_COMMAND" \
+  -- ./scripts/run-heavy-task.sh
 ```
 
 In practice, both `message send` and `agent --deliver` can target either a user-facing or agent-facing flow; pick the one that matches the downstream behavior you want.
