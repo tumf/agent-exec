@@ -175,6 +175,22 @@ enum Command {
         job_id: String,
     },
 
+    /// Garbage collect old terminal job directories.
+    Gc {
+        /// Override jobs root directory.
+        #[arg(long)]
+        root: Option<String>,
+
+        /// Retention duration: jobs older than this are deleted (e.g. 30d, 24h, 7d).
+        /// When omitted, defaults to 30d.
+        #[arg(long, value_name = "DURATION")]
+        older_than: Option<String>,
+
+        /// Report candidates without deleting any directories.
+        #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue)]
+        dry_run: bool,
+    },
+
     /// Print the JSON Schema for all CLI response types.
     Schema,
 
@@ -419,6 +435,18 @@ fn run(cli: Cli) -> Result<()> {
                 job_id: &job_id,
                 root: root.as_deref(),
                 signal: &signal,
+            })?;
+        }
+
+        Command::Gc {
+            root,
+            older_than,
+            dry_run,
+        } => {
+            agent_exec::gc::execute(agent_exec::gc::GcOpts {
+                root: root.as_deref(),
+                older_than: older_than.as_deref(),
+                dry_run,
             })?;
         }
 
