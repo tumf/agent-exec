@@ -73,8 +73,8 @@ Read `references/completion-events.md` for the full `job.finished` payload, sink
 
 Suggested patterns:
 
-- Notify a chat directly: use `--notify-command` with a checked-in helper that reads event JSON from stdin and sends a short success or failure message.
-- Return the event to the launching OpenClaw session: use `--notify-command` to call a helper that forwards the event to the original session or conversation id; let the launcher inspect logs and decide what to say next.
+- Notify a chat or session directly: use `--notify-command` with a checked-in helper that reads event JSON from stdin and delivers it with the OpenClaw entrypoint that fits the case, such as `openclaw message send` or `openclaw agent --session-id ... --deliver`.
+- Return the event to the launching OpenClaw session: use `--notify-command` to call a helper that forwards the event to the original session or conversation id; both `message` and `agent --deliver` can be valid depending on whether you want lightweight delivery or explicit agent re-entry.
 - Append to a file for a durable worker: use `--notify-file` when a separate process should handle retries, fanout, or slower downstream APIs.
 
 Operational reminders:

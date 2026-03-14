@@ -39,7 +39,7 @@ Use these `run` options:
 
 ### Choosing a sink
 
-- Use `--notify-command` for immediate, low-latency reactions such as posting to chat, invoking a webhook helper, or returning the event to the launching OpenClaw session.
+- Use `--notify-command` for immediate, low-latency reactions such as posting to chat, invoking a webhook helper, or returning the event to the launching OpenClaw session via either `openclaw message send` or `openclaw agent --session-id ... --deliver`, depending on the workflow.
 - Use `--notify-file` when a durable worker should process events later, retries are important, or multiple downstream consumers need the same event stream.
 - Prefer checked-in helper scripts over large inline shell or Python snippets. Small wrappers are easier to quote correctly, review, and reuse.
 
@@ -67,11 +67,11 @@ Command sinks also receive:
 - Wrong quoting when passing `--notify-command`; it must be a JSON argv array, not a shell pipeline string.
 - PATH or environment mismatch inside the sink process; use absolute paths or wrapper scripts when possible.
 - Downstream command exits non-zero even though the main job succeeded.
-- Wrong reply target, chat id, or OpenClaw session id in the notify helper.
+- Wrong reply target, chat id, session id, or delivery mode in the notify helper.
 - Notify helper assumes delivery success without checking `completion_event.json.delivery_results` afterward.
 
 ### OpenClaw-oriented patterns
 
-- Notify a chat directly: a helper reads the event from stdin and sends a user-facing completion message.
-- Return the event to the launching OpenClaw session: a helper forwards the event back to the original session so the launching agent can inspect stdout or stderr tails, summarize results, and choose follow-up actions.
+- Notify a chat or session directly: a helper reads the event from stdin and uses `openclaw message send` when you want a lightweight delivery path for either a user or an agent.
+- Return the event to the launching OpenClaw session: a helper forwards the event back to the original session with either `openclaw message send` or `openclaw agent --session-id ... --deliver`; choose based on whether you want simple delivery or explicit agent re-entry.
 - Durable file worker: append events with `--notify-file` and let a separate process handle retries, fanout, or rate-limited APIs.

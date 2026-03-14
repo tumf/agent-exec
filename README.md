@@ -147,7 +147,7 @@ When `run` is called with `--notify-command` or `--notify-file`, `agent-exec` em
 
 Choose the sink based on the next consumer:
 
-- Use `--notify-command` for small, direct reactions such as posting to chat or forwarding the event back to the launching OpenClaw session.
+- Use `--notify-command` for small, direct reactions such as posting to chat or forwarding the event back to the launching OpenClaw session with either `openclaw message send` or `openclaw agent --session-id ... --deliver`.
 - Use `--notify-file` when you want a durable queue-like handoff to a separate worker that can retry or fan out.
 - Prefer checked-in helper scripts over large inline shell or Python snippets.
 
@@ -173,7 +173,7 @@ agent-exec run \
 
 #### Notify a Telegram chat directly
 
-Use a small checked-in helper so the notify command stays easy to review:
+Use a small checked-in helper so the notify command stays easy to review. `openclaw message send` can be appropriate for either user-facing notifications or lightweight delivery back to an agent-facing session.
 
 ```bash
 agent-exec run \
@@ -202,7 +202,7 @@ openclaw message send \
 
 #### Return the event to the launching OpenClaw session
 
-This pattern is often more flexible than sending a final user message directly from the notify command. The launching session can inspect logs, decide whether the result is meaningful, and summarize it in context.
+This pattern is often more flexible than sending a final user message directly from the notify command. The launching session can inspect logs, decide whether the result is meaningful, and summarize it in context. Depending on the workflow, either `openclaw message send` or `openclaw agent --session-id ... --deliver` may be the better fit.
 
 ```bash
 SESSION_ID="oc_session_123"
@@ -212,7 +212,7 @@ agent-exec run \
   -- ./scripts/run-heavy-task.sh
 ```
 
-Example helper shape:
+Example helper shape using `openclaw message send`:
 
 ```bash
 #!/usr/bin/env bash
@@ -230,6 +230,24 @@ openclaw message send \
 
 With this pattern, the receiving OpenClaw session can read the event payload, inspect `stdout_log_path` or `stderr_log_path`, and decide whether to reply, retry, or trigger follow-up work.
 
+If you want explicit agent re-entry instead of lightweight message delivery, use a helper like this:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+session_id="$1"
+tmp=$(mktemp)
+trap 'rm -f "$tmp"' EXIT
+cat > "$tmp"
+
+openclaw agent \
+  --session-id "$session_id" \
+  --deliver "$(jq -c . "$tmp")"
+```
+
+In practice, both `message send` and `agent --deliver` can target either a user-facing or agent-facing flow; pick the one that matches the downstream behavior you want.
+
 #### Durable file-based worker
 
 Use `--notify-file` when you want retries or fanout outside the main job lifecycle:
@@ -246,7 +264,7 @@ A separate worker can tail or batch-process the NDJSON file, retry failed downst
 
 - `--notify-command` must be a JSON argv array, not a shell string.
 - Keep notify commands small, fast, and idempotent.
-- Common sink failures include quoting mistakes, PATH or env mismatches, downstream non-zero exits, and wrong chat or session targets.
+- Common sink failures include quoting mistakes, PATH or env mismatches, downstream non-zero exits, and wrong chat, session, or delivery-mode targets.
 - If you need heavier orchestration, let the notify sink hand off to a checked-in helper or durable worker.
 
 For command sinks, the event JSON is written to stdin and these environment variables are set:
