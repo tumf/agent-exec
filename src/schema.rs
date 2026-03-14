@@ -213,6 +213,41 @@ pub struct ListData {
     pub skipped: u64,
 }
 
+/// Per-job result entry in a `gc` response.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GcJobResult {
+    pub job_id: String,
+    /// Job state as reported from state.json: running | exited | killed | failed | unknown
+    pub state: String,
+    /// What GC did: "deleted" | "would_delete" | "skipped"
+    pub action: String,
+    /// Human-readable explanation for the action.
+    pub reason: String,
+    /// Byte size of the job directory (0 for skipped jobs where size is not computed).
+    pub bytes: u64,
+}
+
+/// Response for the `gc` command.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GcData {
+    /// Resolved root directory path.
+    pub root: String,
+    /// Whether this was a dry-run (no deletions performed).
+    pub dry_run: bool,
+    /// The effective retention window (e.g. "30d").
+    pub older_than: String,
+    /// How the retention window was determined: "default" or "flag".
+    pub older_than_source: String,
+    /// Number of job directories actually deleted (0 when dry_run=true).
+    pub deleted: u64,
+    /// Number of job directories skipped (running, unreadable, or too recent).
+    pub skipped: u64,
+    /// Total bytes freed (or would be freed in dry-run mode).
+    pub freed_bytes: u64,
+    /// Per-job details.
+    pub jobs: Vec<GcJobResult>,
+}
+
 // ---------- install-skills response payload ----------
 
 /// Summary of a single installed skill, included in `install_skills` responses.

@@ -137,6 +137,57 @@ agent-exec kill [--signal TERM|INT|KILL] <JOB_ID>
 agent-exec list [--state running|exited|killed|failed] [--limit N]
 ```
 
+### `gc` — garbage collect old job data
+
+```bash
+agent-exec gc [--older-than <DURATION>] [--dry-run] [--root <PATH>]
+```
+
+Deletes job directories under the root whose terminal state (`exited`, `killed`, or `failed`) is older than the retention window. Running jobs are never touched.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--older-than <DURATION>` | `30d` | Retention window: jobs older than this are eligible for deletion. Supports `30d`, `24h`, `60m`, `3600s`. |
+| `--dry-run` | false | Report candidates without deleting anything. |
+| `--root <PATH>` | XDG default | Override the jobs root directory. |
+
+**Retention semantics**
+
+- The GC timestamp used for age evaluation is `finished_at` when present, falling back to `updated_at`.
+- Jobs where both timestamps are absent are skipped safely.
+- `running` jobs are never deleted regardless of age.
+
+**Examples**
+
+```bash
+# Preview what would be deleted (30-day default window).
+agent-exec gc --dry-run
+
+# Preview with a custom 7-day window.
+agent-exec gc --older-than 7d --dry-run
+
+# Delete jobs older than 7 days.
+agent-exec gc --older-than 7d
+```
+
+**JSON response fields**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `root` | string | Resolved jobs root path |
+| `dry_run` | bool | Whether this was a preview-only run |
+| `older_than` | string | Effective retention window (e.g. `"30d"`) |
+| `older_than_source` | string | `"default"` or `"flag"` |
+| `deleted` | number | Count of directories actually deleted |
+| `skipped` | number | Count of directories skipped |
+| `freed_bytes` | number | Bytes freed (or would be freed in dry-run) |
+| `jobs` | array | Per-job details: `job_id`, `state`, `action`, `reason`, `bytes` |
+
+The `action` field in each `jobs` entry is one of:
+- `"deleted"` — directory was removed
+- `"would_delete"` — would be removed in a real run (dry-run only)
+- `"skipped"` — preserved with an explanation in `reason`
+
 ## Configuration
 
 `agent-exec` reads an optional `config.toml` to configure the shell wrapper used for command-string execution.
