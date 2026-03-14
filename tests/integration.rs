@@ -2421,3 +2421,41 @@ fn shell_wrapper_shared_between_run_and_notify_command() {
     let content = std::fs::read_to_string(&captured).unwrap();
     assert!(content.contains("shared_wrapper_ran"), "notify-command output must confirm wrapper execution");
 }
+
+/// Shell command string execution: `run -- 'cmd && cmd'` goes through the
+/// configured wrapper, enabling shell features like `&&`.
+#[test]
+fn shell_wrapper_applied_to_run_command_string() {
+    let h = TestHarness::new();
+    // Single-element command string with shell features.
+    let v = h.run(&["run", "--wait", "--", "echo shell_string_ran && echo second"]);
+    assert_envelope(&v, "run", true);
+    assert_eq!(
+        v["state"].as_str().unwrap_or(""),
+        "exited",
+        "shell command string must execute successfully through the wrapper"
+    );
+}
+
+/// Shell wrapper argv fidelity: the resolved wrapper survives the run→_supervise
+/// hand-off without loss from join/split round-trips.
+#[test]
+fn shell_wrapper_argv_fidelity_across_run_supervise() {
+    let h = TestHarness::new();
+    // Use an explicit wrapper; it must reach the supervisor intact.
+    let v = h.run(&[
+        "run",
+        "--shell-wrapper",
+        "sh -lc",
+        "--wait",
+        "--",
+        "echo",
+        "fidelity_ok",
+    ]);
+    assert_envelope(&v, "run", true);
+    assert_eq!(
+        v["state"].as_str().unwrap_or(""),
+        "exited",
+        "wrapper must be passed to supervisor with argv fidelity"
+    );
+}

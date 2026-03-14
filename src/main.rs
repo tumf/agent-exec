@@ -2,7 +2,7 @@
 //!
 //! All stdout is JSON only. Tracing logs go to stderr.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
@@ -268,9 +268,14 @@ enum Command {
         #[arg(long, value_name = "PATH")]
         notify_file: Option<String>,
 
-        /// Resolved shell wrapper argv joined as a string (set by `run`, not by users).
+        /// Shell wrapper override as a string (for direct user invocation; not used by `run`).
         #[arg(long, value_name = "PROGRAM AND FLAGS")]
         shell_wrapper: Option<String>,
+
+        /// Pre-resolved shell wrapper argv as a JSON array (set by `run`, not by users).
+        /// Takes precedence over --shell-wrapper when present.
+        #[arg(long, value_name = "JSON", hide = true)]
+        shell_wrapper_resolved: Option<String>,
 
         #[arg(required = true, trailing_var_arg = true)]
         command: Vec<String>,
@@ -459,15 +464,18 @@ fn run(cli: Cli) -> Result<()> {
             notify_command,
             notify_file,
             shell_wrapper,
+            shell_wrapper_resolved,
             command,
         } => {
             let should_inherit = !no_inherit_env;
-            // Resolve shell wrapper; the supervisor receives a pre-joined string
-            // from `run`, so we parse it back. If absent, fall back to defaults.
-            let resolved_wrapper = agent_exec::config::resolve_shell_wrapper(
-                shell_wrapper.as_deref(),
-                None,
-            )?;
+            // Use the pre-resolved JSON wrapper from `run` if present (no join/split round-trip).
+            // Fall back to resolving from the string override or defaults.
+            let resolved_wrapper = if let Some(json) = shell_wrapper_resolved {
+                serde_json::from_str::<Vec<String>>(&json)
+                    .context("parse --shell-wrapper-resolved JSON")?
+            } else {
+                agent_exec::config::resolve_shell_wrapper(shell_wrapper.as_deref(), None)?
+            };
             agent_exec::run::supervise(agent_exec::run::SuperviseOpts {
                 job_id: &job_id,
                 root: std::path::Path::new(&root),

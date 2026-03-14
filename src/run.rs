@@ -218,11 +218,13 @@ pub fn execute(opts: RunOpts) -> Result<()> {
     if let Some(ref nf) = opts.notify_file {
         supervisor_cmd.arg("--notify-file").arg(nf);
     }
-    // Pass the resolved shell wrapper to the supervisor so both execution sites
-    // use the same configured launcher.
+    // Pass the resolved shell wrapper to the supervisor as a JSON array to
+    // preserve argv fidelity (no join/split round-trip).
+    let wrapper_json = serde_json::to_string(&opts.shell_wrapper)
+        .context("serialize shell wrapper")?;
     supervisor_cmd
-        .arg("--shell-wrapper")
-        .arg(opts.shell_wrapper.join(" "));
+        .arg("--shell-wrapper-resolved")
+        .arg(&wrapper_json);
 
     supervisor_cmd
         .arg("--")
@@ -606,9 +608,19 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
     let full_log_file = std::fs::File::create(&full_log_path).context("create full.log")?;
     let full_log = Arc::new(Mutex::new(full_log_file));
 
-    // Build the child environment.
-    let mut child_cmd = Command::new(&command[0]);
-    child_cmd.args(&command[1..]);
+    // Execute command through the shell wrapper (same launcher as --notify-command).
+    //
+    // Single-element commands are treated as shell command strings and passed
+    // as-is (e.g. `"echo hello && ls"` preserves shell operators).
+    // Multi-element argv have each element POSIX-single-quoted before joining so
+    // that arguments with spaces, `$`, or special characters are preserved through
+    // the shell layer (e.g. `["sh", "-c", "exit 42"]` → `'sh' '-c' 'exit 42'`).
+    let cmd_str = build_cmd_str(command);
+    if opts.shell_wrapper.is_empty() {
+        anyhow::bail!("supervisor: shell wrapper must not be empty");
+    }
+    let mut child_cmd = Command::new(&opts.shell_wrapper[0]);
+    child_cmd.args(&opts.shell_wrapper[1..]).arg(&cmd_str);
 
     if opts.inherit_env {
         // Start with the current environment (default).
@@ -1288,6 +1300,30 @@ fn assign_to_job_object(job_id: &str, pid: u32) -> Result<String> {
 
     info!(job_id, name = %job_name, "supervisor: child assigned to Job Object");
     Ok(job_name)
+}
+
+/// Build the shell command string passed to the shell wrapper.
+///
+/// - Single-element commands are treated as shell command strings and passed
+///   as-is, preserving shell operators like `&&`, pipes, etc.
+/// - Multi-element commands have each element POSIX-single-quoted before
+///   joining so that argv semantics survive the shell layer, including
+///   arguments that contain spaces, `$`, quotes, or other special characters.
+fn build_cmd_str(command: &[String]) -> String {
+    if command.len() == 1 {
+        command[0].clone()
+    } else {
+        command
+            .iter()
+            .map(|s| posix_single_quote(s))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+/// Wrap a string in POSIX single quotes, escaping any embedded single quotes.
+fn posix_single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 #[cfg(test)]

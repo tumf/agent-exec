@@ -12,3 +12,8 @@
 
 - Consider whether wrapper metadata should be surfaced in additional status responses for debugging beyond the minimum needed by this proposal.
 - Consider a future explicit shell-free execution mode if users need literal argv execution alongside the configurable shell-wrapper path.
+
+## Acceptance #1 Failure Follow-up
+
+- [x] Apply the resolved shell wrapper to `run` command-string execution (not only `--notify-command`) so `agent-exec run -- '<command-string>'` actually executes through the configured wrapper (verification: `supervise()` now uses `build_cmd_str()` + shell wrapper for all child execution; `shell_wrapper_applied_to_run_command_string` integration test passes).
+- [x] Preserve shell-wrapper argv fidelity between `run` and `_supervise` (avoid join/split round-trips that break quoted or space-containing arguments) (verification: `execute()` now serializes the resolved wrapper as JSON via `--shell-wrapper-resolved`; `_supervise` deserializes it directly without re-parsing; `shell_wrapper_argv_fidelity_across_run_supervise` integration test passes).
