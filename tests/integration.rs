@@ -2068,3 +2068,200 @@ fn install_skills_unknown_source_scheme_returns_error() {
         "error.code must be 'unknown_source_scheme'; got: {v}"
     );
 }
+
+// ── notify file sink ────────────────────────────────────────────────────────────
+
+/// File sink: completion event is appended as NDJSON to the specified file.
+#[test]
+fn notify_file_sink_appends_ndjson_on_job_finish() {
+    let h = TestHarness::new();
+    let tmp_dir = tempfile::tempdir().expect("create tempdir");
+    let events_file = tmp_dir.path().join("events.ndjson");
+    let events_file_str = events_file.to_str().unwrap();
+
+    // Run a job with --notify-file; use --wait to ensure it finishes before we check.
+    let v = h.run(&[
+        "run",
+        "--notify-file",
+        events_file_str,
+        "--wait",
+        "--",
+        "echo",
+        "notify_test",
+    ]);
+    assert_envelope(&v, "run", true);
+    let job_id = v["job_id"].as_str().expect("job_id missing").to_string();
+    // State should be terminal (exited) when --wait is used.
+    assert_eq!(
+        v["state"].as_str().unwrap_or(""),
+        "exited",
+        "state must be exited with --wait"
+    );
+
+    // Wait briefly for supervisor to finish writing after job completes.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    // The events file must exist and contain a valid NDJSON line.
+    assert!(
+        events_file.exists(),
+        "notify-file {events_file_str} was not created"
+    );
+    let content = std::fs::read_to_string(&events_file).expect("read events file");
+    let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(
+        lines.len(),
+        1,
+        "expected exactly 1 NDJSON line, got {}",
+        lines.len()
+    );
+
+    let event: serde_json::Value =
+        serde_json::from_str(lines[0]).expect("NDJSON line must be valid JSON");
+    assert_eq!(
+        event["event_type"].as_str().unwrap_or(""),
+        "job.finished",
+        "event_type must be 'job.finished'"
+    );
+    assert_eq!(
+        event["job_id"].as_str().unwrap_or(""),
+        job_id,
+        "event job_id must match"
+    );
+    assert_eq!(
+        event["state"].as_str().unwrap_or(""),
+        "exited",
+        "event state must be exited"
+    );
+    assert!(
+        event.get("stdout_log_path").is_some(),
+        "stdout_log_path must be present"
+    );
+    assert!(
+        event.get("stderr_log_path").is_some(),
+        "stderr_log_path must be present"
+    );
+    assert!(
+        event.get("finished_at").is_some(),
+        "finished_at must be present"
+    );
+}
+
+// ── notify command sink ─────────────────────────────────────────────────────────
+
+/// Command sink: event JSON is delivered via stdin and env vars are set.
+#[test]
+fn notify_command_sink_receives_event_via_stdin() {
+    let h = TestHarness::new();
+    let tmp_dir = tempfile::tempdir().expect("create tempdir");
+    let captured_file = tmp_dir.path().join("captured.json");
+    let captured_str = captured_file.to_str().unwrap();
+
+    // Hook command: read stdin and write to captured_file.
+    // Use sh -c to compose the command from a single string.
+    let hook_argv = serde_json::to_string(&["/bin/sh", "-c", &format!("cat > {captured_str}")])
+        .expect("serialize argv");
+
+    let v = h.run(&[
+        "run",
+        "--notify-command",
+        &hook_argv,
+        "--wait",
+        "--",
+        "echo",
+        "cmd_sink_test",
+    ]);
+    assert_envelope(&v, "run", true);
+    let job_id = v["job_id"].as_str().expect("job_id missing").to_string();
+
+    // Wait briefly for supervisor to finish writing.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    // The captured file should contain the event JSON written by the hook.
+    assert!(
+        captured_file.exists(),
+        "captured file not created by hook command"
+    );
+    let content = std::fs::read_to_string(&captured_file).expect("read captured file");
+    let event: serde_json::Value =
+        serde_json::from_str(content.trim()).expect("captured content must be valid JSON");
+
+    assert_eq!(
+        event["event_type"].as_str().unwrap_or(""),
+        "job.finished",
+        "event_type must be 'job.finished'"
+    );
+    assert_eq!(
+        event["job_id"].as_str().unwrap_or(""),
+        job_id,
+        "event job_id must match"
+    );
+}
+
+// ── notify failure non-destructive ─────────────────────────────────────────────
+
+/// Notification failure must not change job state: job remains exited even if
+/// the command sink binary does not exist.
+#[test]
+fn notify_failure_does_not_change_job_state() {
+    let h = TestHarness::new();
+    let hook_argv =
+        serde_json::to_string(&["/no/such/binary/agent_exec_test"]).expect("serialize argv");
+
+    let v = h.run(&[
+        "run",
+        "--notify-command",
+        &hook_argv,
+        "--wait",
+        "--",
+        "echo",
+        "failure_test",
+    ]);
+    assert_envelope(&v, "run", true);
+    let job_id = v["job_id"].as_str().expect("job_id missing").to_string();
+    // Despite notification failure, the run response must show terminal state.
+    assert_eq!(
+        v["state"].as_str().unwrap_or(""),
+        "exited",
+        "job state must be exited despite notification failure"
+    );
+
+    // Wait briefly for supervisor to finish.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    // Querying status must also return exited.
+    let sv = h.run(&["status", &job_id]);
+    assert_envelope(&sv, "status", true);
+    assert_eq!(
+        sv["state"].as_str().unwrap_or(""),
+        "exited",
+        "status must return exited; got: {sv}"
+    );
+
+    // completion_event.json must record the notification failure without changing job state.
+    let root = h.root();
+    let completion_event_path = format!("{root}/{job_id}/completion_event.json");
+    let event_raw = std::fs::read_to_string(&completion_event_path)
+        .expect("completion_event.json must exist after notification dispatch");
+    let event: serde_json::Value =
+        serde_json::from_str(&event_raw).expect("completion_event.json must be valid JSON");
+    assert_eq!(
+        event["state"].as_str().unwrap_or(""),
+        "exited",
+        "completion_event state must be exited"
+    );
+    // Delivery results must be present and show failure.
+    let results = event["delivery_results"]
+        .as_array()
+        .expect("delivery_results must be an array");
+    assert!(!results.is_empty(), "delivery_results must be non-empty");
+    assert_eq!(
+        results[0]["success"].as_bool().unwrap_or(true),
+        false,
+        "delivery must have failed"
+    );
+    assert_eq!(
+        results[0]["sink_type"].as_str().unwrap_or(""),
+        "command",
+        "sink_type must be 'command'"
+    );
+}

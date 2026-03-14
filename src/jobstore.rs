@@ -129,6 +129,20 @@ impl JobDir {
     pub fn full_log_path(&self) -> PathBuf {
         self.path.join("full.log")
     }
+    pub fn completion_event_path(&self) -> PathBuf {
+        self.path.join("completion_event.json")
+    }
+
+    /// Write `completion_event.json` atomically.
+    pub fn write_completion_event_atomic(
+        &self,
+        record: &crate::schema::CompletionEventRecord,
+    ) -> Result<()> {
+        let target = self.completion_event_path();
+        let contents = serde_json::to_string_pretty(record)?;
+        write_atomic(&self.path, &target, contents.as_bytes())?;
+        Ok(())
+    }
 
     pub fn read_meta(&self) -> Result<JobMeta> {
         let raw = std::fs::read(self.meta_path())?;
@@ -372,6 +386,7 @@ mod tests {
             env_vars: vec![],
             mask: vec![],
             cwd: None,
+            notification: None,
         }
     }
 
@@ -516,6 +531,7 @@ mod tests {
             env_vars: vec![],
             mask: vec![],
             cwd: None,
+            notification: None,
         };
         job_dir.write_meta_atomic(&updated_meta).unwrap();
 
