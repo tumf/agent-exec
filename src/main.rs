@@ -91,9 +91,10 @@ enum Command {
         #[arg(long, default_value = "200")]
         wait_poll_ms: u64,
 
-        /// JSON array of argv strings to run on job completion; event JSON is sent to stdin.
+        /// Shell command string to run on job completion; executed via the platform shell
+        /// (`sh -lc` on Unix, `cmd /C` on Windows). Event JSON is sent to stdin.
         /// Also sets AGENT_EXEC_EVENT_PATH, AGENT_EXEC_JOB_ID, and AGENT_EXEC_EVENT_TYPE.
-        #[arg(long, value_name = "JSON_ARGV")]
+        #[arg(long, value_name = "COMMAND")]
         notify_command: Option<String>,
 
         /// File path that receives one NDJSON `job.finished` event per completed job.
@@ -248,9 +249,10 @@ enum Command {
         #[arg(long, default_value = "0")]
         progress_every: u64,
 
-        /// JSON array of argv strings to run on job completion; event JSON is sent to stdin.
+        /// Shell command string to run on job completion; executed via the platform shell
+        /// (`sh -lc` on Unix, `cmd /C` on Windows). Event JSON is sent to stdin.
         /// Also sets AGENT_EXEC_EVENT_PATH, AGENT_EXEC_JOB_ID, and AGENT_EXEC_EVENT_TYPE.
-        #[arg(long, value_name = "JSON_ARGV")]
+        #[arg(long, value_name = "COMMAND")]
         notify_command: Option<String>,
 
         /// File path that receives one NDJSON `job.finished` event per completed job.
@@ -325,14 +327,6 @@ fn run(cli: Cli) -> Result<()> {
             // If neither is specified, default is to inherit (inherit_env=true).
             // If --no-inherit-env is set, inherit_env=false.
             let should_inherit = !no_inherit_env;
-            let notify_command_parsed = if let Some(ref s) = notify_command {
-                let v: Vec<String> = serde_json::from_str(s).map_err(|e| {
-                    anyhow::anyhow!("--notify-command: expected JSON array of strings: {e}")
-                })?;
-                Some(v)
-            } else {
-                None
-            };
             agent_exec::run::execute(agent_exec::run::RunOpts {
                 command,
                 root: root.as_deref(),
@@ -350,7 +344,7 @@ fn run(cli: Cli) -> Result<()> {
                 progress_every_ms: progress_every,
                 wait,
                 wait_poll_ms,
-                notify_command: notify_command_parsed,
+                notify_command,
                 notify_file,
             })?;
         }
@@ -446,14 +440,6 @@ fn run(cli: Cli) -> Result<()> {
             command,
         } => {
             let should_inherit = !no_inherit_env;
-            let notify_command_parsed = if let Some(ref s) = notify_command {
-                let v: Vec<String> = serde_json::from_str(s).map_err(|e| {
-                    anyhow::anyhow!("--notify-command: expected JSON array of strings: {e}")
-                })?;
-                Some(v)
-            } else {
-                None
-            };
             agent_exec::run::supervise(agent_exec::run::SuperviseOpts {
                 job_id: &job_id,
                 root: std::path::Path::new(&root),
@@ -466,7 +452,7 @@ fn run(cli: Cli) -> Result<()> {
                 env_files,
                 inherit_env: should_inherit,
                 progress_every_ms: progress_every,
-                notify_command: notify_command_parsed,
+                notify_command,
                 notify_file,
             })?;
         }

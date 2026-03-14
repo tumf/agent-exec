@@ -34,7 +34,7 @@ If the job is killed by a signal, expect `state` to become `killed`; `signal` ma
 
 Use these `run` options:
 
-- `--notify-command <JSON_ARGV>`: spawn a command without a shell and write the event JSON to stdin
+- `--notify-command <COMMAND>`: execute a shell command string (`sh -lc` on Unix, `cmd /C` on Windows) and write the event JSON to stdin
 - `--notify-file <PATH>`: append one NDJSON line per completed job
 
 ### Choosing a sink
@@ -64,7 +64,7 @@ Command sinks also receive:
 
 ### Common failure modes
 
-- Wrong quoting when passing `--notify-command`; it must be a JSON argv array, not a shell pipeline string.
+- Quoting issues in the shell command string passed to `--notify-command`; prefer simple commands or checked-in helper scripts over complex inline pipelines.
 - PATH or environment mismatch inside the sink process; use absolute paths or wrapper scripts when possible.
 - Downstream command exits non-zero even though the main job succeeded.
 - Wrong reply target, chat id, session id, or delivery mode in the notify helper.

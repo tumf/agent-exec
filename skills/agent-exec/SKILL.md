@@ -33,10 +33,10 @@ Use these options most often:
 - `--env KEY=VALUE` / `--env-file <file>`: set environment variables
 - `--no-inherit-env`: avoid inheriting the current process environment
 - `--wait` / `--wait-poll-ms <ms>`: return only after the job reaches a terminal state
-- `--notify-command <JSON_ARGV>`: run a command on completion; send event JSON to stdin
+- `--notify-command <COMMAND>`: run a shell command on completion; executed via `sh -lc` (Unix) or `cmd /C` (Windows); event JSON is sent to stdin
 - `--notify-file <PATH>`: append one NDJSON `job.finished` event per completed job
 
-Use `--notify-command` with a JSON argv array, not a shell string. The command sink also receives:
+Pass a plain shell command string to `--notify-command`. The command sink also receives:
 
 - `AGENT_EXEC_EVENT_PATH`
 - `AGENT_EXEC_JOB_ID`
