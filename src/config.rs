@@ -89,18 +89,17 @@ pub fn resolve_shell_wrapper(
         discover_config_path()
     };
 
-    if let Some(ref path) = config_path {
-        if let Some(cfg) = load_config(path)? {
-            if let Some(w) = platform_wrapper_from_config(&cfg.shell) {
-                if w.is_empty() {
-                    anyhow::bail!(
-                        "config file shell wrapper must not be empty (from {})",
-                        path.display()
-                    );
-                }
-                return Ok(w);
-            }
+    if let Some(ref path) = config_path
+        && let Some(cfg) = load_config(path)?
+        && let Some(w) = platform_wrapper_from_config(&cfg.shell)
+    {
+        if w.is_empty() {
+            anyhow::bail!(
+                "config file shell wrapper must not be empty (from {})",
+                path.display()
+            );
         }
+        return Ok(w);
     }
 
     // 4. Built-in platform default.
