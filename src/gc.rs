@@ -31,8 +31,9 @@ pub fn execute(opts: GcOpts) -> Result<()> {
         None => (DEFAULT_OLDER_THAN.to_string(), "default"),
     };
 
-    let retention_secs =
-        parse_duration(&older_than_str).ok_or_else(|| anyhow!("invalid duration: {older_than_str}; expected formats: 30d, 24h, 60m, 3600s"))?;
+    let retention_secs = parse_duration(&older_than_str).ok_or_else(|| {
+        anyhow!("invalid duration: {older_than_str}; expected formats: 30d, 24h, 60m, 3600s")
+    })?;
 
     // Compute the cutoff timestamp as seconds since UNIX epoch.
     let now_secs = std::time::SystemTime::now()
@@ -141,7 +142,10 @@ pub fn execute(opts: GcOpts) -> Result<()> {
         }
 
         // Only terminal states are candidates.
-        if !matches!(status, JobStatus::Exited | JobStatus::Killed | JobStatus::Failed) {
+        if !matches!(
+            status,
+            JobStatus::Exited | JobStatus::Killed | JobStatus::Failed
+        ) {
             debug!(job_id = %job_id, status = ?status, "gc: unknown status; skipping");
             skipped_count += 1;
             job_results.push(GcJobResult {
@@ -155,7 +159,11 @@ pub fn execute(opts: GcOpts) -> Result<()> {
         }
 
         // Determine the GC timestamp: finished_at preferred, updated_at as fallback.
-        let gc_ts = match state.finished_at.as_deref().or(Some(state.updated_at.as_str())) {
+        let gc_ts = match state
+            .finished_at
+            .as_deref()
+            .or(Some(state.updated_at.as_str()))
+        {
             Some(ts) if !ts.is_empty() => ts.to_string(),
             _ => {
                 debug!(job_id = %job_id, "gc: no usable timestamp; skipping");
@@ -406,17 +414,26 @@ mod tests {
 
     #[test]
     fn is_older_than_true() {
-        assert!(is_older_than("2020-01-01T00:00:00Z", "2024-01-01T00:00:00Z"));
+        assert!(is_older_than(
+            "2020-01-01T00:00:00Z",
+            "2024-01-01T00:00:00Z"
+        ));
     }
 
     #[test]
     fn is_older_than_false_equal() {
-        assert!(!is_older_than("2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z"));
+        assert!(!is_older_than(
+            "2024-01-01T00:00:00Z",
+            "2024-01-01T00:00:00Z"
+        ));
     }
 
     #[test]
     fn is_older_than_false_newer() {
-        assert!(!is_older_than("2025-01-01T00:00:00Z", "2024-01-01T00:00:00Z"));
+        assert!(!is_older_than(
+            "2025-01-01T00:00:00Z",
+            "2024-01-01T00:00:00Z"
+        ));
     }
 
     #[test]

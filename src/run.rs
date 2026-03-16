@@ -220,8 +220,8 @@ pub fn execute(opts: RunOpts) -> Result<()> {
     }
     // Pass the resolved shell wrapper to the supervisor as a JSON array to
     // preserve argv fidelity (no join/split round-trip).
-    let wrapper_json = serde_json::to_string(&opts.shell_wrapper)
-        .context("serialize shell wrapper")?;
+    let wrapper_json =
+        serde_json::to_string(&opts.shell_wrapper).context("serialize shell wrapper")?;
     supervisor_cmd
         .arg("--shell-wrapper-resolved")
         .arg(&wrapper_json);

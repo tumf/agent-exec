@@ -42,8 +42,8 @@ pub fn load_config(path: &Path) -> Result<Option<AgentExecConfig>> {
     }
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("read config file {}", path.display()))?;
-    let cfg: AgentExecConfig = toml::from_str(&raw)
-        .with_context(|| format!("parse config file {}", path.display()))?;
+    let cfg: AgentExecConfig =
+        toml::from_str(&raw).with_context(|| format!("parse config file {}", path.display()))?;
     Ok(Some(cfg))
 }
 
@@ -152,12 +152,18 @@ mod tests {
     #[test]
     fn load_config_parses_unix_wrapper() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(tmp.path(), r#"[shell]
+        std::fs::write(
+            tmp.path(),
+            r#"[shell]
 unix = ["bash", "-lc"]
-"#)
+"#,
+        )
         .unwrap();
         let cfg = load_config(tmp.path()).unwrap().unwrap();
-        assert_eq!(cfg.shell.unix, Some(vec!["bash".to_string(), "-lc".to_string()]));
+        assert_eq!(
+            cfg.shell.unix,
+            Some(vec!["bash".to_string(), "-lc".to_string()])
+        );
     }
 
     #[test]
