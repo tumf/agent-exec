@@ -10,3 +10,9 @@
 
 - Consider a follow-up cleanup that removes any temporary legacy alias once downstream callers have migrated.
 - Consider whether other repeated cross-command flags should be promoted to top-level global options for the same CLI consistency reasons.
+
+## Acceptance #1 Failure Follow-up
+
+- [x] Decide and enforce the legacy per-subcommand `--root` policy: decided to support `agent-exec <subcommand> --root <PATH> ...` as backward-compatible syntax; `global = true` in clap accepts the flag in both positions identically with no additional code needed.
+- [x] Add integration coverage in `tests/integration.rs` that pins the chosen legacy behavior for per-subcommand `--root` syntax (verification: 4 new tests added: `subcommand_root_flag_compat_run`, `subcommand_root_flag_compat_status`, `subcommand_root_flag_compat_list`, `subcommand_root_flag_compat_gc`).
+- [x] Update `README.md` and this task list wording so the documented migration story matches the actual CLI behavior (verification: README now documents both `agent-exec --root PATH CMD` and `agent-exec CMD --root PATH` as equivalent, with preferred form noted).

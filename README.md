@@ -82,13 +82,20 @@ agent-exec run \
 | `--root <PATH>` | XDG default | Override the jobs root directory for all subcommands. Precedence: `--root` > `AGENT_EXEC_ROOT` > `$XDG_DATA_HOME/agent-exec/jobs` > platform default. |
 | `-v` / `-vv` | warn | Increase log verbosity (logs go to stderr). |
 
-The `--root` flag is a **global** option that applies to all job-store subcommands (`run`, `status`, `tail`, `wait`, `kill`, `list`, `gc`). Place it before the subcommand name:
+The `--root` flag is a **global** option that applies to all job-store subcommands (`run`, `status`, `tail`, `wait`, `kill`, `list`, `gc`). The preferred placement is before the subcommand name:
 
 ```bash
 agent-exec --root /tmp/jobs run echo hello
 agent-exec --root /tmp/jobs status <JOB_ID>
 agent-exec --root /tmp/jobs list
 agent-exec --root /tmp/jobs gc --dry-run
+```
+
+For backward compatibility, `--root` is also accepted after the subcommand name (both forms are equivalent):
+
+```bash
+agent-exec run --root /tmp/jobs echo hello
+agent-exec status --root /tmp/jobs <JOB_ID>
 ```
 
 ## Commands

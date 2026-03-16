@@ -101,6 +101,30 @@ fn run_cmd_with_global_root_flag(root: &str, args: &[&str]) -> serde_json::Value
     })
 }
 
+/// Run the binary with `--root <root>` placed after the subcommand name (legacy position).
+/// Verifies backward-compatible syntax: `agent-exec <subcommand> --root <PATH> ...`.
+/// Because --root is declared with `global = true`, clap accepts it in both positions.
+fn run_cmd_with_subcommand_root_flag(subcommand: &str, root: &str, extra_args: &[&str]) -> serde_json::Value {
+    let bin = binary();
+    let mut cmd = Command::new(&bin);
+    cmd.arg(subcommand);
+    cmd.arg("--root").arg(root);
+    cmd.args(extra_args);
+    cmd.env_remove("AGENT_EXEC_ROOT");
+    let output = cmd.output().expect("run binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stdout.trim().is_empty(),
+        "stdout is empty (stderr: {stderr})\nsubcommand: {subcommand}, root: {root}, extra: {extra_args:?}"
+    );
+    serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+        panic!(
+            "stdout is not valid JSON: {e}\nstdout: {stdout}\nstderr: {stderr}\nsubcommand: {subcommand}"
+        )
+    })
+}
+
 /// Validate the common envelope fields.
 fn assert_envelope(v: &serde_json::Value, expected_type: &str, expected_ok: bool) {
     assert_eq!(
@@ -2916,4 +2940,70 @@ fn global_root_flag_takes_precedence_over_env() {
         !tmp_env.path().join(job_id).exists(),
         "job must NOT be in AGENT_EXEC_ROOT dir when --root flag is set"
     );
+}
+
+// ── legacy per-subcommand --root flag (backward compatibility) ─────────────────
+
+/// Verify that `agent-exec run --root <PATH> ...` still works (--root after subcommand).
+/// The flag is global in clap, so both positions are accepted identically.
+#[test]
+fn subcommand_root_flag_compat_run() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let root = tmp.path().to_str().expect("valid UTF-8").to_string();
+    let v = run_cmd_with_subcommand_root_flag(
+        "run",
+        &root,
+        &["--snapshot-after", "0", "echo", "compat_run"],
+    );
+    assert_envelope(&v, "run", true);
+    let job_id = v["job_id"].as_str().expect("job_id missing");
+    assert!(
+        tmp.path().join(job_id).exists(),
+        "job dir not created under --root path when flag placed after subcommand"
+    );
+}
+
+/// Verify that `agent-exec status --root <PATH> <id>` resolves the job from the correct root.
+#[test]
+fn subcommand_root_flag_compat_status() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let root = tmp.path().to_str().expect("valid UTF-8").to_string();
+    // Start a job using global syntax to get a known job_id in this root.
+    let run_v = run_cmd_with_global_root_flag(
+        &root,
+        &["run", "--snapshot-after", "0", "echo", "compat_status"],
+    );
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+    // Query status using legacy per-subcommand --root position.
+    let v = run_cmd_with_subcommand_root_flag("status", &root, &[&job_id]);
+    assert_envelope(&v, "status", true);
+    assert_eq!(v["job_id"].as_str().unwrap_or(""), job_id);
+}
+
+/// Verify that `agent-exec list --root <PATH>` lists jobs from the correct root.
+#[test]
+fn subcommand_root_flag_compat_list() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let root = tmp.path().to_str().expect("valid UTF-8").to_string();
+    let run_v = run_cmd_with_global_root_flag(
+        &root,
+        &["run", "--snapshot-after", "0", "echo", "compat_list"],
+    );
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+    let v = run_cmd_with_subcommand_root_flag("list", &root, &["--all"]);
+    assert_envelope(&v, "list", true);
+    let jobs = v["jobs"].as_array().expect("jobs array");
+    assert!(
+        jobs.iter().any(|j| j["job_id"].as_str().unwrap_or("") == job_id),
+        "started job not found when using legacy --root position for list"
+    );
+}
+
+/// Verify that `agent-exec gc --root <PATH>` operates on the correct root.
+#[test]
+fn subcommand_root_flag_compat_gc() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let root = tmp.path().to_str().expect("valid UTF-8").to_string();
+    let v = run_cmd_with_subcommand_root_flag("gc", &root, &["--dry-run"]);
+    assert_gc_envelope(&v, true);
 }
