@@ -644,9 +644,9 @@ fn run_timeout_terminates_child() {
         "--snapshot-after",
         "0",
         "--timeout",
-        "500",
+        "1000",
         "--kill-after",
-        "500",
+        "1000",
         "sleep",
         "60",
     ]);

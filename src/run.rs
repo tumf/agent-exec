@@ -647,6 +647,22 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
         child_cmd.current_dir(cwd);
     }
 
+    // Put the child in its own process group so that timeout signals
+    // (SIGTERM / SIGKILL) reach the entire process tree, not just the
+    // shell wrapper.  Without this, `sh -lc "sleep 60"` would absorb
+    // the signal while the grandchild (`sleep`) keeps running.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: setsid is async-signal-safe and called before exec.
+        unsafe {
+            child_cmd.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+    }
+
     // Spawn the child with piped stdout/stderr so we can tee to logs.
     let mut child = child_cmd
         .stdin(std::process::Stdio::null())
@@ -863,25 +879,26 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
                 if let Some(td) = timeout_dur
                     && elapsed >= td
                 {
-                    info!(job_id = %job_id_str, "timeout reached, sending SIGTERM");
-                    // Send SIGTERM.
+                    info!(job_id = %job_id_str, "timeout reached, sending SIGTERM to process group");
+                    // Send SIGTERM to the entire process group (negative PID).
+                    // The child was placed in its own session/group via setsid.
                     #[cfg(unix)]
                     {
-                        unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+                        unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGTERM) };
                     }
                     // If kill_after > 0, wait kill_after ms then SIGKILL.
                     if kill_after_ms > 0 {
                         std::thread::sleep(std::time::Duration::from_millis(kill_after_ms));
-                        info!(job_id = %job_id_str, "kill-after elapsed, sending SIGKILL");
+                        info!(job_id = %job_id_str, "kill-after elapsed, sending SIGKILL to process group");
                         #[cfg(unix)]
                         {
-                            unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+                            unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) };
                         }
                     } else {
-                        // Immediate SIGKILL.
+                        // Immediate SIGKILL to the process group.
                         #[cfg(unix)]
                         {
-                            unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+                            unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) };
                         }
                     }
                     break;
