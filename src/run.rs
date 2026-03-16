@@ -178,7 +178,7 @@ pub fn execute(opts: RunOpts) -> Result<()> {
         .arg("_supervise")
         .arg("--job-id")
         .arg(&job_id)
-        .arg("--root")
+        .arg("--supervise-root")
         .arg(root.display().to_string())
         .arg("--full-log")
         .arg(&full_log_path);
