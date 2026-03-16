@@ -1,0 +1,44 @@
+#!/bin/sh
+# Worktree setup script for testing
+echo "=== Worktree Setup Script ==="
+echo "Running in: $(pwd)"
+echo "Root worktree: $ROOT_WORKTREE_PATH"
+echo "Creating test marker file..."
+touch .setup-completed
+
+echo "Copying Serena cache into worktree..."
+if [ -d "${ROOT_WORKTREE_PATH}/.serena/cache" ]; then
+  mkdir -p .serena
+  rm -rf .serena/cache
+  cp -R "${ROOT_WORKTREE_PATH}/.serena/cache" .serena/cache
+else
+  echo "Serena cache not found at ${ROOT_WORKTREE_PATH}/.serena/cache; skipping copy" 1>&2
+fi
+
+echo "Copying llm-tldr cache into worktree..."
+if [ -d "${ROOT_WORKTREE_PATH}/.tldr/cache" ]; then
+  mkdir -p .tldr
+  rm -rf .tldr/cache
+  cp -R "${ROOT_WORKTREE_PATH}/.tldr/cache" .tldr/cache
+else
+  echo "llm-tldr cache not found at ${ROOT_WORKTREE_PATH}/.tldr/cache; skipping copy" 1>&2
+fi
+
+hooks_dir="$(git rev-parse --git-dir 2>/dev/null)/hooks"
+if [ -n "$hooks_dir" ]; then
+  case "$hooks_dir" in
+    /*) ;;
+    *) repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"
+       hooks_dir="${repo_root}/${hooks_dir}"
+       ;;
+  esac
+
+  if command -v prek >/dev/null 2>&1; then
+    echo "Installing prek hooks in worktree..."
+    prek install
+  else
+    echo "prek not found; skipping hook install"
+  fi
+fi
+
+echo "Setup completed successfully!"

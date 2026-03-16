@@ -84,11 +84,23 @@ check: fmt-check lint test
 	@echo "All checks passed!"
 
 # Build Serena symbol index under .serena/cache
+#index:
+#	@echo "Indexing project for Serena..."
+#	@command -v serena >/dev/null 2>&1 || (echo "serena CLI not found. Install it first (e.g. 'uv tool install serena')." && exit 1)
+#	serena project index . --log-level INFO
+#	@echo "Serena index complete."
+
+# Create fast indexes (LEANN + TLDR warm cache) - runs in parallel
 index:
-	@echo "Indexing project for Serena..."
-	@command -v serena >/dev/null 2>&1 || (echo "serena CLI not found. Install it first (e.g. 'uv tool install serena')." && exit 1)
-	serena project index . --log-level INFO
-	@echo "Serena index complete."
+	@echo "Starting parallel index creation..."
+	@( \
+		(echo "[Serena] Creating index..." && uvx --from git+https://github.com/oraios/serena serena project index && echo "[Serena] ✓ Complete" || echo "[Serena] ✗ Failed") & \
+		(echo "[LEANN] Creating index..." && leann build openspec-spec --docs ./openspec/specs --force && echo "[LEANN] ✓ Complete" || echo "[LEANN] ✗ Failed") & \
+		(echo "[TLDR] Warming cache..." && tldr warm . --lang rust && echo "[TLDR] ✓ Complete" || echo "[TLDR] ✗ Failed") & \
+		wait; \
+		echo ""; \
+		echo "Fast index creation complete!" \
+	)
 
 # Setup development environment
 setup: pre-commit-hooks

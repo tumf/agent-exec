@@ -1,3 +1,5 @@
 /target/
 skills/dist/
 **/*.rs.bk
+.leann
+.tldr
