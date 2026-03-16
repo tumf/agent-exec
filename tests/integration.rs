@@ -652,16 +652,21 @@ fn run_timeout_terminates_child() {
     ]);
     let job_id = run_v["job_id"].as_str().unwrap().to_string();
 
-    // Wait long enough for timeout + kill-after to fire.
-    std::thread::sleep(std::time::Duration::from_millis(2000));
-
-    // Check that the job is no longer running (state should be exited or killed).
-    let v = h.run(&["status", &job_id]);
-    let state = v["state"].as_str().unwrap_or("running");
-    assert!(
-        state != "running",
-        "job should have been terminated by timeout; state={state}"
-    );
+    // Poll until the job is no longer running (timeout + kill-after should fire).
+    // Use a polling loop instead of a fixed sleep to tolerate slow CI runners.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let v = h.run(&["status", &job_id]);
+        let state = v["state"].as_str().unwrap_or("running");
+        if state != "running" {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "job should have been terminated by timeout; state={state}"
+        );
+    }
 }
 
 /// Spec: --progress-every updates state.json.updated_at within the interval.
