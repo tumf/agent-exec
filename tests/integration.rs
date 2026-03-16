@@ -644,24 +644,29 @@ fn run_timeout_terminates_child() {
         "--snapshot-after",
         "0",
         "--timeout",
-        "500",
+        "1000",
         "--kill-after",
-        "500",
+        "1000",
         "sleep",
         "60",
     ]);
     let job_id = run_v["job_id"].as_str().unwrap().to_string();
 
-    // Wait long enough for timeout + kill-after to fire.
-    std::thread::sleep(std::time::Duration::from_millis(2000));
-
-    // Check that the job is no longer running (state should be exited or killed).
-    let v = h.run(&["status", &job_id]);
-    let state = v["state"].as_str().unwrap_or("running");
-    assert!(
-        state != "running",
-        "job should have been terminated by timeout; state={state}"
-    );
+    // Poll until the job is no longer running (timeout + kill-after should fire).
+    // Use a polling loop instead of a fixed sleep to tolerate slow CI runners.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let v = h.run(&["status", &job_id]);
+        let state = v["state"].as_str().unwrap_or("running");
+        if state != "running" {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "job should have been terminated by timeout; state={state}"
+        );
+    }
 }
 
 /// Spec: --progress-every updates state.json.updated_at within the interval.
@@ -2417,9 +2422,15 @@ fn shell_wrapper_shared_between_run_and_notify_command() {
     assert_eq!(v["state"].as_str().unwrap_or(""), "exited");
 
     std::thread::sleep(std::time::Duration::from_millis(300));
-    assert!(captured.exists(), "notify-command must have run using the configured wrapper");
+    assert!(
+        captured.exists(),
+        "notify-command must have run using the configured wrapper"
+    );
     let content = std::fs::read_to_string(&captured).unwrap();
-    assert!(content.contains("shared_wrapper_ran"), "notify-command output must confirm wrapper execution");
+    assert!(
+        content.contains("shared_wrapper_ran"),
+        "notify-command output must confirm wrapper execution"
+    );
 }
 
 /// Shell command string execution: `run -- 'cmd && cmd'` goes through the
@@ -2428,7 +2439,12 @@ fn shell_wrapper_shared_between_run_and_notify_command() {
 fn shell_wrapper_applied_to_run_command_string() {
     let h = TestHarness::new();
     // Single-element command string with shell features.
-    let v = h.run(&["run", "--wait", "--", "echo shell_string_ran && echo second"]);
+    let v = h.run(&[
+        "run",
+        "--wait",
+        "--",
+        "echo shell_string_ran && echo second",
+    ]);
     assert_envelope(&v, "run", true);
     assert_eq!(
         v["state"].as_str().unwrap_or(""),
@@ -2464,7 +2480,13 @@ fn shell_wrapper_argv_fidelity_across_run_supervise() {
 
 /// Write a synthetic job directory with meta.json and state.json into root.
 /// The `finished_at` and `updated_at` fields are set to `ts` (RFC 3339 UTC).
-fn write_fake_job(root: &str, job_id: &str, status: &str, finished_at: Option<&str>, updated_at: &str) {
+fn write_fake_job(
+    root: &str,
+    job_id: &str,
+    status: &str,
+    finished_at: Option<&str>,
+    updated_at: &str,
+) {
     let job_dir = std::path::Path::new(root).join(job_id);
     std::fs::create_dir_all(&job_dir).unwrap();
 
@@ -2478,7 +2500,11 @@ fn write_fake_job(root: &str, job_id: &str, status: &str, finished_at: Option<&s
         "env_vars": [],
         "mask": []
     });
-    std::fs::write(job_dir.join("meta.json"), serde_json::to_string_pretty(&meta).unwrap()).unwrap();
+    std::fs::write(
+        job_dir.join("meta.json"),
+        serde_json::to_string_pretty(&meta).unwrap(),
+    )
+    .unwrap();
 
     let mut state_obj = serde_json::json!({
         "job": {
@@ -2498,7 +2524,11 @@ fn write_fake_job(root: &str, job_id: &str, status: &str, finished_at: Option<&s
         state_obj["finished_at"] = serde_json::json!(fa);
     }
 
-    std::fs::write(job_dir.join("state.json"), serde_json::to_string_pretty(&state_obj).unwrap()).unwrap();
+    std::fs::write(
+        job_dir.join("state.json"),
+        serde_json::to_string_pretty(&state_obj).unwrap(),
+    )
+    .unwrap();
 
     // Write a small log file so dir_size_bytes > 0.
     std::fs::write(job_dir.join("stdout.log"), b"some output").unwrap();
@@ -2507,10 +2537,20 @@ fn write_fake_job(root: &str, job_id: &str, status: &str, finished_at: Option<&s
 /// Verify the gc response envelope and common fields.
 fn assert_gc_envelope(v: &serde_json::Value, dry_run: bool) {
     assert_envelope(v, "gc", true);
-    assert_eq!(v["dry_run"].as_bool().unwrap_or(!dry_run), dry_run, "dry_run mismatch");
+    assert_eq!(
+        v["dry_run"].as_bool().unwrap_or(!dry_run),
+        dry_run,
+        "dry_run mismatch"
+    );
     assert!(v["root"].as_str().is_some(), "root field missing");
-    assert!(v["older_than"].as_str().is_some(), "older_than field missing");
-    assert!(v["older_than_source"].as_str().is_some(), "older_than_source field missing");
+    assert!(
+        v["older_than"].as_str().is_some(),
+        "older_than field missing"
+    );
+    assert!(
+        v["older_than_source"].as_str().is_some(),
+        "older_than_source field missing"
+    );
     assert!(v["jobs"].is_array(), "jobs must be an array");
 }
 
@@ -2529,16 +2569,37 @@ fn gc_empty_root_returns_ok() {
 fn gc_uses_default_30d_window() {
     let h = TestHarness::new();
     // Create a job with a very old finished_at (should be deleted under 30d window).
-    write_fake_job(h.root(), "old-job-01", "exited", Some("2020-01-01T00:00:00Z"), "2020-01-01T00:00:00Z");
+    write_fake_job(
+        h.root(),
+        "old-job-01",
+        "exited",
+        Some("2020-01-01T00:00:00Z"),
+        "2020-01-01T00:00:00Z",
+    );
 
     let v = h.run(&["gc"]);
     assert_gc_envelope(&v, false);
     // Default source must be "default".
-    assert_eq!(v["older_than_source"].as_str().unwrap_or(""), "default", "should report default source");
-    assert_eq!(v["older_than"].as_str().unwrap_or(""), "30d", "should report 30d as default");
+    assert_eq!(
+        v["older_than_source"].as_str().unwrap_or(""),
+        "default",
+        "should report default source"
+    );
+    assert_eq!(
+        v["older_than"].as_str().unwrap_or(""),
+        "30d",
+        "should report 30d as default"
+    );
     // Old job must be deleted.
-    assert_eq!(v["deleted"].as_u64().unwrap_or(0), 1, "old terminal job must be deleted");
-    assert!(v["freed_bytes"].as_u64().unwrap_or(0) > 0, "freed_bytes must be > 0");
+    assert_eq!(
+        v["deleted"].as_u64().unwrap_or(0),
+        1,
+        "old terminal job must be deleted"
+    );
+    assert!(
+        v["freed_bytes"].as_u64().unwrap_or(0) > 0,
+        "freed_bytes must be > 0"
+    );
     // Directory must no longer exist.
     let job_path = std::path::Path::new(h.root()).join("old-job-01");
     assert!(!job_path.exists(), "job directory must be deleted");
@@ -2556,7 +2617,11 @@ fn gc_deletes_only_terminal_jobs() {
 
     let v = h.run(&["gc", "--older-than", "7d"]);
     assert_gc_envelope(&v, false);
-    assert_eq!(v["deleted"].as_u64().unwrap_or(0), 3, "three terminal jobs must be deleted");
+    assert_eq!(
+        v["deleted"].as_u64().unwrap_or(0),
+        3,
+        "three terminal jobs must be deleted"
+    );
 
     // Running job directory must still exist.
     let running_path = std::path::Path::new(h.root()).join("running-job");
@@ -2569,8 +2634,13 @@ fn gc_deletes_only_terminal_jobs() {
 
     // Verify running job appears as skipped in jobs array.
     let jobs = v["jobs"].as_array().unwrap();
-    let running_entry = jobs.iter().find(|j| j["job_id"].as_str().unwrap_or("") == "running-job");
-    assert!(running_entry.is_some(), "running job must appear in jobs array");
+    let running_entry = jobs
+        .iter()
+        .find(|j| j["job_id"].as_str().unwrap_or("") == "running-job");
+    assert!(
+        running_entry.is_some(),
+        "running job must appear in jobs array"
+    );
     let running_entry = running_entry.unwrap();
     assert_eq!(running_entry["action"].as_str().unwrap_or(""), "skipped");
     assert_eq!(running_entry["reason"].as_str().unwrap_or(""), "running");
@@ -2586,17 +2656,32 @@ fn gc_dry_run_preserves_directories() {
     let v = h.run(&["gc", "--older-than", "7d", "--dry-run"]);
     assert_gc_envelope(&v, true);
     // Dry-run: no actual deletions.
-    assert_eq!(v["deleted"].as_u64().unwrap_or(1), 0, "dry-run must not delete");
+    assert_eq!(
+        v["deleted"].as_u64().unwrap_or(1),
+        0,
+        "dry-run must not delete"
+    );
     // But freed_bytes should reflect the would-be reclaimed space.
-    assert!(v["freed_bytes"].as_u64().unwrap_or(0) > 0, "freed_bytes must report potential reclaim");
+    assert!(
+        v["freed_bytes"].as_u64().unwrap_or(0) > 0,
+        "freed_bytes must report potential reclaim"
+    );
     // Directory must still exist.
-    assert!(std::path::Path::new(h.root()).join("old-exited").exists(), "directory must be preserved in dry-run");
+    assert!(
+        std::path::Path::new(h.root()).join("old-exited").exists(),
+        "directory must be preserved in dry-run"
+    );
 
     // Action must be "would_delete".
     let jobs = v["jobs"].as_array().unwrap();
-    let entry = jobs.iter().find(|j| j["job_id"].as_str().unwrap_or("") == "old-exited");
+    let entry = jobs
+        .iter()
+        .find(|j| j["job_id"].as_str().unwrap_or("") == "old-exited");
     assert!(entry.is_some());
-    assert_eq!(entry.unwrap()["action"].as_str().unwrap_or(""), "would_delete");
+    assert_eq!(
+        entry.unwrap()["action"].as_str().unwrap_or(""),
+        "would_delete"
+    );
 }
 
 /// gc skips jobs whose state.json lacks both finished_at and updated_at timestamps.
@@ -2618,7 +2703,11 @@ fn gc_skips_jobs_without_gc_timestamp() {
         "env_vars": [],
         "mask": []
     });
-    std::fs::write(job_dir.join("meta.json"), serde_json::to_string_pretty(&meta).unwrap()).unwrap();
+    std::fs::write(
+        job_dir.join("meta.json"),
+        serde_json::to_string_pretty(&meta).unwrap(),
+    )
+    .unwrap();
 
     // Write state.json with killed status but no finished_at and an empty updated_at.
     // Note: updated_at is required by the schema, so we use a non-empty value here to
@@ -2640,13 +2729,21 @@ fn gc_skips_jobs_without_gc_timestamp() {
         },
         "updated_at": "2020-01-01T00:00:00Z"
     });
-    std::fs::write(job_dir.join("state.json"), serde_json::to_string_pretty(&state).unwrap()).unwrap();
+    std::fs::write(
+        job_dir.join("state.json"),
+        serde_json::to_string_pretty(&state).unwrap(),
+    )
+    .unwrap();
 
     // The job has updated_at but no finished_at; gc should fall back to updated_at and delete it.
     let v = h.run(&["gc", "--older-than", "7d"]);
     assert_gc_envelope(&v, false);
     // Should be deleted (updated_at fallback works).
-    assert_eq!(v["deleted"].as_u64().unwrap_or(0), 1, "job with only updated_at should be deleted via fallback");
+    assert_eq!(
+        v["deleted"].as_u64().unwrap_or(0),
+        1,
+        "job with only updated_at should be deleted via fallback"
+    );
 }
 
 /// gc --older-than flag overrides the default and is reflected in the response.
@@ -2676,17 +2773,29 @@ fn gc_skips_unreadable_state() {
         "env_vars": [],
         "mask": []
     });
-    std::fs::write(job_dir.join("meta.json"), serde_json::to_string_pretty(&meta).unwrap()).unwrap();
+    std::fs::write(
+        job_dir.join("meta.json"),
+        serde_json::to_string_pretty(&meta).unwrap(),
+    )
+    .unwrap();
     std::fs::write(job_dir.join("state.json"), b"not valid json").unwrap();
 
     let v = h.run(&["gc", "--older-than", "1d"]);
     assert_gc_envelope(&v, false);
     // The job should be reported as skipped.
     let jobs = v["jobs"].as_array().unwrap();
-    let entry = jobs.iter().find(|j| j["job_id"].as_str().unwrap_or("") == "bad-state-job");
+    let entry = jobs
+        .iter()
+        .find(|j| j["job_id"].as_str().unwrap_or("") == "bad-state-job");
     assert!(entry.is_some(), "unreadable job must appear in jobs list");
     assert_eq!(entry.unwrap()["action"].as_str().unwrap_or(""), "skipped");
-    assert_eq!(entry.unwrap()["reason"].as_str().unwrap_or(""), "state_unreadable");
+    assert_eq!(
+        entry.unwrap()["reason"].as_str().unwrap_or(""),
+        "state_unreadable"
+    );
     // Directory must be preserved.
-    assert!(job_dir.exists(), "directory with unreadable state must be preserved");
+    assert!(
+        job_dir.exists(),
+        "directory with unreadable state must be preserved"
+    );
 }

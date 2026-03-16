@@ -111,12 +111,24 @@ fn send_signal(pid: u32, signal: &str) -> Result<()> {
         "KILL" => libc::SIGKILL,
         _ => libc::SIGKILL, // Unknown → KILL (per design.md)
     };
+    // Send signal to the process group (negative PID) so the shell wrapper
+    // and all its descendants receive it.  Fall back to single-process kill
+    // if the process-group kill fails (e.g. process is not a group leader).
     // SAFETY: kill(2) is safe to call with any pid and valid signal number.
-    let ret = unsafe { libc::kill(pid as libc::pid_t, signum) };
+    let pgid = -(pid as libc::pid_t);
+    let ret = unsafe { libc::kill(pgid, signum) };
     if ret != 0 {
         let err = std::io::Error::last_os_error();
-        // ESRCH (3): No such process — already gone, treat as success.
-        if err.raw_os_error() != Some(libc::ESRCH) {
+        if err.raw_os_error() == Some(libc::ESRCH) {
+            // No such process group — try single-process kill as fallback.
+            let ret2 = unsafe { libc::kill(pid as libc::pid_t, signum) };
+            if ret2 != 0 {
+                let err2 = std::io::Error::last_os_error();
+                if err2.raw_os_error() != Some(libc::ESRCH) {
+                    return Err(err2.into());
+                }
+            }
+        } else {
             return Err(err.into());
         }
     }
