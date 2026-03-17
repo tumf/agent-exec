@@ -388,9 +388,12 @@ pub struct JobMetaJob {
 /// ```
 ///
 /// `env_keys` stores only the names (keys) of environment variables passed via `--env`.
-/// Values MUST NOT be stored to avoid leaking secrets.
-/// `env_vars` stores KEY=VALUE strings with masked values replaced by "***".
-/// `mask` stores the list of keys whose values are masked.
+/// `env_vars` stores KEY=VALUE strings with masked values replaced by "***" (display only).
+/// `env_vars_runtime` stores the actual (unmasked) KEY=VALUE strings used at `start` time.
+///   For the `run` command, this field is empty (env vars are passed directly to the supervisor).
+///   For the `create`/`start` lifecycle, this field persists the real KEY=VALUE pairs so
+///   `start` can apply them without re-specifying CLI arguments.
+/// `mask` stores the list of keys whose values are masked in output/metadata views.
 /// `cwd` stores the effective working directory at job creation time (canonicalized).
 ///
 /// For the `create`/`start` lifecycle, additional execution-definition fields are
@@ -403,11 +406,18 @@ pub struct JobMeta {
     pub created_at: String,
     pub root: String,
     /// Keys of environment variables provided at job creation time.
-    /// Values are intentionally omitted for security.
     pub env_keys: Vec<String>,
     /// Environment variables as KEY=VALUE strings, with masked values replaced by "***".
+    /// Used for display in JSON responses and metadata views only.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub env_vars: Vec<String>,
+    /// Actual (unmasked) KEY=VALUE env var pairs persisted for `start` runtime use.
+    /// Only populated in the `create`/`start` lifecycle. For `run`, this is empty
+    /// because env vars are passed directly to the supervisor.
+    /// `--env` in the create/start lifecycle is treated as durable, non-secret configuration;
+    /// use `--env-file` for values that should never be written to disk.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub env_vars_runtime: Vec<String>,
     /// Keys whose values are masked in output.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub mask: Vec<String>,

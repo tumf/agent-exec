@@ -62,19 +62,12 @@ pub fn execute(opts: StartOpts) -> Result<()> {
         crate::config::default_shell_wrapper()
     };
 
-    // The real (unmasked) env vars are NOT stored in meta.json for security.
-    // Only masked display values are persisted. For the supervisor we need to
-    // reconstruct the env from env_files (re-read at start time) only.
-    // Direct KEY=VALUE pairs from --env were stored as masked; they will be
-    // applied via env_files if they came from files, or not re-applied if they
-    // were direct key=value args (per design: --env is durable non-secret config,
-    // but values are intentionally not persisted in plain text).
-    //
-    // Practical note: we pass the masked env_vars to the supervisor; the
-    // supervisor will apply them as-is (masked values like "***" will be set
-    // in the child environment). Users should use env_files for actual secrets.
-    // The contract for `--env` in the create/start lifecycle treats these as
-    // durable, non-secret configuration.
+    // Use the persisted runtime env vars (unmasked) for the supervisor call.
+    // env_vars_runtime stores the actual KEY=VALUE pairs written by `create`; this
+    // ensures that `--mask KEY` only redacts the display/metadata view while the real
+    // value is still applied to the child process environment at start time.
+    // env_files are re-read here (deferred loading) so file contents reflect the
+    // current state of the files at start time, not at create time.
 
     let (supervisor_pid, started_at) = spawn_supervisor_process(
         &job_dir,
@@ -85,7 +78,7 @@ pub fn execute(opts: StartOpts) -> Result<()> {
             timeout_ms: meta.timeout_ms,
             kill_after_ms: meta.kill_after_ms,
             cwd: meta.cwd.clone(),
-            env_vars: meta.env_vars.clone(), // masked values — see note above
+            env_vars: meta.env_vars_runtime.clone(),
             env_files: meta.env_files.clone(),
             inherit_env: meta.inherit_env,
             progress_every_ms: meta.progress_every_ms,
@@ -117,8 +110,8 @@ pub fn execute(opts: StartOpts) -> Result<()> {
 
     let elapsed_ms = elapsed_start.elapsed().as_millis() as u64;
 
-    // The masked env_vars included in the response match what was persisted in meta.
-    let masked_env_vars = mask_env_vars(&meta.env_vars, &meta.mask);
+    // The response uses the masked env_vars (display view), not the runtime values.
+    let masked_env_vars = mask_env_vars(&meta.env_vars_runtime, &meta.mask);
 
     Response::new(
         "start",

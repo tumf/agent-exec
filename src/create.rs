@@ -85,6 +85,10 @@ pub fn execute(opts: CreateOpts) -> Result<()> {
         root: root.display().to_string(),
         env_keys,
         env_vars: masked_env_vars,
+        // Persist actual (unmasked) env vars for runtime use by `start`.
+        // --mask only affects display/metadata views; the real values are needed
+        // so `start` can apply them to the child process environment.
+        env_vars_runtime: opts.env_vars.clone(),
         mask: opts.mask.clone(),
         cwd: Some(effective_cwd),
         notification,

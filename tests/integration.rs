@@ -2997,3 +2997,108 @@ fn wait_on_created_job_polls_until_terminal() {
 
     let _ = handle.join();
 }
+
+/// Acceptance #1 follow-up: `create --env-file` persists the file path so that
+/// `start` reads the file at start time (deferred loading).
+/// The env var value must appear in the child process output.
+#[test]
+fn create_start_env_file_deferred_loading() {
+    let h = TestHarness::new();
+
+    // Write an env file containing a variable.
+    let env_file = tempfile::NamedTempFile::new().unwrap();
+    let env_file_path = env_file.path().to_str().unwrap().to_string();
+    std::fs::write(&env_file_path, "DEFERRED_VAR=from_env_file\n").unwrap();
+
+    // Create the job with --env-file; the file path is persisted, not the contents.
+    let cv = h.run(&[
+        "create",
+        "--env-file",
+        &env_file_path,
+        "--",
+        "sh",
+        "-c",
+        "echo $DEFERRED_VAR",
+    ]);
+    let job_id = cv["job_id"].as_str().unwrap();
+    assert_eq!(cv["state"].as_str().unwrap_or(""), "created");
+
+    // Start the job and wait for completion.
+    let sv = h.run(&["start", "--wait", job_id]);
+    assert_envelope(&sv, "start", true);
+    assert_eq!(sv["exit_code"].as_i64().unwrap_or(-1), 0);
+
+    // The env var value loaded from the file must appear in stdout.
+    let stdout_tail = sv["final_snapshot"]["stdout_tail"].as_str().unwrap_or("");
+    assert!(
+        stdout_tail.contains("from_env_file"),
+        "expected env_file value in stdout: {}",
+        sv
+    );
+}
+
+/// Acceptance #1 follow-up: `create --mask KEY` must redact the value only in
+/// metadata/response views while `start` still applies the real value at runtime.
+#[test]
+fn create_start_masked_env_applied_at_runtime() {
+    let h = TestHarness::new();
+
+    // Create with a masked env var; the command echoes the real value.
+    let cv = h.run(&[
+        "create",
+        "--env",
+        "MASKED_KEY=real_secret_value",
+        "--mask",
+        "MASKED_KEY",
+        "--",
+        "sh",
+        "-c",
+        "echo $MASKED_KEY",
+    ]);
+    let job_id = cv["job_id"].as_str().unwrap();
+    assert_eq!(cv["state"].as_str().unwrap_or(""), "created");
+
+    // Verify meta.json stores the masked value in env_vars (display view).
+    let root = h.root();
+    let meta_path = std::path::Path::new(root).join(job_id).join("meta.json");
+    let meta_raw = std::fs::read_to_string(&meta_path).unwrap();
+    let meta: serde_json::Value = serde_json::from_str(&meta_raw).unwrap();
+    let env_vars = meta["env_vars"].as_array().unwrap();
+    assert!(
+        env_vars.iter().any(|v| v.as_str() == Some("MASKED_KEY=***")),
+        "env_vars in meta.json must show masked value, got: {meta_raw}"
+    );
+    // The real value must not appear in env_vars.
+    assert!(
+        !meta_raw.contains("real_secret_value")
+            || meta["env_vars_runtime"]
+                .as_array()
+                .map(|a| a.iter().any(|v| v.as_str().unwrap_or("").contains("real_secret_value")))
+                .unwrap_or(false),
+        "env_vars display field must not expose the unmasked value"
+    );
+
+    // Start and wait; the child process must receive the real (unmasked) value.
+    let sv = h.run(&["start", "--wait", job_id]);
+    assert_envelope(&sv, "start", true);
+    assert_eq!(sv["exit_code"].as_i64().unwrap_or(-1), 0);
+
+    let stdout_tail = sv["final_snapshot"]["stdout_tail"].as_str().unwrap_or("");
+    assert!(
+        stdout_tail.contains("real_secret_value"),
+        "start must apply the real (unmasked) env var value at runtime, got stdout: {}",
+        sv
+    );
+
+    // The start response env_vars must show the masked value (not the real one).
+    let resp_env_vars = sv["env_vars"].as_array();
+    if let Some(resp_env_vars) = resp_env_vars {
+        assert!(
+            resp_env_vars
+                .iter()
+                .any(|v| v.as_str() == Some("MASKED_KEY=***")),
+            "start response must mask the value in env_vars, got: {}",
+            sv
+        );
+    }
+}

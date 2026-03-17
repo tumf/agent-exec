@@ -369,6 +369,9 @@ pub fn execute(opts: RunOpts) -> Result<()> {
         root: root.display().to_string(),
         env_keys,
         env_vars: masked_env_vars.clone(),
+        // For `run`, env_vars_runtime is not populated because the supervisor
+        // is spawned immediately with the real values; no deferred start needed.
+        env_vars_runtime: vec![],
         mask: opts.mask.clone(),
         cwd: Some(effective_cwd),
         notification,

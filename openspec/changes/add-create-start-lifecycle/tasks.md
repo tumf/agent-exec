@@ -11,3 +11,8 @@
 
 - Consider whether a follow-up should add a dedicated `restart` or `rerun` concept instead of overloading `start` with repeat-execution semantics.
 - Consider whether persisted env values should gain stronger opt-in warnings in CLI help now that the contract explicitly treats `--env` as durable non-secret configuration.
+
+## Acceptance #1 Failure Follow-up
+
+- [x] Ensure `create --mask KEY` redacts only response/metadata views while `start` still applies the original persisted `--env KEY=VALUE` value at runtime.
+- [x] Add create/start integration coverage for `--env-file` deferred loading semantics and for masked env runtime behavior so task claims remain truthful.
