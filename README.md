@@ -75,6 +75,29 @@ agent-exec run \
   sleep 60
 ```
 
+## Global Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--root <PATH>` | XDG default | Override the jobs root directory for all subcommands. Precedence: `--root` > `AGENT_EXEC_ROOT` > `$XDG_DATA_HOME/agent-exec/jobs` > platform default. |
+| `-v` / `-vv` | warn | Increase log verbosity (logs go to stderr). |
+
+The `--root` flag is a **global** option that applies to all job-store subcommands (`run`, `status`, `tail`, `wait`, `kill`, `list`, `gc`). The preferred placement is before the subcommand name:
+
+```bash
+agent-exec --root /tmp/jobs run echo hello
+agent-exec --root /tmp/jobs status <JOB_ID>
+agent-exec --root /tmp/jobs list
+agent-exec --root /tmp/jobs gc --dry-run
+```
+
+For backward compatibility, `--root` is also accepted after the subcommand name (both forms are equivalent):
+
+```bash
+agent-exec run --root /tmp/jobs echo hello
+agent-exec status --root /tmp/jobs <JOB_ID>
+```
+
 ## Commands
 
 ### `run` — start a background job
@@ -140,7 +163,7 @@ agent-exec list [--state running|exited|killed|failed] [--limit N]
 ### `gc` — garbage collect old job data
 
 ```bash
-agent-exec gc [--older-than <DURATION>] [--dry-run] [--root <PATH>]
+agent-exec [--root <PATH>] gc [--older-than <DURATION>] [--dry-run]
 ```
 
 Deletes job directories under the root whose terminal state (`exited`, `killed`, or `failed`) is older than the retention window. Running jobs are never touched.
@@ -149,7 +172,6 @@ Deletes job directories under the root whose terminal state (`exited`, `killed`,
 |------|---------|-------------|
 | `--older-than <DURATION>` | `30d` | Retention window: jobs older than this are eligible for deletion. Supports `30d`, `24h`, `60m`, `3600s`. |
 | `--dry-run` | false | Report candidates without deleting anything. |
-| `--root <PATH>` | XDG default | Override the jobs root directory. |
 
 **Retention semantics**
 
@@ -168,6 +190,9 @@ agent-exec gc --older-than 7d --dry-run
 
 # Delete jobs older than 7 days.
 agent-exec gc --older-than 7d
+
+# Operate on a specific jobs root directory.
+agent-exec --root /tmp/jobs gc --older-than 7d
 ```
 
 **JSON response fields**
