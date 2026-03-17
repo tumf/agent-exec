@@ -115,6 +115,29 @@ durable (non-secret) configuration and applied when `start` is called.
 `wait` polls through `created` and `running` until a terminal state.
 `list --state created` filters to not-yet-started jobs.
 
+## Global Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--root <PATH>` | XDG default | Override the jobs root directory for all subcommands. Precedence: `--root` > `AGENT_EXEC_ROOT` > `$XDG_DATA_HOME/agent-exec/jobs` > platform default. |
+| `-v` / `-vv` | warn | Increase log verbosity (logs go to stderr). |
+
+The `--root` flag is a **global** option that applies to all job-store subcommands (`run`, `status`, `tail`, `wait`, `kill`, `list`, `gc`). The preferred placement is before the subcommand name:
+
+```bash
+agent-exec --root /tmp/jobs run echo hello
+agent-exec --root /tmp/jobs status <JOB_ID>
+agent-exec --root /tmp/jobs list
+agent-exec --root /tmp/jobs gc --dry-run
+```
+
+For backward compatibility, `--root` is also accepted after the subcommand name (both forms are equivalent):
+
+```bash
+agent-exec run --root /tmp/jobs echo hello
+agent-exec status --root /tmp/jobs <JOB_ID>
+```
+
 ## Commands
 
 ### `create` — define a job without starting it
@@ -211,10 +234,42 @@ agent-exec kill [--signal TERM|INT|KILL] <JOB_ID>
 agent-exec list [--state created|running|exited|killed|failed] [--limit N]
 ```
 
+### `notify set` — update completion notification
+
+```bash
+agent-exec notify set <JOB_ID> --command <COMMAND>
+```
+
+Updates the persisted `notify_command` for an existing job. This is a **metadata-only** operation: it rewrites `meta.json` and does not immediately execute the command, even when the target job is already in a terminal state.
+
+| Argument / Flag | Description |
+|-----------------|-------------|
+| `<JOB_ID>` | Job identifier. |
+| `--command <COMMAND>` | Shell command string to store as the new `notify_command`. |
+| `--root <PATH>` | Override the jobs root directory. |
+
+**Behavior**
+
+- Replaces the existing `notify_command` with the new value.
+- Preserves any existing `notify_file` configuration.
+- If the job has no prior notification block, a new one is created with `notify_command` set.
+- If called before the job reaches a terminal state, the updated command will be used when the job eventually finishes.
+- A missing job returns a JSON error with `error.code = "job_not_found"`.
+
+**Example**
+
+```bash
+# Start a job without a notification hook.
+JOB=$(agent-exec run --snapshot-after 0 -- sleep 5 | jq -r .job_id)
+
+# Add a notification command before the job finishes.
+agent-exec notify set "$JOB" --command 'cat > /tmp/event.json'
+```
+
 ### `gc` — garbage collect old job data
 
 ```bash
-agent-exec gc [--older-than <DURATION>] [--dry-run] [--root <PATH>]
+agent-exec [--root <PATH>] gc [--older-than <DURATION>] [--dry-run]
 ```
 
 Deletes job directories under the root whose terminal state (`exited`, `killed`, or `failed`) is older than the retention window. Running jobs are never touched.
@@ -223,7 +278,6 @@ Deletes job directories under the root whose terminal state (`exited`, `killed`,
 |------|---------|-------------|
 | `--older-than <DURATION>` | `30d` | Retention window: jobs older than this are eligible for deletion. Supports `30d`, `24h`, `60m`, `3600s`. |
 | `--dry-run` | false | Report candidates without deleting anything. |
-| `--root <PATH>` | XDG default | Override the jobs root directory. |
 
 **Retention semantics**
 
@@ -242,6 +296,9 @@ agent-exec gc --older-than 7d --dry-run
 
 # Delete jobs older than 7 days.
 agent-exec gc --older-than 7d
+
+# Operate on a specific jobs root directory.
+agent-exec --root /tmp/jobs gc --older-than 7d
 ```
 
 **JSON response fields**

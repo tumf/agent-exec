@@ -130,7 +130,7 @@ pub fn spawn_supervisor_process(
         .arg("_supervise")
         .arg("--job-id")
         .arg(&params.job_id)
-        .arg("--root")
+        .arg("--supervise-root")
         .arg(params.root.display().to_string())
         .arg("--full-log")
         .arg(&params.full_log_path);
@@ -1059,9 +1059,17 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
     job_dir.write_state(&state)?;
     info!(job_id, ?exit_code, "child process finished");
 
+    // Reload the latest notification config from meta.json to pick up any post-creation
+    // updates (e.g. from `notify set` invoked after the job was launched).
+    let latest_notification = job_dir.read_meta().ok().and_then(|m| m.notification);
+    let (current_notify_command, current_notify_file) = match &latest_notification {
+        Some(n) => (n.notify_command.clone(), n.notify_file.clone()),
+        None => (None, None),
+    };
+
     // Dispatch completion event to configured notification sinks.
     // Failure here must not alter job state (delivery result is recorded separately).
-    let has_notification = opts.notify_command.is_some() || opts.notify_file.is_some();
+    let has_notification = current_notify_command.is_some() || current_notify_file.is_some();
     if has_notification {
         let stdout_log = job_dir.stdout_path().display().to_string();
         let stderr_log = job_dir.stderr_path().display().to_string();
@@ -1095,7 +1103,7 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
             warn!(job_id, error = %e, "failed to write initial completion_event.json");
         }
 
-        if let Some(ref shell_cmd) = opts.notify_command {
+        if let Some(ref shell_cmd) = current_notify_command {
             delivery_results.push(dispatch_command_sink(
                 shell_cmd,
                 &event_json,
@@ -1104,7 +1112,7 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
                 &opts.shell_wrapper,
             ));
         }
-        if let Some(ref file_path) = opts.notify_file {
+        if let Some(ref file_path) = current_notify_file {
             delivery_results.push(dispatch_file_sink(file_path, &event_json));
         }
 

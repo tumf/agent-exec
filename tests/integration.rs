@@ -80,6 +80,55 @@ fn run_cmd_with_root(args: &[&str], root: Option<&str>) -> serde_json::Value {
     })
 }
 
+/// Run the binary with `--root <root>` as a global CLI flag (not via env var).
+/// Verifies normalized global-root syntax: `agent-exec --root <PATH> <subcommand> ...`.
+fn run_cmd_with_global_root_flag(root: &str, args: &[&str]) -> serde_json::Value {
+    let bin = binary();
+    let mut cmd = Command::new(&bin);
+    cmd.arg("--root").arg(root);
+    cmd.args(args);
+    // Clear AGENT_EXEC_ROOT to ensure the CLI flag is what takes effect.
+    cmd.env_remove("AGENT_EXEC_ROOT");
+    let output = cmd.output().expect("run binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stdout.trim().is_empty(),
+        "stdout is empty (stderr: {stderr})\nargs: {args:?}"
+    );
+    serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+        panic!("stdout is not valid JSON: {e}\nstdout: {stdout}\nstderr: {stderr}\nargs: {args:?}")
+    })
+}
+
+/// Run the binary with `--root <root>` placed after the subcommand name (legacy position).
+/// Verifies backward-compatible syntax: `agent-exec <subcommand> --root <PATH> ...`.
+/// Because --root is declared with `global = true`, clap accepts it in both positions.
+fn run_cmd_with_subcommand_root_flag(
+    subcommand: &str,
+    root: &str,
+    extra_args: &[&str],
+) -> serde_json::Value {
+    let bin = binary();
+    let mut cmd = Command::new(&bin);
+    cmd.arg(subcommand);
+    cmd.arg("--root").arg(root);
+    cmd.args(extra_args);
+    cmd.env_remove("AGENT_EXEC_ROOT");
+    let output = cmd.output().expect("run binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stdout.trim().is_empty(),
+        "stdout is empty (stderr: {stderr})\nsubcommand: {subcommand}, root: {root}, extra: {extra_args:?}"
+    );
+    serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+        panic!(
+            "stdout is not valid JSON: {e}\nstdout: {stdout}\nstderr: {stderr}\nsubcommand: {subcommand}"
+        )
+    })
+}
+
 /// Validate the common envelope fields.
 fn assert_envelope(v: &serde_json::Value, expected_type: &str, expected_ok: bool) {
     assert_eq!(
@@ -2874,7 +2923,8 @@ fn list_state_created_returns_created_jobs() {
     assert_envelope(&lv, "list", true);
     let jobs = lv["jobs"].as_array().unwrap();
     assert!(
-        jobs.iter().any(|j| j["job_id"].as_str().unwrap_or("") == job_id),
+        jobs.iter()
+            .any(|j| j["job_id"].as_str().unwrap_or("") == job_id),
         "created job must appear in --state created list"
     );
 }
@@ -2894,7 +2944,7 @@ fn kill_created_job_returns_invalid_state() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
     let kv: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
-    assert_eq!(kv["ok"].as_bool().unwrap_or(true), false);
+    assert!(!kv["ok"].as_bool().unwrap_or(true));
     assert_eq!(kv["error"]["code"].as_str().unwrap_or(""), "invalid_state");
     assert_eq!(output.status.code().unwrap_or(0), 1);
 }
@@ -2932,7 +2982,7 @@ fn start_already_run_job_returns_invalid_state() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
     let sv: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
-    assert_eq!(sv["ok"].as_bool().unwrap_or(true), false);
+    assert!(!sv["ok"].as_bool().unwrap_or(true));
     assert_eq!(sv["error"]["code"].as_str().unwrap_or(""), "invalid_state");
     assert_eq!(output.status.code().unwrap_or(0), 1);
 }
@@ -2952,7 +3002,15 @@ fn run_still_works_as_immediate_start_path() {
 fn create_start_env_persistence() {
     let h = TestHarness::new();
     // Create with an env var and have the command echo it.
-    let cv = h.run(&["create", "--env", "TEST_CREATE_VAR=hello_persist", "--", "sh", "-c", "echo $TEST_CREATE_VAR"]);
+    let cv = h.run(&[
+        "create",
+        "--env",
+        "TEST_CREATE_VAR=hello_persist",
+        "--",
+        "sh",
+        "-c",
+        "echo $TEST_CREATE_VAR",
+    ]);
     let job_id = cv["job_id"].as_str().unwrap();
     assert_eq!(cv["state"].as_str().unwrap_or(""), "created");
 
@@ -3076,7 +3134,9 @@ fn create_start_masked_env_applied_at_runtime() {
     let meta: serde_json::Value = serde_json::from_str(&meta_raw).unwrap();
     let env_vars = meta["env_vars"].as_array().unwrap();
     assert!(
-        env_vars.iter().any(|v| v.as_str() == Some("MASKED_KEY=***")),
+        env_vars
+            .iter()
+            .any(|v| v.as_str() == Some("MASKED_KEY=***")),
         "env_vars in meta.json must show masked value, got: {meta_raw}"
     );
     // The real value must not appear in env_vars.
@@ -3084,7 +3144,9 @@ fn create_start_masked_env_applied_at_runtime() {
         !meta_raw.contains("real_secret_value")
             || meta["env_vars_runtime"]
                 .as_array()
-                .map(|a| a.iter().any(|v| v.as_str().unwrap_or("").contains("real_secret_value")))
+                .map(|a| a
+                    .iter()
+                    .any(|v| v.as_str().unwrap_or("").contains("real_secret_value")))
                 .unwrap_or(false),
         "env_vars display field must not expose the unmasked value"
     );
@@ -3112,4 +3174,359 @@ fn create_start_masked_env_applied_at_runtime() {
             sv
         );
     }
+}
+
+// ── notify set ─────────────────────────────────────────────────────────────────
+
+/// notify set: updates notify_command in meta.json and returns success envelope.
+#[test]
+fn notify_set_updates_notify_command_in_meta_json() {
+    let h = TestHarness::new();
+
+    // Create a job first.
+    let v = h.run(&["run", "--snapshot-after", "0", "--", "echo", "hello"]);
+    assert_envelope(&v, "run", true);
+    let job_id = v["job_id"].as_str().expect("job_id").to_string();
+
+    // Wait for the job to start.
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    // Run notify set.
+    let set_v = h.run(&[
+        "notify",
+        "set",
+        &job_id,
+        "--command",
+        "cat >/tmp/event.json",
+    ]);
+    assert_envelope(&set_v, "notify.set", true);
+    assert_eq!(
+        set_v["job_id"].as_str().unwrap_or(""),
+        job_id,
+        "job_id must match"
+    );
+    assert_eq!(
+        set_v["notification"]["notify_command"]
+            .as_str()
+            .unwrap_or(""),
+        "cat >/tmp/event.json",
+        "notify_command must be updated"
+    );
+
+    // Verify meta.json was actually updated on disk.
+    let meta_path = std::path::Path::new(h.root())
+        .join(&job_id)
+        .join("meta.json");
+    let meta_raw = std::fs::read_to_string(&meta_path).expect("read meta.json");
+    let meta: serde_json::Value = serde_json::from_str(&meta_raw).expect("parse meta.json");
+    assert_eq!(
+        meta["notification"]["notify_command"]
+            .as_str()
+            .unwrap_or(""),
+        "cat >/tmp/event.json",
+        "meta.json notify_command must be updated on disk"
+    );
+}
+
+/// notify set: preserves existing notify_file when updating notify_command.
+#[test]
+fn notify_set_preserves_notify_file() {
+    let h = TestHarness::new();
+    let tmp_dir = tempfile::tempdir().expect("tempdir");
+    let events_file = tmp_dir.path().join("events.ndjson");
+    let events_file_str = events_file.to_str().unwrap();
+
+    // Create a job with --notify-file.
+    let v = h.run(&[
+        "run",
+        "--snapshot-after",
+        "0",
+        "--notify-file",
+        events_file_str,
+        "--",
+        "echo",
+        "hello",
+    ]);
+    assert_envelope(&v, "run", true);
+    let job_id = v["job_id"].as_str().expect("job_id").to_string();
+
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    // Update notify_command via notify set.
+    let set_v = h.run(&["notify", "set", &job_id, "--command", "cat >/dev/null"]);
+    assert_envelope(&set_v, "notify.set", true);
+
+    // Both notify_command and notify_file must be present.
+    assert_eq!(
+        set_v["notification"]["notify_command"]
+            .as_str()
+            .unwrap_or(""),
+        "cat >/dev/null",
+        "notify_command must be set"
+    );
+    assert_eq!(
+        set_v["notification"]["notify_file"].as_str().unwrap_or(""),
+        events_file_str,
+        "notify_file must be preserved"
+    );
+
+    // Confirm on disk.
+    let meta_path = std::path::Path::new(h.root())
+        .join(&job_id)
+        .join("meta.json");
+    let meta_raw = std::fs::read_to_string(&meta_path).expect("read meta.json");
+    let meta: serde_json::Value = serde_json::from_str(&meta_raw).expect("parse meta.json");
+    assert_eq!(
+        meta["notification"]["notify_file"].as_str().unwrap_or(""),
+        events_file_str,
+        "notify_file must be preserved in meta.json on disk"
+    );
+}
+
+/// notify set: missing job returns job_not_found error.
+#[test]
+fn notify_set_missing_job_returns_job_not_found() {
+    let h = TestHarness::new();
+
+    let v = h.run(&["notify", "set", "NONEXISTENT-JOB", "--command", "echo hi"]);
+    assert_envelope(&v, "error", false);
+    assert_eq!(
+        v["error"]["code"].as_str().unwrap_or(""),
+        "job_not_found",
+        "error.code must be job_not_found"
+    );
+}
+
+/// notify set on a terminal job: succeeds without executing the command.
+#[test]
+fn notify_set_terminal_job_succeeds_without_executing_command() {
+    let h = TestHarness::new();
+    let tmp_dir = tempfile::tempdir().expect("tempdir");
+    let marker = tmp_dir.path().join("executed.txt");
+    let marker_str = marker.to_str().unwrap();
+
+    // Run a job and wait for it to finish.
+    let v = h.run(&["run", "--wait", "--", "echo", "done"]);
+    assert_envelope(&v, "run", true);
+    assert_eq!(v["state"].as_str().unwrap_or(""), "exited");
+    let job_id = v["job_id"].as_str().expect("job_id").to_string();
+
+    // Marker must not exist yet.
+    assert!(!marker.exists(), "marker must not exist before notify set");
+
+    // Call notify set with a command that would create the marker if executed.
+    let hook_cmd = format!("touch {marker_str}");
+    let set_v = h.run(&["notify", "set", &job_id, "--command", &hook_cmd]);
+    assert_envelope(&set_v, "notify.set", true);
+
+    // Brief wait to confirm command was NOT executed.
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert!(
+        !marker.exists(),
+        "notify set must not execute the command (marker must not be created)"
+    );
+}
+
+/// notify set before job finishes: updated command is used at completion time.
+#[test]
+fn notify_set_updated_command_used_at_completion() {
+    let h = TestHarness::new();
+    let tmp_dir = tempfile::tempdir().expect("tempdir");
+    let captured = tmp_dir.path().join("captured.json");
+    let captured_str = captured.to_str().unwrap();
+
+    // Run a slow job (sleep 1s) without a notify_command.
+    let v = h.run(&["run", "--snapshot-after", "0", "--", "sleep", "1"]);
+    assert_envelope(&v, "run", true);
+    let job_id = v["job_id"].as_str().expect("job_id").to_string();
+
+    // Set notify_command before the job finishes.
+    let hook_cmd = format!("cat > {captured_str}");
+    let set_v = h.run(&["notify", "set", &job_id, "--command", &hook_cmd]);
+    assert_envelope(&set_v, "notify.set", true);
+
+    // Wait for the job to complete and delivery to happen.
+    std::thread::sleep(std::time::Duration::from_millis(2500));
+
+    // The captured file must exist and contain a valid job.finished event.
+    assert!(
+        captured.exists(),
+        "captured file must be created by the updated notify_command"
+    );
+    let content = std::fs::read_to_string(&captured).expect("read captured file");
+    let event: serde_json::Value =
+        serde_json::from_str(content.trim()).expect("captured content must be valid JSON");
+    assert_eq!(
+        event["event_type"].as_str().unwrap_or(""),
+        "job.finished",
+        "event_type must be job.finished"
+    );
+    assert_eq!(
+        event["job_id"].as_str().unwrap_or(""),
+        job_id,
+        "event job_id must match"
+    );
+}
+
+// ── global --root flag ─────────────────────────────────────────────────────────
+
+/// Verify that `agent-exec --root <PATH> run ...` uses the specified root.
+#[test]
+fn global_root_flag_run() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let root = tmp.path().to_str().expect("valid UTF-8").to_string();
+    let v = run_cmd_with_global_root_flag(
+        &root,
+        &["run", "--snapshot-after", "0", "echo", "global_root_test"],
+    );
+    assert_envelope(&v, "run", true);
+    let job_id = v["job_id"].as_str().expect("job_id missing");
+    assert!(!job_id.is_empty(), "job_id is empty");
+    // Verify the job directory was created under the explicit root.
+    assert!(
+        tmp.path().join(job_id).exists(),
+        "job dir not created under global --root path"
+    );
+}
+
+/// Verify that `agent-exec --root <PATH> status <id>` resolves jobs from the global root.
+#[test]
+fn global_root_flag_status() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let root = tmp.path().to_str().expect("valid UTF-8").to_string();
+    // Start a job with the global root flag.
+    let run_v =
+        run_cmd_with_global_root_flag(&root, &["run", "--snapshot-after", "0", "echo", "hi"]);
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+    // Query status using the same global root flag.
+    let v = run_cmd_with_global_root_flag(&root, &["status", &job_id]);
+    assert_envelope(&v, "status", true);
+    assert_eq!(v["job_id"].as_str().unwrap_or(""), job_id);
+}
+
+/// Verify that `agent-exec --root <PATH> list` resolves jobs from the global root.
+#[test]
+fn global_root_flag_list() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let root = tmp.path().to_str().expect("valid UTF-8").to_string();
+    // Start a job using the global root flag.
+    let run_v = run_cmd_with_global_root_flag(
+        &root,
+        &["run", "--snapshot-after", "0", "echo", "list_test"],
+    );
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+    // List with the global root flag; job must appear.
+    let v = run_cmd_with_global_root_flag(&root, &["list", "--all"]);
+    assert_envelope(&v, "list", true);
+    let jobs = v["jobs"].as_array().expect("jobs array missing");
+    assert!(
+        jobs.iter()
+            .any(|j| j["job_id"].as_str().unwrap_or("") == job_id),
+        "started job not found in list response"
+    );
+}
+
+/// Verify that `agent-exec --root <PATH> gc` operates on the correct root.
+#[test]
+fn global_root_flag_gc() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let root = tmp.path().to_str().expect("valid UTF-8").to_string();
+    let v = run_cmd_with_global_root_flag(&root, &["gc", "--dry-run"]);
+    assert_gc_envelope(&v, true);
+}
+
+/// Precedence: CLI --root flag beats AGENT_EXEC_ROOT env var.
+#[test]
+fn global_root_flag_takes_precedence_over_env() {
+    let tmp_flag = tempfile::tempdir().expect("create tempdir for --root");
+    let tmp_env = tempfile::tempdir().expect("create tempdir for env");
+    let root_flag = tmp_flag.path().to_str().expect("valid UTF-8").to_string();
+    let root_env = tmp_env.path().to_str().expect("valid UTF-8").to_string();
+
+    let bin = binary();
+    let mut cmd = Command::new(&bin);
+    cmd.arg("--root").arg(&root_flag);
+    cmd.args(["run", "--snapshot-after", "0", "echo", "precedence"]);
+    // Set env to a different root — the flag must win.
+    cmd.env("AGENT_EXEC_ROOT", &root_env);
+    let output = cmd.output().expect("run binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("valid JSON");
+    assert_envelope(&v, "run", true);
+    let job_id = v["job_id"].as_str().expect("job_id missing");
+    assert!(
+        tmp_flag.path().join(job_id).exists(),
+        "job must be in --root dir, not AGENT_EXEC_ROOT dir"
+    );
+    assert!(
+        !tmp_env.path().join(job_id).exists(),
+        "job must NOT be in AGENT_EXEC_ROOT dir when --root flag is set"
+    );
+}
+
+// ── legacy per-subcommand --root flag (backward compatibility) ─────────────────
+
+/// Verify that `agent-exec run --root <PATH> ...` still works (--root after subcommand).
+/// The flag is global in clap, so both positions are accepted identically.
+#[test]
+fn subcommand_root_flag_compat_run() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let root = tmp.path().to_str().expect("valid UTF-8").to_string();
+    let v = run_cmd_with_subcommand_root_flag(
+        "run",
+        &root,
+        &["--snapshot-after", "0", "echo", "compat_run"],
+    );
+    assert_envelope(&v, "run", true);
+    let job_id = v["job_id"].as_str().expect("job_id missing");
+    assert!(
+        tmp.path().join(job_id).exists(),
+        "job dir not created under --root path when flag placed after subcommand"
+    );
+}
+
+/// Verify that `agent-exec status --root <PATH> <id>` resolves the job from the correct root.
+#[test]
+fn subcommand_root_flag_compat_status() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let root = tmp.path().to_str().expect("valid UTF-8").to_string();
+    // Start a job using global syntax to get a known job_id in this root.
+    let run_v = run_cmd_with_global_root_flag(
+        &root,
+        &["run", "--snapshot-after", "0", "echo", "compat_status"],
+    );
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+    // Query status using legacy per-subcommand --root position.
+    let v = run_cmd_with_subcommand_root_flag("status", &root, &[&job_id]);
+    assert_envelope(&v, "status", true);
+    assert_eq!(v["job_id"].as_str().unwrap_or(""), job_id);
+}
+
+/// Verify that `agent-exec list --root <PATH>` lists jobs from the correct root.
+#[test]
+fn subcommand_root_flag_compat_list() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let root = tmp.path().to_str().expect("valid UTF-8").to_string();
+    let run_v = run_cmd_with_global_root_flag(
+        &root,
+        &["run", "--snapshot-after", "0", "echo", "compat_list"],
+    );
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+    let v = run_cmd_with_subcommand_root_flag("list", &root, &["--all"]);
+    assert_envelope(&v, "list", true);
+    let jobs = v["jobs"].as_array().expect("jobs array");
+    assert!(
+        jobs.iter()
+            .any(|j| j["job_id"].as_str().unwrap_or("") == job_id),
+        "started job not found when using legacy --root position for list"
+    );
+}
+
+/// Verify that `agent-exec gc --root <PATH>` operates on the correct root.
+#[test]
+fn subcommand_root_flag_compat_gc() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let root = tmp.path().to_str().expect("valid UTF-8").to_string();
+    let v = run_cmd_with_subcommand_root_flag("gc", &root, &["--dry-run"]);
+    assert_gc_envelope(&v, true);
 }

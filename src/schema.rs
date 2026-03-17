@@ -280,6 +280,14 @@ pub struct InstalledSkillSummary {
     pub path: String,
 }
 
+/// Response for `notify set` command.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct NotifySetData {
+    pub job_id: String,
+    /// Updated notification configuration saved to meta.json.
+    pub notification: NotificationConfig,
+}
+
 /// Response for `install-skills` command.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct InstallSkillsData {
@@ -430,7 +438,6 @@ pub struct JobMeta {
     pub notification: Option<NotificationConfig>,
 
     // --- Execution-definition fields (persisted for create/start lifecycle) ---
-
     /// Whether to inherit the current process environment at start time. Default: true.
     #[serde(default = "default_inherit_env")]
     pub inherit_env: bool,

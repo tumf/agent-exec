@@ -10,6 +10,7 @@ pub mod install_skills;
 pub mod jobstore;
 pub mod kill;
 pub mod list;
+pub mod notify;
 pub mod run;
 pub mod schema;
 pub mod schema_cmd;

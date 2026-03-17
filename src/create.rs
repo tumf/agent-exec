@@ -10,9 +10,7 @@ use ulid::Ulid;
 
 use crate::jobstore::{JobDir, resolve_root};
 use crate::run::{mask_env_vars, pre_create_log_files, resolve_effective_cwd};
-use crate::schema::{
-    CreateData, JobMeta, JobMetaJob, Response,
-};
+use crate::schema::{CreateData, JobMeta, JobMetaJob, Response};
 
 /// Options for the `create` sub-command.
 #[derive(Debug)]

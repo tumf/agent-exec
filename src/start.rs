@@ -82,8 +82,14 @@ pub fn execute(opts: StartOpts) -> Result<()> {
             env_files: meta.env_files.clone(),
             inherit_env: meta.inherit_env,
             progress_every_ms: meta.progress_every_ms,
-            notify_command: meta.notification.as_ref().and_then(|n| n.notify_command.clone()),
-            notify_file: meta.notification.as_ref().and_then(|n| n.notify_file.clone()),
+            notify_command: meta
+                .notification
+                .as_ref()
+                .and_then(|n| n.notify_command.clone()),
+            notify_file: meta
+                .notification
+                .as_ref()
+                .and_then(|n| n.notify_file.clone()),
             shell_wrapper,
             command: meta.command.clone(),
         },
