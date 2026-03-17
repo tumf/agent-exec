@@ -508,9 +508,10 @@ fn load_env_file(path: &str) -> Result<Vec<(String, String)>> {
 
 /// Shared state for output-match checking, used by streaming threads in `supervise`.
 ///
-/// Holds a cached copy of the notification config that is refreshed from `meta.json`
-/// at most once per 100 ms.  Multiple streaming threads share the same checker via
-/// `Arc`; the internal `Mutex` serialises access.
+/// Reloads `meta.json` on every observed line so that a `notify set` update is
+/// visible for the very next line, regardless of how recently the last reload
+/// occurred.  Multiple streaming threads share the same checker via `Arc`; the
+/// internal `Mutex` serialises access.
 struct OutputMatchChecker {
     job_dir_path: std::path::PathBuf,
     shell_wrapper: Vec<String>,
@@ -519,7 +520,6 @@ struct OutputMatchChecker {
 
 struct OutputMatchInner {
     config: Option<crate::schema::NotificationConfig>,
-    last_reload: std::time::Instant,
 }
 
 impl OutputMatchChecker {
@@ -533,25 +533,25 @@ impl OutputMatchChecker {
             shell_wrapper,
             inner: std::sync::Mutex::new(OutputMatchInner {
                 config: initial_config,
-                last_reload: std::time::Instant::now(),
             }),
         }
     }
 
     /// Check a newly observed output line for a configured match.
     ///
-    /// Reloads `meta.json` at most once per 100 ms to pick up `notify set` updates.
+    /// Reloads `meta.json` on every call so that `notify set` updates are
+    /// visible for the next line without any delay.
     /// Dispatches `job.output.matched` events outside the lock to avoid blocking
     /// other streaming threads.
     fn check_line(&self, line: &str, stream: &str) {
         use crate::schema::{OutputMatchStream, OutputMatchType};
 
-        // Lock, maybe reload, evaluate match, then release before dispatching.
+        // Lock, reload, evaluate match, then release before dispatching.
         let match_info: Option<crate::schema::OutputMatchConfig> = {
             let mut inner = self.inner.lock().unwrap();
 
-            // Reload config periodically.
-            if inner.last_reload.elapsed() >= std::time::Duration::from_millis(100) {
+            // Reload config on every line to pick up `notify set` updates immediately.
+            {
                 let meta_path = self.job_dir_path.join("meta.json");
                 if let Ok(raw) = std::fs::read(&meta_path) {
                     if let Ok(meta) =
@@ -560,7 +560,6 @@ impl OutputMatchChecker {
                         inner.config = meta.notification;
                     }
                 }
-                inner.last_reload = std::time::Instant::now();
             }
 
             let Some(ref notification) = inner.config else {

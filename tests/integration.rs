@@ -3749,3 +3749,76 @@ fn output_match_stream_stderr_only() {
     let ev: serde_json::Value = serde_json::from_str(lines[0]).expect("line must be JSON");
     assert_eq!(ev["stream"].as_str().unwrap_or(""), "stderr");
 }
+
+/// Output-match: `notify set` configured immediately before a near-future (~50 ms)
+/// matching line must trigger delivery even when the supervisor's last config
+/// reload occurred within the same 100 ms window.
+///
+/// Regression: prior to per-line reload, a 100 ms throttle on `meta.json` reads
+/// could suppress a `notify set` update so that a matching line arriving less
+/// than 100 ms later was silently missed.
+#[test]
+fn output_match_near_future_line_triggers_delivery() {
+    let h = TestHarness::new();
+    let tmp_dir = tempfile::tempdir().expect("tempdir");
+    let events_file = tmp_dir.path().join("near_future_events.ndjson");
+    let events_file_str = events_file.to_str().unwrap();
+
+    // The job prints 8 non-matching heartbeat lines at 50 ms intervals to keep
+    // the OutputMatchChecker's last reload close to "now", then prints the target
+    // line ~50 ms after the last heartbeat.  We call `notify set` after the 8th
+    // heartbeat so the config update must be picked up for the very next line.
+    let v = h.run(&[
+        "run",
+        "--snapshot-after",
+        "0",
+        "--",
+        "sh",
+        "-c",
+        "for i in $(seq 1 8); do echo heartbeat_$i; sleep 0.05; done; echo CLOSE_CALL_MATCH",
+    ]);
+    assert_envelope(&v, "run", true);
+    let job_id = v["job_id"].as_str().expect("job_id").to_string();
+
+    // Wait until after the 8th heartbeat (~400 ms) so the checker has recently
+    // reloaded, then configure output-match ~50 ms before CLOSE_CALL_MATCH.
+    std::thread::sleep(std::time::Duration::from_millis(420));
+
+    let set_v = h.run(&[
+        "notify",
+        "set",
+        &job_id,
+        "--output-pattern",
+        "CLOSE_CALL_MATCH",
+        "--output-file",
+        events_file_str,
+    ]);
+    assert_envelope(&set_v, "notify.set", true);
+
+    // Wait long enough for the job to finish and delivery to complete.
+    std::thread::sleep(std::time::Duration::from_millis(2000));
+
+    assert!(
+        events_file.exists(),
+        "output-match file sink must have been written: per-line reload must make \
+         the notify set update visible even when the matching line arrives <100 ms after it"
+    );
+    let content = std::fs::read_to_string(&events_file).expect("read near_future_events");
+    let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(
+        lines.len(),
+        1,
+        "exactly one match must be recorded for CLOSE_CALL_MATCH"
+    );
+    let ev: serde_json::Value = serde_json::from_str(lines[0]).expect("line must be JSON");
+    assert_eq!(
+        ev["event_type"].as_str().unwrap_or(""),
+        "job.output.matched",
+        "event_type must be job.output.matched"
+    );
+    assert_eq!(
+        ev["line"].as_str().unwrap_or(""),
+        "CLOSE_CALL_MATCH",
+        "line field must contain the matched output line"
+    );
+}

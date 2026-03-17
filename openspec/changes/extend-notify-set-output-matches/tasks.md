@@ -12,3 +12,8 @@
 
 - Support multiple concurrent output-match rules per job.
 - Add commands for viewing, clearing, replaying, or manually sending persisted notification configurations.
+
+## Acceptance #1 Failure Follow-up
+
+- [x] Reload output-match notification config for each newly observed line (or otherwise guarantee `notify set` updates are visible before any subsequent line is evaluated) so immediate post-update matches are not dropped.
+- [x] Add an integration test that configures `notify set --output-pattern` immediately before a near-future matching line (e.g., ~50ms) and verifies `job.output.matched` is delivered.
