@@ -75,7 +75,81 @@ agent-exec run \
   sleep 60
 ```
 
+## Two-step job lifecycle (create / start)
+
+In addition to the immediate `run` path, `agent-exec` supports a two-step
+lifecycle where you define a job first and start it later.
+
+```bash
+# Step 1 — define the job (no process is spawned)
+JOB=$(agent-exec create -- echo "deferred hello" | jq -r .job_id)
+
+# Step 2 — launch the job when ready
+agent-exec start --wait "$JOB"
+```
+
+- `create` persists the command, environment, timeouts, and notification
+  settings to `meta.json` and writes `state.json` with `state="created"`.
+  It returns `type="create"` and the `job_id`.
+- `start` reads the persisted definition and spawns the supervisor.
+  It returns `type="start"` with the same snapshot/wait payload as `run`.
+- `run` remains available as the convenience path for immediate execution.
+
+### Persisted environment
+
+`--env KEY=VALUE` values provided to `create` are stored in `meta.json` as
+durable (non-secret) configuration and applied when `start` is called.
+`--env-file FILE` stores the file path; the file is re-read at `start` time.
+
+### State transitions
+
+| State | Meaning |
+|-------|---------|
+| `created` | Job definition persisted, no process running |
+| `running` | Supervisor and child process active |
+| `exited` | Process exited normally |
+| `killed` | Process terminated by signal |
+| `failed` | Supervisor-level failure |
+
+`kill` rejects `created` jobs (no process to signal).
+`wait` polls through `created` and `running` until a terminal state.
+`list --state created` filters to not-yet-started jobs.
+
 ## Commands
+
+### `create` — define a job without starting it
+
+```bash
+agent-exec create [OPTIONS] -- <COMMAND>...
+```
+
+Persists the job definition. Accepts the same definition-time options as `run`
+(command, `--cwd`, `--env`, `--env-file`, `--mask`, `--timeout`, `--kill-after`,
+`--progress-every`, `--notify-command`, `--notify-file`, `--shell-wrapper`).
+Does **not** accept snapshot/wait options (`--snapshot-after`, `--wait`).
+
+Returns `type="create"`, `state="created"`, `job_id`, `stdout_log_path`,
+and `stderr_log_path`.
+
+### `start` — launch a previously created job
+
+```bash
+agent-exec start [OPTIONS] <JOB_ID>
+```
+
+Launches the job whose definition was persisted by `create`. Accepts
+observation-time options only:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--snapshot-after <ms>` | 10000 | Wait N ms before returning |
+| `--tail-lines <N>` | 50 | Lines in snapshot |
+| `--max-bytes <N>` | 65536 | Max bytes in snapshot |
+| `--wait` | false | Block until terminal state |
+| `--wait-poll-ms <ms>` | 200 | Poll interval with `--wait` |
+
+Returns `type="start"` with the same payload shape as `run`. Only jobs in
+`created` state can be started; any other state returns `error.code="invalid_state"`.
 
 ### `run` — start a background job
 
@@ -134,7 +208,7 @@ agent-exec kill [--signal TERM|INT|KILL] <JOB_ID>
 ### `list` — list jobs
 
 ```bash
-agent-exec list [--state running|exited|killed|failed] [--limit N]
+agent-exec list [--state created|running|exited|killed|failed] [--limit N]
 ```
 
 ### `gc` — garbage collect old job data

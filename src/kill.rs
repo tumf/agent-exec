@@ -18,7 +18,7 @@
 use anyhow::Result;
 use tracing::info;
 
-use crate::jobstore::{JobDir, resolve_root};
+use crate::jobstore::{InvalidJobState, JobDir, resolve_root};
 use crate::schema::{JobState, JobStateJob, JobStateResult, JobStatus, KillData, Response};
 
 /// Options for the `kill` sub-command.
@@ -47,6 +47,14 @@ pub fn execute(opts: KillOpts) -> Result<()> {
 
     let state = job_dir.read_state()?;
     let signal_upper = opts.signal.to_uppercase();
+
+    // Reject kill on created jobs: there is no process to signal.
+    if *state.status() == JobStatus::Created {
+        return Err(anyhow::Error::new(InvalidJobState(format!(
+            "job {} is in 'created' state and has not been started; cannot send signal",
+            opts.job_id
+        ))));
+    }
 
     if *state.status() != JobStatus::Running {
         // Already stopped — no-op but still emit JSON.
@@ -77,7 +85,7 @@ pub fn execute(opts: KillOpts) -> Result<()> {
             job: JobStateJob {
                 id: opts.job_id.to_string(),
                 status: JobStatus::Killed,
-                started_at: state.started_at().to_string(),
+                started_at: state.started_at().map(|s| s.to_string()),
             },
             result: JobStateResult {
                 exit_code: None,

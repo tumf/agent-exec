@@ -91,6 +91,18 @@ impl ErrorResponse {
 
 // ---------- Command-specific response payloads ----------
 
+/// Response for `create` command.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreateData {
+    pub job_id: String,
+    /// Always "created".
+    pub state: String,
+    /// Absolute path to stdout.log for this job.
+    pub stdout_log_path: String,
+    /// Absolute path to stderr.log for this job.
+    pub stderr_log_path: String,
+}
+
 /// Response for `run` command.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RunData {
@@ -129,7 +141,11 @@ pub struct StatusData {
     pub state: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
-    pub started_at: String,
+    /// RFC 3339 timestamp when the job was created (always present).
+    pub created_at: String,
+    /// RFC 3339 timestamp when the job started executing; absent for `created` state.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<String>,
 }
@@ -188,12 +204,15 @@ pub struct SchemaData {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct JobSummary {
     pub job_id: String,
-    /// Job state: running | exited | killed | failed | unknown
+    /// Job state: created | running | exited | killed | failed | unknown
     pub state: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
     /// Creation timestamp from meta.json (RFC 3339).
-    pub started_at: String,
+    pub created_at: String,
+    /// Execution start timestamp; absent for `created` state.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -373,6 +392,9 @@ pub struct JobMetaJob {
 /// `env_vars` stores KEY=VALUE strings with masked values replaced by "***".
 /// `mask` stores the list of keys whose values are masked.
 /// `cwd` stores the effective working directory at job creation time (canonicalized).
+///
+/// For the `create`/`start` lifecycle, additional execution-definition fields are
+/// persisted so that `start` can launch the job without re-specifying CLI arguments.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct JobMeta {
     pub job: JobMetaJob,
@@ -396,6 +418,31 @@ pub struct JobMeta {
     /// Notification configuration (present only when --notify-command or --notify-file was used).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub notification: Option<NotificationConfig>,
+
+    // --- Execution-definition fields (persisted for create/start lifecycle) ---
+
+    /// Whether to inherit the current process environment at start time. Default: true.
+    #[serde(default = "default_inherit_env")]
+    pub inherit_env: bool,
+    /// Env-file paths to apply in order at start time (real values read from file on start).
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub env_files: Vec<String>,
+    /// Timeout in milliseconds; 0 = no timeout.
+    #[serde(default)]
+    pub timeout_ms: u64,
+    /// Milliseconds after SIGTERM before SIGKILL; 0 = immediate SIGKILL.
+    #[serde(default)]
+    pub kill_after_ms: u64,
+    /// Interval (ms) for state.json updated_at refresh; 0 = disabled.
+    #[serde(default)]
+    pub progress_every_ms: u64,
+    /// Resolved shell wrapper argv (e.g. ["sh", "-lc"]). None = resolved from config at start time.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub shell_wrapper: Option<Vec<String>>,
+}
+
+fn default_inherit_env() -> bool {
+    true
 }
 
 impl JobMeta {
@@ -410,7 +457,9 @@ impl JobMeta {
 pub struct JobStateJob {
     pub id: String,
     pub status: JobStatus,
-    pub started_at: String,
+    /// RFC 3339 execution start timestamp; absent for jobs in `created` state.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub started_at: Option<String>,
 }
 
 /// Nested `result` block within `state.json`.
@@ -473,9 +522,9 @@ impl JobState {
         &self.job.status
     }
 
-    /// Convenience accessor: returns the started_at timestamp.
-    pub fn started_at(&self) -> &str {
-        &self.job.started_at
+    /// Convenience accessor: returns the started_at timestamp, if present.
+    pub fn started_at(&self) -> Option<&str> {
+        self.job.started_at.as_deref()
     }
 
     /// Convenience accessor: returns the exit code.
@@ -497,6 +546,7 @@ impl JobState {
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum JobStatus {
+    Created,
     Running,
     Exited,
     Killed,
@@ -506,10 +556,16 @@ pub enum JobStatus {
 impl JobStatus {
     pub fn as_str(&self) -> &'static str {
         match self {
+            JobStatus::Created => "created",
             JobStatus::Running => "running",
             JobStatus::Exited => "exited",
             JobStatus::Killed => "killed",
             JobStatus::Failed => "failed",
         }
+    }
+
+    /// Returns true when the status is a non-terminal state (created or running).
+    pub fn is_non_terminal(&self) -> bool {
+        matches!(self, JobStatus::Created | JobStatus::Running)
     }
 }

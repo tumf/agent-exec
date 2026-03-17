@@ -7,7 +7,7 @@ use anyhow::Result;
 use tracing::debug;
 
 use crate::jobstore::{JobDir, resolve_root};
-use crate::schema::{JobStatus, Response, WaitData};
+use crate::schema::{Response, WaitData};
 
 /// Options for the `wait` sub-command.
 #[derive(Debug)]
@@ -47,7 +47,7 @@ pub fn execute(opts: WaitOpts) -> Result<()> {
         let state = job_dir.read_state()?;
         debug!(job_id = %opts.job_id, state = ?state.status(), "wait poll");
 
-        if *state.status() != JobStatus::Running {
+        if !state.status().is_non_terminal() {
             let response = Response::new(
                 "wait",
                 WaitData {
@@ -63,12 +63,12 @@ pub fn execute(opts: WaitOpts) -> Result<()> {
         if let Some(dl) = deadline
             && std::time::Instant::now() >= dl
         {
-            // Timed out — still running.
+            // Timed out — still in a non-terminal state (created or running).
             let response = Response::new(
                 "wait",
                 WaitData {
                     job_id: opts.job_id.to_string(),
-                    state: JobStatus::Running.as_str().to_string(),
+                    state: state.status().as_str().to_string(),
                     exit_code: None,
                 },
             );

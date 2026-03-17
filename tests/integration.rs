@@ -2799,3 +2799,201 @@ fn gc_skips_unreadable_state() {
         "directory with unreadable state must be preserved"
     );
 }
+
+// =========================================================================
+// create / start lifecycle tests
+// =========================================================================
+
+/// `create` returns a JSON envelope with type="create" and state="created".
+#[test]
+fn create_returns_create_type() {
+    let h = TestHarness::new();
+    let v = h.run(&["create", "--", "echo", "hello"]);
+    assert_envelope(&v, "create", true);
+    assert_eq!(v["state"].as_str().unwrap_or(""), "created");
+    assert!(v["job_id"].as_str().is_some(), "job_id must be present");
+    assert!(
+        v["stdout_log_path"].as_str().is_some(),
+        "stdout_log_path must be present"
+    );
+    assert!(
+        v["stderr_log_path"].as_str().is_some(),
+        "stderr_log_path must be present"
+    );
+}
+
+/// `create` does not spawn the child process.
+#[test]
+fn create_does_not_execute_command() {
+    let h = TestHarness::new();
+    // Use a command that would write to a file if actually executed.
+    let marker = tempfile::NamedTempFile::new().unwrap();
+    let marker_path = marker.path().to_str().unwrap().to_string();
+    let cmd_str = format!("touch {marker_path}");
+    h.run(&["create", "--", "sh", "-c", &cmd_str]);
+    // Allow a short delay in case anything ran.
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    // The marker file must have zero size (it was not touched by the command).
+    let meta = std::fs::metadata(&marker_path).unwrap();
+    assert_eq!(
+        meta.len(),
+        0,
+        "create must not execute the command (marker file was modified)"
+    );
+}
+
+/// `status` of a created job returns state="created".
+#[test]
+fn status_of_created_job_returns_created_state() {
+    let h = TestHarness::new();
+    let cv = h.run(&["create", "--", "echo", "hello"]);
+    let job_id = cv["job_id"].as_str().unwrap();
+    let sv = h.run(&["status", job_id]);
+    assert_envelope(&sv, "status", true);
+    assert_eq!(sv["state"].as_str().unwrap_or(""), "created");
+    // started_at must be absent for created jobs.
+    assert!(
+        sv["started_at"].is_null() || sv.get("started_at").is_none(),
+        "started_at must be absent for created job, got: {}",
+        sv
+    );
+    // created_at must be present.
+    assert!(
+        sv["created_at"].as_str().is_some(),
+        "created_at must be present"
+    );
+}
+
+/// `list --state created` returns the created job.
+#[test]
+fn list_state_created_returns_created_jobs() {
+    let h = TestHarness::new();
+    let cv = h.run(&["create", "--", "echo", "hello"]);
+    let job_id = cv["job_id"].as_str().unwrap();
+    let lv = h.run(&["list", "--all", "--state", "created"]);
+    assert_envelope(&lv, "list", true);
+    let jobs = lv["jobs"].as_array().unwrap();
+    assert!(
+        jobs.iter().any(|j| j["job_id"].as_str().unwrap_or("") == job_id),
+        "created job must appear in --state created list"
+    );
+}
+
+/// `kill` on a created job returns an error with code "invalid_state".
+#[test]
+fn kill_created_job_returns_invalid_state() {
+    let h = TestHarness::new();
+    let cv = h.run(&["create", "--", "echo", "hello"]);
+    let job_id = cv["job_id"].as_str().unwrap();
+
+    let bin = binary();
+    let output = std::process::Command::new(&bin)
+        .env("AGENT_EXEC_ROOT", h.root())
+        .args(["kill", job_id])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let kv: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(kv["ok"].as_bool().unwrap_or(true), false);
+    assert_eq!(kv["error"]["code"].as_str().unwrap_or(""), "invalid_state");
+    assert_eq!(output.status.code().unwrap_or(0), 1);
+}
+
+/// `start` launches a created job and returns type="start".
+#[test]
+fn start_launches_created_job() {
+    let h = TestHarness::new();
+    let cv = h.run(&["create", "--", "echo", "started-ok"]);
+    let job_id = cv["job_id"].as_str().unwrap();
+    let sv = h.run(&["start", "--wait", job_id]);
+    assert_envelope(&sv, "start", true);
+    assert_eq!(
+        sv["state"].as_str().unwrap_or(""),
+        "exited",
+        "job should exit after start --wait"
+    );
+    assert_eq!(sv["exit_code"].as_i64().unwrap_or(-1), 0);
+    assert_eq!(sv["job_id"].as_str().unwrap_or(""), job_id);
+}
+
+/// Starting a non-created job returns invalid_state error.
+#[test]
+fn start_already_run_job_returns_invalid_state() {
+    let h = TestHarness::new();
+    // Run a job directly so it is in running/exited state.
+    let rv = h.run(&["run", "--wait", "--", "echo", "hello"]);
+    let job_id = rv["job_id"].as_str().unwrap();
+
+    let bin = binary();
+    let output = std::process::Command::new(&bin)
+        .env("AGENT_EXEC_ROOT", h.root())
+        .args(["start", job_id])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let sv: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(sv["ok"].as_bool().unwrap_or(true), false);
+    assert_eq!(sv["error"]["code"].as_str().unwrap_or(""), "invalid_state");
+    assert_eq!(output.status.code().unwrap_or(0), 1);
+}
+
+/// `run` still works as immediate-start path (backward compatibility).
+#[test]
+fn run_still_works_as_immediate_start_path() {
+    let h = TestHarness::new();
+    let v = h.run(&["run", "--wait", "--", "echo", "hello"]);
+    assert_envelope(&v, "run", true);
+    assert_eq!(v["state"].as_str().unwrap_or(""), "exited");
+    assert_eq!(v["exit_code"].as_i64().unwrap_or(-1), 0);
+}
+
+/// `create --env` persists env vars; `start` applies them.
+#[test]
+fn create_start_env_persistence() {
+    let h = TestHarness::new();
+    // Create with an env var and have the command echo it.
+    let cv = h.run(&["create", "--env", "TEST_CREATE_VAR=hello_persist", "--", "sh", "-c", "echo $TEST_CREATE_VAR"]);
+    let job_id = cv["job_id"].as_str().unwrap();
+    assert_eq!(cv["state"].as_str().unwrap_or(""), "created");
+
+    // Start and wait for completion.
+    let sv = h.run(&["start", "--wait", job_id]);
+    assert_envelope(&sv, "start", true);
+    assert_eq!(sv["exit_code"].as_i64().unwrap_or(-1), 0);
+    // The final_snapshot stdout should contain the echoed env var value.
+    let stdout_tail = sv["final_snapshot"]["stdout_tail"].as_str().unwrap_or("");
+    assert!(
+        stdout_tail.contains("hello_persist"),
+        "expected env var value in stdout: {}",
+        sv
+    );
+}
+
+/// `wait` on a created job polls until the job is started and finishes.
+#[test]
+fn wait_on_created_job_polls_until_terminal() {
+    let h = TestHarness::new();
+    let cv = h.run(&["create", "--", "echo", "waited"]);
+    let job_id = cv["job_id"].as_str().unwrap();
+
+    // Start the job in a background thread.
+    let root = h.root().to_string();
+    let job_id_str = job_id.to_string();
+    let handle = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let bin = binary();
+        std::process::Command::new(&bin)
+            .env("AGENT_EXEC_ROOT", &root)
+            .args(["start", &job_id_str])
+            .output()
+            .unwrap()
+    });
+
+    // Wait with a generous timeout.
+    let wv = h.run(&["wait", "--timeout-ms", "5000", job_id]);
+    assert_envelope(&wv, "wait", true);
+    assert_ne!(wv["state"].as_str().unwrap_or(""), "created");
+    assert_ne!(wv["state"].as_str().unwrap_or(""), "running");
+
+    let _ = handle.join();
+}

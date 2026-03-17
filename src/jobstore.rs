@@ -25,6 +25,19 @@ impl std::fmt::Display for JobNotFound {
 
 impl std::error::Error for JobNotFound {}
 
+/// Sentinel error type for invalid job state transitions.
+/// Used by callers to emit `error.code = "invalid_state"` instead of `internal_error`.
+#[derive(Debug)]
+pub struct InvalidJobState(pub String);
+
+impl std::fmt::Display for InvalidJobState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "invalid job state: {}", self.0)
+    }
+}
+
+impl std::error::Error for InvalidJobState {}
+
 /// Resolve the jobs root directory following the priority chain.
 pub fn resolve_root(cli_root: Option<&str>) -> PathBuf {
     // 1. CLI flag
@@ -238,6 +251,30 @@ impl JobDir {
         }
     }
 
+    /// Write the initial JobState for a `created` (not-yet-started) job.
+    ///
+    /// The state is `created`, no process has been spawned, and `started_at` is absent.
+    pub fn init_state_created(&self) -> Result<JobState> {
+        let state = JobState {
+            job: crate::schema::JobStateJob {
+                id: self.job_id.clone(),
+                status: JobStatus::Created,
+                started_at: None,
+            },
+            result: crate::schema::JobStateResult {
+                exit_code: None,
+                signal: None,
+                duration_ms: None,
+            },
+            pid: None,
+            finished_at: None,
+            updated_at: crate::run::now_rfc3339_pub(),
+            windows_job_name: None,
+        };
+        self.write_state(&state)?;
+        Ok(state)
+    }
+
     /// Write the initial JobState (running, supervisor PID) to disk.
     ///
     /// This is called by the `run` command immediately after the supervisor
@@ -261,7 +298,7 @@ impl JobDir {
             job: crate::schema::JobStateJob {
                 id: self.job_id.clone(),
                 status: JobStatus::Running,
-                started_at: started_at.to_string(),
+                started_at: Some(started_at.to_string()),
             },
             result: crate::schema::JobStateResult {
                 exit_code: None,
@@ -387,6 +424,12 @@ mod tests {
             mask: vec![],
             cwd: None,
             notification: None,
+            inherit_env: true,
+            env_files: vec![],
+            timeout_ms: 0,
+            kill_after_ms: 0,
+            progress_every_ms: 0,
+            shell_wrapper: None,
         }
     }
 
@@ -443,7 +486,7 @@ mod tests {
             job: crate::schema::JobStateJob {
                 id: "test-job-03".to_string(),
                 status: crate::schema::JobStatus::Running,
-                started_at: "2024-01-01T00:00:00Z".to_string(),
+                started_at: Some("2024-01-01T00:00:00Z".to_string()),
             },
             result: crate::schema::JobStateResult {
                 exit_code: None,
@@ -486,7 +529,7 @@ mod tests {
                 job: crate::schema::JobStateJob {
                     id: "test-job-04".to_string(),
                     status: crate::schema::JobStatus::Running,
-                    started_at: "2024-01-01T00:00:00Z".to_string(),
+                    started_at: Some("2024-01-01T00:00:00Z".to_string()),
                 },
                 result: crate::schema::JobStateResult {
                     exit_code: None,
@@ -532,6 +575,12 @@ mod tests {
             mask: vec![],
             cwd: None,
             notification: None,
+            inherit_env: true,
+            env_files: vec![],
+            timeout_ms: 0,
+            kill_after_ms: 0,
+            progress_every_ms: 0,
+            shell_wrapper: None,
         };
         job_dir.write_meta_atomic(&updated_meta).unwrap();
 
