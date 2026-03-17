@@ -80,6 +80,30 @@ fn run_cmd_with_root(args: &[&str], root: Option<&str>) -> serde_json::Value {
     })
 }
 
+/// Run a command expecting a clap usage error (exit code 2, empty stdout).
+///
+/// Asserts that the process exits with code 2 and produces no JSON on stdout.
+fn assert_usage_error(args: &[&str], root: Option<&str>) {
+    let bin = binary();
+    let mut cmd = Command::new(&bin);
+    cmd.args(args);
+    if let Some(r) = root {
+        cmd.env("AGENT_EXEC_ROOT", r);
+    }
+    let output = cmd.output().expect("run binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "expected exit code 2 (usage error)\nstdout: {stdout}\nstderr: {stderr}\nargs: {args:?}"
+    );
+    assert!(
+        stdout.trim().is_empty(),
+        "expected empty stdout for usage error\nstdout: {stdout}\nstderr: {stderr}\nargs: {args:?}"
+    );
+}
+
 /// Validate the common envelope fields.
 fn assert_envelope(v: &serde_json::Value, expected_type: &str, expected_ok: bool) {
     assert_eq!(
@@ -2863,26 +2887,24 @@ fn run_no_tags_returns_empty_array() {
     assert!(tags.is_empty(), "tags must be empty when none specified");
 }
 
-/// `run --tag` with an invalid tag value returns an error response.
+/// `run --tag` with an invalid tag value fails as a usage error (exit 2, no JSON).
 #[test]
 fn run_invalid_tag_is_rejected() {
     let h = TestHarness::new();
-    let v = h.run(&[
-        "run", "--snapshot-after", "0", "--tag", "bad tag!", "--", "true",
-    ]);
-    assert_envelope(&v, "error", false);
-    assert_eq!(v["error"]["code"].as_str().unwrap_or(""), "invalid_tag");
+    assert_usage_error(
+        &["run", "--snapshot-after", "0", "--tag", "bad tag!", "--", "true"],
+        Some(h.root()),
+    );
 }
 
-/// `run --tag` with a `.*` suffix is rejected as a stored tag.
+/// `run --tag` with a `.*` suffix is rejected as a stored tag (usage error, exit 2).
 #[test]
 fn run_wildcard_tag_is_rejected() {
     let h = TestHarness::new();
-    let v = h.run(&[
-        "run", "--snapshot-after", "0", "--tag", "hoge.*", "--", "true",
-    ]);
-    assert_envelope(&v, "error", false);
-    assert_eq!(v["error"]["code"].as_str().unwrap_or(""), "invalid_tag");
+    assert_usage_error(
+        &["run", "--snapshot-after", "0", "--tag", "hoge.*", "--", "true"],
+        Some(h.root()),
+    );
 }
 
 /// `tag set` replaces tags on an existing job.
@@ -3098,22 +3120,21 @@ fn list_tag_filter_composes_with_cwd() {
     // Should not error; just return results filtered by both cwd and tag.
 }
 
-/// `list --tag` with an invalid pattern returns an error.
+/// `list --tag` with an invalid pattern fails as a usage error (exit 2, no JSON).
 #[test]
 fn list_invalid_tag_pattern_rejected() {
     let h = TestHarness::new();
-    let v = h.run(&["list", "--all", "--tag", "bad pattern!"]);
-    assert_envelope(&v, "error", false);
-    assert_eq!(v["error"]["code"].as_str().unwrap_or(""), "invalid_tag");
+    assert_usage_error(&["list", "--all", "--tag", "bad pattern!"], Some(h.root()));
 }
 
-/// `tag set` with an invalid tag value returns an error.
+/// `tag set` with an invalid tag value fails as a usage error (exit 2, no JSON).
 #[test]
 fn tag_set_invalid_tag_rejected() {
     let h = TestHarness::new();
     let run_v = run_with_tags(&h, &[]);
     let job_id = run_v["job_id"].as_str().unwrap();
-    let v = h.run(&["tag", "set", job_id, "--tag", "bad!tag"]);
-    assert_envelope(&v, "error", false);
-    assert_eq!(v["error"]["code"].as_str().unwrap_or(""), "invalid_tag");
+    assert_usage_error(
+        &["tag", "set", job_id, "--tag", "bad!tag"],
+        Some(h.root()),
+    );
 }

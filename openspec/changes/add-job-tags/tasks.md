@@ -12,3 +12,9 @@
 
 - Consider a follow-up proposal for incremental tag management if workflows need `tag add`, `tag remove`, or `tag clear` commands in addition to `tag set`.
 - Consider richer query operators only after repeatable exact/prefix filters prove insufficient.
+
+## Acceptance #1 Failure Follow-up
+
+- [x] Enforce tag validation in clap parsing so invalid `run --tag`, `list --tag`, and `tag set --tag` inputs fail as usage errors (exit code 2) instead of JSON runtime errors.
+- [x] Update integration tests for invalid tag inputs to assert usage-error behavior instead of `error.code = "invalid_tag"` JSON envelopes.
+- [x] Fix `clippy -D warnings` failure in `src/list.rs` (`clippy::doc_lazy_continuation`) by correcting the doc-comment list formatting.

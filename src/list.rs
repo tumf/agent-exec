@@ -23,6 +23,7 @@
 //! Two pattern forms are supported:
 //!   - Exact: `aaa`, `hoge.fuga.geho`
 //!   - Namespace prefix: `hoge.*`, `hoge.fuga.*`
+//!
 //! Tag filtering composes with cwd and state filtering.
 
 use anyhow::Result;

@@ -11,6 +11,20 @@ use agent_exec::schema::ErrorResponse;
 use agent_exec::skills::UnknownSourceScheme;
 use agent_exec::tag::InvalidTag;
 
+/// Clap value parser: validate a stored tag (used by `run` and `tag set`).
+fn parse_stored_tag(s: &str) -> Result<String, String> {
+    agent_exec::tag::validate_stored_tag(s)
+        .map(|()| s.to_string())
+        .map_err(|e| e.to_string())
+}
+
+/// Clap value parser: validate a list filter pattern (used by `list`).
+fn parse_filter_pattern(s: &str) -> Result<String, String> {
+    agent_exec::tag::validate_filter_pattern(s)
+        .map(|()| s.to_string())
+        .map_err(|e| e.to_string())
+}
+
 #[derive(Debug, Parser)]
 #[command(name = "agent-exec")]
 #[command(about = "Non-interactive agent job runner", long_about = None)]
@@ -76,7 +90,7 @@ enum Command {
         mask: Vec<String>,
 
         /// Assign a tag to this job (may be repeated; duplicates are deduplicated).
-        #[arg(long = "tag", value_name = "TAG")]
+        #[arg(long = "tag", value_name = "TAG", value_parser = parse_stored_tag)]
         tags: Vec<String>,
 
         /// Override full.log path.
@@ -223,7 +237,7 @@ enum Command {
 
         /// Filter jobs by tag pattern (may be repeated; all patterns must match).
         /// Supports exact match (e.g. "aaa") and namespace prefix match (e.g. "hoge.*").
-        #[arg(long = "tag", value_name = "PATTERN")]
+        #[arg(long = "tag", value_name = "PATTERN", value_parser = parse_filter_pattern)]
         tags: Vec<String>,
     },
 
@@ -326,7 +340,7 @@ enum TagSubcommand {
         job_id: String,
 
         /// Tag to assign (may be repeated; replaces all existing tags).
-        #[arg(long = "tag", value_name = "TAG", required = false)]
+        #[arg(long = "tag", value_name = "TAG", required = false, value_parser = parse_stored_tag)]
         tags: Vec<String>,
     },
 }
