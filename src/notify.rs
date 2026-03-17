@@ -82,13 +82,11 @@ pub fn set(opts: NotifySetOpts) -> Result<()> {
 
     job_dir.write_meta_atomic(&meta)?;
 
-    let notification = meta
-        .notification
-        .unwrap_or(NotificationConfig {
-            notify_command: None,
-            notify_file: None,
-            on_output_match: None,
-        });
+    let notification = meta.notification.unwrap_or(NotificationConfig {
+        notify_command: None,
+        notify_file: None,
+        on_output_match: None,
+    });
     let response = Response::new(
         "notify.set",
         NotifySetData {

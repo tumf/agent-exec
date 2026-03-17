@@ -390,6 +390,7 @@ mod tests {
             mask: vec![],
             cwd: None,
             notification: None,
+            tags: vec![],
         }
     }
 
@@ -535,6 +536,7 @@ mod tests {
             mask: vec![],
             cwd: None,
             notification: None,
+            tags: vec![],
         };
         job_dir.write_meta_atomic(&updated_meta).unwrap();
 

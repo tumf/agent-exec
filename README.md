@@ -117,6 +117,7 @@ Key options:
 | `--cwd <dir>` | inherited | Working directory |
 | `--env KEY=VALUE` | — | Set environment variable (repeatable) |
 | `--mask KEY` | — | Redact secret values from JSON output (repeatable) |
+| `--tag <TAG>` | — | Assign a user-defined tag to the job (repeatable; duplicates deduplicated) |
 | `--wait` | false | Block until the job reaches a terminal state |
 | `--wait-poll-ms <ms>` | 200 | Poll interval used with `--wait` |
 | `--notify-command <COMMAND>` | — | Run a shell command when the job finishes; event JSON is sent on stdin |
@@ -157,8 +158,47 @@ agent-exec kill [--signal TERM|INT|KILL] <JOB_ID>
 ### `list` — list jobs
 
 ```bash
-agent-exec list [--state running|exited|killed|failed] [--limit N]
+agent-exec list [--state running|exited|killed|failed] [--limit N] [--tag PATTERN]...
 ```
+
+By default only jobs from the current working directory are shown. Use `--all` to show jobs from all directories.
+
+Tag filtering with `--tag` applies logical AND across all patterns. Two pattern forms are supported:
+
+- **Exact**: `--tag aaa` matches only jobs that have the tag `aaa`.
+- **Namespace prefix**: `--tag hoge.*` matches jobs with any tag in the `hoge` namespace (e.g. `hoge.sub`, `hoge.sub.deep`).
+
+```bash
+# Show jobs tagged with "ci"
+agent-exec list --all --tag ci
+
+# Show jobs in the "project.build" namespace across all directories
+agent-exec list --all --tag project.build.*
+
+# Combine: jobs tagged with both "ci" AND "release" in the current cwd
+agent-exec list --tag ci --tag release
+```
+
+### `tag set` — replace job tags
+
+```bash
+agent-exec tag set <JOB_ID> [--tag TAG]...
+```
+
+Replaces all tags on an existing job with the specified list. Duplicates are deduplicated preserving first-seen order. Omit all `--tag` flags to clear tags.
+
+```bash
+# Assign tags at creation time
+agent-exec run --tag project.build --tag ci -- make build
+
+# Replace tags on an existing job
+agent-exec tag set 01J9ABC123 --tag project.release --tag approved
+
+# Clear all tags
+agent-exec tag set 01J9ABC123
+```
+
+**Tag format**: dot-separated segments of alphanumeric characters and hyphens (e.g. `ci`, `project.build`, `hoge-fuga.v2`). The `.*` suffix is reserved for list filter patterns and cannot be used as a stored tag.
 
 ### `notify set` — update notification configuration
 
@@ -222,7 +262,6 @@ agent-exec notify set "$JOB" \
   --output-stream stderr \
   --output-file /tmp/stderr_matches.ndjson
 ```
-
 ### `gc` — garbage collect old job data
 
 ```bash

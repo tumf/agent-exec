@@ -96,6 +96,9 @@ impl ErrorResponse {
 pub struct RunData {
     pub job_id: String,
     pub state: String,
+    /// Tags assigned to this job (always present; empty array when none).
+    #[serde(default)]
+    pub tags: Vec<String>,
     /// Environment variables passed to the job, with masked values replaced by "***".
     /// Omitted from JSON when empty.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
@@ -198,6 +201,17 @@ pub struct JobSummary {
     pub finished_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<String>,
+    /// Tags assigned to this job (always present; empty array when none).
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+/// Response for `tag set` command.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TagSetData {
+    pub job_id: String,
+    /// The new deduplicated tag list as persisted to meta.json.
+    pub tags: Vec<String>,
 }
 
 /// Response for `list` command.
@@ -301,32 +315,22 @@ pub struct Snapshot {
 // ---------- Notification / completion event models ----------
 
 /// Match type for output-match notification.
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum OutputMatchType {
+    #[default]
     Contains,
     Regex,
 }
 
-impl Default for OutputMatchType {
-    fn default() -> Self {
-        OutputMatchType::Contains
-    }
-}
-
 /// Stream selector for output-match notification.
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum OutputMatchStream {
     Stdout,
     Stderr,
+    #[default]
     Either,
-}
-
-impl Default for OutputMatchStream {
-    fn default() -> Self {
-        OutputMatchStream::Either
-    }
 }
 
 /// Configuration for output-match notifications.
@@ -477,6 +481,9 @@ pub struct JobMeta {
     /// Notification configuration (present only when --notify-command or --notify-file was used).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub notification: Option<NotificationConfig>,
+    /// User-defined tags for grouping and filtering. Empty array when none.
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 impl JobMeta {

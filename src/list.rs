@@ -15,6 +15,16 @@
 //! Jobs that were created before this feature (i.e. `meta.json.cwd` is absent)
 //! are treated as having no cwd and will therefore not appear in the default
 //! filtered view.  Use `--all` to see them.
+//!
+//! ## Tag filtering (add-job-tags)
+//!
+//! `--tag <PATTERN>` filters jobs to those whose persisted `meta.json.tags`
+//! satisfy the pattern.  Repeated `--tag` flags apply logical AND.
+//! Two pattern forms are supported:
+//!   - Exact: `aaa`, `hoge.fuga.geho`
+//!   - Namespace prefix: `hoge.*`, `hoge.fuga.*`
+//!
+//! Tag filtering composes with cwd and state filtering.
 
 use anyhow::Result;
 use tracing::debug;
@@ -22,6 +32,7 @@ use tracing::debug;
 use crate::jobstore::resolve_root;
 use crate::run::resolve_effective_cwd;
 use crate::schema::{JobSummary, ListData, Response};
+use crate::tag::{matches_all_patterns, validate_filter_pattern};
 
 /// Options for the `list` sub-command.
 #[derive(Debug)]
@@ -37,12 +48,19 @@ pub struct ListOpts<'a> {
     /// When true, disable cwd filtering and show all jobs.
     /// Conflicts with `cwd`.
     pub all: bool,
+    /// Tag filter patterns (AND semantics); empty means no tag filtering.
+    pub tags: Vec<String>,
 }
 
 /// Execute `list`: enumerate jobs and emit JSON.
 pub fn execute(opts: ListOpts) -> Result<()> {
     let root = resolve_root(opts.root);
     let root_str = root.display().to_string();
+
+    // Validate all tag filter patterns upfront before doing any I/O.
+    for pattern in &opts.tags {
+        validate_filter_pattern(pattern).map_err(anyhow::Error::from)?;
+    }
 
     // Determine the cwd filter to apply.
     // Priority: --all (no filter) > --cwd <PATH> > current_dir (default).
@@ -140,6 +158,17 @@ pub fn execute(opts: ListOpts) -> Result<()> {
             }
         }
 
+        // Apply tag filters: all patterns must match (logical AND).
+        if !opts.tags.is_empty() && !matches_all_patterns(&meta.tags, &opts.tags) {
+            debug!(
+                path = %path.display(),
+                job_tags = ?meta.tags,
+                patterns = ?opts.tags,
+                "list: skipping job (tag mismatch)"
+            );
+            continue;
+        }
+
         // state.json is optional: read if available, continue without it if not.
         let state_opt: Option<crate::schema::JobState> = {
             let state_path = path.join("state.json");
@@ -167,6 +196,7 @@ pub fn execute(opts: ListOpts) -> Result<()> {
             started_at: meta.created_at.clone(),
             finished_at,
             updated_at,
+            tags: meta.tags.clone(),
         });
     }
 

@@ -80,6 +80,30 @@ fn run_cmd_with_root(args: &[&str], root: Option<&str>) -> serde_json::Value {
     })
 }
 
+/// Run a command expecting a clap usage error (exit code 2, empty stdout).
+///
+/// Asserts that the process exits with code 2 and produces no JSON on stdout.
+fn assert_usage_error(args: &[&str], root: Option<&str>) {
+    let bin = binary();
+    let mut cmd = Command::new(&bin);
+    cmd.args(args);
+    if let Some(r) = root {
+        cmd.env("AGENT_EXEC_ROOT", r);
+    }
+    let output = cmd.output().expect("run binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "expected exit code 2 (usage error)\nstdout: {stdout}\nstderr: {stderr}\nargs: {args:?}"
+    );
+    assert!(
+        stdout.trim().is_empty(),
+        "expected empty stdout for usage error\nstdout: {stdout}\nstderr: {stderr}\nargs: {args:?}"
+    );
+}
+
 /// Run the binary with `--root <root>` as a global CLI flag (not via env var).
 /// Verifies normalized global-root syntax: `agent-exec --root <PATH> <subcommand> ...`.
 fn run_cmd_with_global_root_flag(root: &str, args: &[&str]) -> serde_json::Value {
@@ -2849,6 +2873,343 @@ fn gc_skips_unreadable_state() {
     );
 }
 
+// ============================================================
+// Tag feature tests (add-job-tags)
+// ============================================================
+
+/// Helper: run a job with tags and return the JSON output.
+fn run_with_tags(h: &TestHarness, tags: &[&str]) -> serde_json::Value {
+    let mut args = vec!["run", "--snapshot-after", "0"];
+    for tag in tags {
+        args.push("--tag");
+        args.push(tag);
+    }
+    args.extend_from_slice(&["--", "true"]);
+    h.run(&args)
+}
+
+/// `run --tag` returns tags in the response JSON.
+#[test]
+fn run_tag_appears_in_response() {
+    let h = TestHarness::new();
+    let v = run_with_tags(&h, &["aaa", "bbb"]);
+    assert_envelope(&v, "run", true);
+    let tags = v["tags"].as_array().expect("tags must be an array");
+    let tag_strs: Vec<&str> = tags.iter().map(|t| t.as_str().unwrap()).collect();
+    assert_eq!(tag_strs, vec!["aaa", "bbb"]);
+}
+
+/// `run --tag` persists tags in meta.json.
+#[test]
+fn run_tag_persisted_in_meta() {
+    let h = TestHarness::new();
+    let v = run_with_tags(&h, &["hoge", "fuga"]);
+    assert_envelope(&v, "run", true);
+    let job_id = v["job_id"].as_str().unwrap();
+    // Read meta.json directly from the job directory.
+    let meta_path = std::path::Path::new(h.root())
+        .join(job_id)
+        .join("meta.json");
+    let meta_bytes = std::fs::read(&meta_path).expect("meta.json must exist");
+    let meta: serde_json::Value = serde_json::from_slice(&meta_bytes).unwrap();
+    let tags = meta["tags"].as_array().expect("tags must be in meta.json");
+    let tag_strs: Vec<&str> = tags.iter().map(|t| t.as_str().unwrap()).collect();
+    assert_eq!(tag_strs, vec!["hoge", "fuga"]);
+}
+
+/// Duplicate tags on `run` are deduplicated preserving first-seen order.
+#[test]
+fn run_tag_deduplication() {
+    let h = TestHarness::new();
+    let v = run_with_tags(&h, &["aaa", "bbb", "aaa", "ccc", "bbb"]);
+    assert_envelope(&v, "run", true);
+    let tags = v["tags"].as_array().expect("tags must be an array");
+    let tag_strs: Vec<&str> = tags.iter().map(|t| t.as_str().unwrap()).collect();
+    assert_eq!(tag_strs, vec!["aaa", "bbb", "ccc"]);
+}
+
+/// `run` with no tags returns an empty tags array.
+#[test]
+fn run_no_tags_returns_empty_array() {
+    let h = TestHarness::new();
+    let v = h.run(&["run", "--snapshot-after", "0", "--", "true"]);
+    assert_envelope(&v, "run", true);
+    let tags = v["tags"].as_array().expect("tags must be an array");
+    assert!(tags.is_empty(), "tags must be empty when none specified");
+}
+
+/// `run --tag` with an invalid tag value fails as a usage error (exit 2, no JSON).
+#[test]
+fn run_invalid_tag_is_rejected() {
+    let h = TestHarness::new();
+    assert_usage_error(
+        &[
+            "run",
+            "--snapshot-after",
+            "0",
+            "--tag",
+            "bad tag!",
+            "--",
+            "true",
+        ],
+        Some(h.root()),
+    );
+}
+
+/// `run --tag` with a `.*` suffix is rejected as a stored tag (usage error, exit 2).
+#[test]
+fn run_wildcard_tag_is_rejected() {
+    let h = TestHarness::new();
+    assert_usage_error(
+        &[
+            "run",
+            "--snapshot-after",
+            "0",
+            "--tag",
+            "hoge.*",
+            "--",
+            "true",
+        ],
+        Some(h.root()),
+    );
+}
+
+/// `tag set` replaces tags on an existing job.
+#[test]
+fn tag_set_replaces_tags() {
+    let h = TestHarness::new();
+    // Create job with initial tags.
+    let run_v = run_with_tags(&h, &["old"]);
+    let job_id = run_v["job_id"].as_str().unwrap();
+
+    // Replace tags via `tag set`.
+    let v = h.run(&["tag", "set", job_id, "--tag", "new1", "--tag", "new2"]);
+    assert_envelope(&v, "tag_set", true);
+    let tags = v["tags"].as_array().expect("tags must be in response");
+    let tag_strs: Vec<&str> = tags.iter().map(|t| t.as_str().unwrap()).collect();
+    assert_eq!(tag_strs, vec!["new1", "new2"]);
+
+    // Verify meta.json was updated.
+    let meta_path = std::path::Path::new(h.root())
+        .join(job_id)
+        .join("meta.json");
+    let meta: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&meta_path).unwrap()).unwrap();
+    let stored: Vec<&str> = meta["tags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t.as_str().unwrap())
+        .collect();
+    assert_eq!(stored, vec!["new1", "new2"]);
+}
+
+/// `tag set` deduplicates the replacement list.
+#[test]
+fn tag_set_deduplicates() {
+    let h = TestHarness::new();
+    let run_v = run_with_tags(&h, &[]);
+    let job_id = run_v["job_id"].as_str().unwrap();
+    let v = h.run(&[
+        "tag", "set", job_id, "--tag", "a", "--tag", "b", "--tag", "a",
+    ]);
+    assert_envelope(&v, "tag_set", true);
+    let tags: Vec<&str> = v["tags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t.as_str().unwrap())
+        .collect();
+    assert_eq!(tags, vec!["a", "b"]);
+}
+
+/// `tag set` clears tags when no --tag flags are given.
+#[test]
+fn tag_set_clears_tags() {
+    let h = TestHarness::new();
+    let run_v = run_with_tags(&h, &["keep-me"]);
+    let job_id = run_v["job_id"].as_str().unwrap();
+    let v = h.run(&["tag", "set", job_id]);
+    assert_envelope(&v, "tag_set", true);
+    let tags = v["tags"].as_array().unwrap();
+    assert!(tags.is_empty(), "tags must be empty after clear");
+}
+
+/// `tag set` on a missing job returns job_not_found.
+#[test]
+fn tag_set_missing_job_returns_job_not_found() {
+    let h = TestHarness::new();
+    let v = h.run(&["tag", "set", "NO_SUCH_JOB_ID", "--tag", "x"]);
+    assert_envelope(&v, "error", false);
+    assert_eq!(v["error"]["code"].as_str().unwrap_or(""), "job_not_found");
+}
+
+/// `tag set` does not modify other meta.json fields.
+#[test]
+fn tag_set_preserves_other_meta_fields() {
+    let h = TestHarness::new();
+    let run_v = h.run(&[
+        "run",
+        "--snapshot-after",
+        "0",
+        "--tag",
+        "initial",
+        "--",
+        "true",
+    ]);
+    let job_id = run_v["job_id"].as_str().unwrap();
+    let meta_before: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(
+            std::path::Path::new(h.root())
+                .join(job_id)
+                .join("meta.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+
+    h.run(&["tag", "set", job_id, "--tag", "after"]);
+
+    let meta_after: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(
+            std::path::Path::new(h.root())
+                .join(job_id)
+                .join("meta.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(meta_before["job"], meta_after["job"]);
+    assert_eq!(meta_before["command"], meta_after["command"]);
+    assert_eq!(meta_before["created_at"], meta_after["created_at"]);
+    assert_eq!(meta_before["cwd"], meta_after["cwd"]);
+    // Only tags should differ.
+    assert_ne!(meta_before["tags"], meta_after["tags"]);
+}
+
+/// `list` returns tags in each job summary.
+#[test]
+fn list_jobs_include_tags() {
+    let h = TestHarness::new();
+    run_with_tags(&h, &["mytag"]);
+    let v = h.run(&["list", "--all"]);
+    assert_envelope(&v, "list", true);
+    let jobs = v["jobs"].as_array().unwrap();
+    assert!(!jobs.is_empty(), "at least one job expected");
+    // Every job entry must have a `tags` array.
+    for job in jobs {
+        assert!(
+            job["tags"].is_array(),
+            "job summary must include tags array"
+        );
+    }
+    // The job we created must have the tag.
+    let has_tag = jobs
+        .iter()
+        .any(|j| j["tags"].as_array().unwrap().iter().any(|t| t == "mytag"));
+    assert!(has_tag, "job with 'mytag' must appear in list");
+}
+
+/// `list --tag <exact>` returns only jobs that have that exact tag.
+#[test]
+fn list_exact_tag_filter() {
+    let h = TestHarness::new();
+    run_with_tags(&h, &["alpha"]);
+    run_with_tags(&h, &["beta"]);
+
+    let v = h.run(&["list", "--all", "--tag", "alpha"]);
+    assert_envelope(&v, "list", true);
+    let jobs = v["jobs"].as_array().unwrap();
+    assert!(!jobs.is_empty(), "at least one job expected");
+    for job in jobs {
+        let tags: Vec<&str> = job["tags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t.as_str().unwrap())
+            .collect();
+        assert!(
+            tags.contains(&"alpha"),
+            "all returned jobs must have 'alpha'"
+        );
+    }
+}
+
+/// `list --tag <prefix>.*` returns jobs in that namespace.
+#[test]
+fn list_prefix_tag_filter() {
+    let h = TestHarness::new();
+    run_with_tags(&h, &["ns.sub.job"]);
+    run_with_tags(&h, &["other.job"]);
+
+    let v = h.run(&["list", "--all", "--tag", "ns.*"]);
+    assert_envelope(&v, "list", true);
+    let jobs = v["jobs"].as_array().unwrap();
+    assert!(!jobs.is_empty(), "at least one matching job expected");
+    for job in jobs {
+        let tags: Vec<&str> = job["tags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t.as_str().unwrap())
+            .collect();
+        let matches = tags.iter().any(|t| *t == "ns" || t.starts_with("ns."));
+        assert!(matches, "all returned jobs must have a 'ns.*' tag");
+    }
+}
+
+/// `list --tag a --tag b` returns only jobs satisfying both (AND semantics).
+#[test]
+fn list_multiple_tag_filters_and_semantics() {
+    let h = TestHarness::new();
+    run_with_tags(&h, &["x", "y"]); // matches both
+    run_with_tags(&h, &["x"]); // matches only x
+    run_with_tags(&h, &["y"]); // matches only y
+
+    let v = h.run(&["list", "--all", "--tag", "x", "--tag", "y"]);
+    assert_envelope(&v, "list", true);
+    let jobs = v["jobs"].as_array().unwrap();
+    // Only the job with both tags should appear.
+    assert_eq!(jobs.len(), 1, "only job with both tags must be returned");
+    let tags: Vec<&str> = jobs[0]["tags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t.as_str().unwrap())
+        .collect();
+    assert!(tags.contains(&"x") && tags.contains(&"y"));
+}
+
+/// `list --tag` composes with cwd filtering.
+#[test]
+fn list_tag_filter_composes_with_cwd() {
+    let h = TestHarness::new();
+    // Run a job with the tag in the current directory.
+    run_with_tags(&h, &["shared"]);
+
+    // Default list (cwd filter active) + tag filter must still work.
+    let v = h.run(&["list", "--tag", "shared"]);
+    assert_envelope(&v, "list", true);
+    // Should not error; just return results filtered by both cwd and tag.
+}
+
+/// `list --tag` with an invalid pattern fails as a usage error (exit 2, no JSON).
+#[test]
+fn list_invalid_tag_pattern_rejected() {
+    let h = TestHarness::new();
+    assert_usage_error(&["list", "--all", "--tag", "bad pattern!"], Some(h.root()));
+}
+
+/// `tag set` with an invalid tag value fails as a usage error (exit 2, no JSON).
+#[test]
+fn tag_set_invalid_tag_rejected() {
+    let h = TestHarness::new();
+    let run_v = run_with_tags(&h, &[]);
+    let job_id = run_v["job_id"].as_str().unwrap();
+    assert_usage_error(&["tag", "set", job_id, "--tag", "bad!tag"], Some(h.root()));
+}
+
 // ── notify set ─────────────────────────────────────────────────────────────────
 
 /// notify set: updates notify_command in meta.json and returns success envelope.
@@ -3496,7 +3857,11 @@ fn output_match_file_sink_appends_per_match() {
     );
     let content = std::fs::read_to_string(&events_file).expect("read events file");
     let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
-    assert_eq!(lines.len(), 2, "must have exactly two NDJSON lines (one per match)");
+    assert_eq!(
+        lines.len(),
+        2,
+        "must have exactly two NDJSON lines (one per match)"
+    );
 
     for line in &lines {
         let ev: serde_json::Value = serde_json::from_str(line).expect("each line must be JSON");
@@ -3642,9 +4007,8 @@ fn output_match_notification_events_ndjson_written() {
         !content.trim().is_empty(),
         "notification_events.ndjson must contain at least one record"
     );
-    let record: serde_json::Value =
-        serde_json::from_str(content.lines().next().unwrap_or("{}"))
-            .expect("first line must be JSON");
+    let record: serde_json::Value = serde_json::from_str(content.lines().next().unwrap_or("{}"))
+        .expect("first line must be JSON");
     assert_eq!(
         record["event_type"].as_str().unwrap_or(""),
         "job.output.matched"
@@ -3695,7 +4059,10 @@ fn output_match_regex_pattern_fires_on_match() {
     // Only ERR123 should match ^ERR; INFO456 must not.
     assert_eq!(lines.len(), 1, "only ERR123 must match ^ERR regex");
     let ev: serde_json::Value = serde_json::from_str(lines[0]).expect("line must be JSON");
-    assert_eq!(ev["event_type"].as_str().unwrap_or(""), "job.output.matched");
+    assert_eq!(
+        ev["event_type"].as_str().unwrap_or(""),
+        "job.output.matched"
+    );
     assert_eq!(ev["line"].as_str().unwrap_or(""), "ERR123");
 }
 
