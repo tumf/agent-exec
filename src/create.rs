@@ -11,8 +11,16 @@ use ulid::Ulid;
 use crate::jobstore::{JobDir, resolve_root};
 use crate::run::{mask_env_vars, pre_create_log_files, resolve_effective_cwd};
 use crate::schema::{CreateData, JobMeta, JobMetaJob, Response};
+use crate::tag::dedup_tags;
 
 /// Options for the `create` sub-command.
+///
+/// # Definition-time option alignment rule
+///
+/// Every definition-time option accepted here MUST also be accepted by `run` (and vice versa),
+/// since both commands write the same persisted job definition to `meta.json`. When adding a
+/// new persisted metadata field, wire it through both `create` and `run` unless the spec
+/// explicitly documents it as launch-only (e.g. snapshot timing, tail sizing, --wait).
 #[derive(Debug)]
 pub struct CreateOpts<'a> {
     /// Command and arguments to execute when `start` is called.
@@ -41,6 +49,18 @@ pub struct CreateOpts<'a> {
     pub notify_file: Option<String>,
     /// Resolved shell wrapper argv (e.g. ["sh", "-lc"]).
     pub shell_wrapper: Vec<String>,
+    /// User-defined tags for this job (deduplicated preserving first-seen order).
+    pub tags: Vec<String>,
+    /// Pattern to match against output lines (output-match notification).
+    pub output_pattern: Option<String>,
+    /// Match type for output-match: "contains" or "regex".
+    pub output_match_type: Option<String>,
+    /// Stream selector: "stdout", "stderr", or "either".
+    pub output_stream: Option<String>,
+    /// Shell command string for output-match command sink.
+    pub output_command: Option<String>,
+    /// File path for output-match NDJSON file sink.
+    pub output_file: Option<String>,
 }
 
 /// Execute `create`: persist job definition and return JSON.
@@ -66,15 +86,30 @@ pub fn execute(opts: CreateOpts) -> Result<()> {
 
     let effective_cwd = resolve_effective_cwd(opts.cwd);
 
-    let notification = if opts.notify_command.is_some() || opts.notify_file.is_some() {
-        Some(crate::schema::NotificationConfig {
-            notify_command: opts.notify_command.clone(),
-            notify_file: opts.notify_file.clone(),
-            on_output_match: None,
-        })
-    } else {
-        None
-    };
+    // Build output-match config from definition-time options (same logic as `notify set`).
+    let on_output_match = crate::notify::build_output_match_config(
+        opts.output_pattern,
+        opts.output_match_type,
+        opts.output_stream,
+        opts.output_command,
+        opts.output_file,
+        None,
+    );
+
+    let notification =
+        if opts.notify_command.is_some() || opts.notify_file.is_some() || on_output_match.is_some()
+        {
+            Some(crate::schema::NotificationConfig {
+                notify_command: opts.notify_command.clone(),
+                notify_file: opts.notify_file.clone(),
+                on_output_match,
+            })
+        } else {
+            None
+        };
+
+    // Validate and deduplicate tags (preserving first-seen order).
+    let tags = dedup_tags(opts.tags)?;
 
     let meta = JobMeta {
         job: JobMetaJob { id: job_id.clone() },
@@ -91,7 +126,7 @@ pub fn execute(opts: CreateOpts) -> Result<()> {
         mask: opts.mask.clone(),
         cwd: Some(effective_cwd),
         notification,
-        tags: vec![],
+        tags,
         // Execution-definition fields persisted for `start`.
         inherit_env: opts.inherit_env,
         env_files: opts.env_files.clone(),

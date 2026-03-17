@@ -15,26 +15,41 @@ The proposal formalizes two categories of options.
 
 ### Definition-time options
 
-These contribute to persisted job metadata and should be accepted by both `create` and `run`:
+These contribute to persisted job metadata (`meta.json`) and MUST be accepted by both `create` and `run`:
 
-- command argv
-- cwd
-- environment construction inputs
-- masking keys for persisted/displayed metadata
-- timeout and related execution-definition settings that are stored in `meta.json`
-- tags
-- completion notification settings
-- output-match notification settings
-- shell-wrapper inputs used as part of the durable launch definition
+| Option | Description |
+|--------|-------------|
+| command argv | The command and its arguments |
+| `--cwd` | Working directory |
+| `--env KEY=VALUE` | Environment variable assignments (may be repeated) |
+| `--env-file FILE` | Environment variable file paths (may be repeated) |
+| `--inherit-env` / `--no-inherit-env` | Whether to inherit the caller's environment |
+| `--mask KEY` | Keys whose values are masked in output |
+| `--timeout` | Timeout in milliseconds |
+| `--kill-after` | Milliseconds after SIGTERM before SIGKILL |
+| `--progress-every` | State refresh interval in milliseconds |
+| `--shell-wrapper` | Shell wrapper program and flags |
+| `--tag TAG` | Job tags (may be repeated; duplicates deduplicated) |
+| `--notify-command COMMAND` | Shell command for job-completion notification sink |
+| `--notify-file PATH` | File path for NDJSON completion notification sink |
+| `--output-pattern PATTERN` | Pattern to match against output lines |
+| `--output-match-type TYPE` | Match type: `contains` or `regex` |
+| `--output-stream STREAM` | Stream selector: `stdout`, `stderr`, or `either` |
+| `--output-command COMMAND` | Shell command for output-match notification sink |
+| `--output-file PATH` | File path for NDJSON output-match notification sink |
 
 ### Launch / observation-time options
 
-These control how a caller observes or waits for execution and do not belong on `create`:
+These control how a caller observes or waits for execution and do NOT belong on `create`. They are accepted only by `run` and `start`:
 
-- snapshot timing
-- tail sizing
-- wait behavior
-- polling intervals and similar observation controls
+| Option | Description |
+|--------|-------------|
+| `--snapshot-after MS` | Milliseconds to wait before returning snapshot |
+| `--tail-lines N` | Number of tail lines to include in snapshot |
+| `--max-bytes N` | Maximum bytes for tail |
+| `--wait` | Wait for terminal state before returning |
+| `--wait-poll-ms MS` | Poll interval while waiting |
+| `--log PATH` | Override full.log path (run-only) |
 
 ## Contract Shape
 
@@ -62,6 +77,21 @@ For these fields, the intended contract is:
 3. `run` accepts the same definition-time inputs and persists the same metadata shape.
 4. `start` activates whatever was saved by `create`.
 5. Later changes continue to flow through metadata mutation commands such as `tag set` and `notify set`.
+
+## Future Alignment Rule for Implementors
+
+When adding a new persisted metadata field to `meta.json` in the future:
+
+1. **Classify the option first.** Decide whether it is definition-time (goes into `meta.json`) or launch/observation-time (does not).
+2. **Wire through both paths.** If definition-time, add the CLI flag and persisted field to **both** `create` and `run` in `src/main.rs`, `src/create.rs`, and `src/run.rs`. A one-sided addition is a spec violation.
+3. **Keep `start` consuming, not redefining.** `start` reads `meta.json` and launches the job; it must not require the caller to re-specify definition-time options.
+4. **Test both paths.** Add integration tests in `tests/integration.rs` that verify jobs created via `create` and via `run` produce equivalent `meta.json` for the new field.
+
+The canonical places to stay aligned are:
+- `src/main.rs` — CLI argument definitions for `Create` and `Run` variants
+- `src/create.rs` — `CreateOpts` struct and `execute()` metadata persistence
+- `src/run.rs` — `RunOpts` struct and `execute()` metadata persistence
+- `tests/integration.rs` — alignment verification tests
 
 ## Relationship to Existing Active Changes
 

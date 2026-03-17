@@ -20,6 +20,13 @@ use crate::schema::{
 use crate::tag::dedup_tags;
 
 /// Options for the `run` sub-command.
+///
+/// # Definition-time option alignment rule
+///
+/// Every definition-time option accepted here MUST also be accepted by `create` (and vice versa),
+/// since both commands write the same persisted job definition to `meta.json`. When adding a
+/// new persisted metadata field, wire it through both `run` and `create` unless the spec
+/// explicitly documents it as launch-only (e.g. snapshot timing, tail sizing, --wait).
 #[derive(Debug)]
 pub struct RunOpts<'a> {
     /// Command and arguments to execute.
@@ -62,6 +69,16 @@ pub struct RunOpts<'a> {
     pub notify_command: Option<String>,
     /// File path for NDJSON notification sink; None = no file sink.
     pub notify_file: Option<String>,
+    /// Pattern to match against output lines (output-match notification).
+    pub output_pattern: Option<String>,
+    /// Match type for output-match: "contains" or "regex".
+    pub output_match_type: Option<String>,
+    /// Stream selector: "stdout", "stderr", or "either".
+    pub output_stream: Option<String>,
+    /// Shell command string for output-match command sink.
+    pub output_command: Option<String>,
+    /// File path for output-match NDJSON file sink.
+    pub output_file: Option<String>,
     /// Resolved shell wrapper argv used to execute command strings.
     /// e.g. `["sh", "-lc"]` or `["bash", "-lc"]`.
     pub shell_wrapper: Vec<String>,
@@ -89,6 +106,11 @@ impl<'a> Default for RunOpts<'a> {
             wait_poll_ms: 200,
             notify_command: None,
             notify_file: None,
+            output_pattern: None,
+            output_match_type: None,
+            output_stream: None,
+            output_command: None,
+            output_file: None,
             shell_wrapper: crate::config::default_shell_wrapper(),
         }
     }
@@ -356,15 +378,27 @@ pub fn execute(opts: RunOpts) -> Result<()> {
     // Canonicalize the path for consistent comparison; fall back to absolute path on failure.
     let effective_cwd = resolve_effective_cwd(opts.cwd);
 
-    let notification = if opts.notify_command.is_some() || opts.notify_file.is_some() {
-        Some(crate::schema::NotificationConfig {
-            notify_command: opts.notify_command.clone(),
-            notify_file: opts.notify_file.clone(),
-            on_output_match: None,
-        })
-    } else {
-        None
-    };
+    // Build output-match config from definition-time options (same logic as `create` and `notify set`).
+    let on_output_match = crate::notify::build_output_match_config(
+        opts.output_pattern,
+        opts.output_match_type,
+        opts.output_stream,
+        opts.output_command,
+        opts.output_file,
+        None,
+    );
+
+    let notification =
+        if opts.notify_command.is_some() || opts.notify_file.is_some() || on_output_match.is_some()
+        {
+            Some(crate::schema::NotificationConfig {
+                notify_command: opts.notify_command.clone(),
+                notify_file: opts.notify_file.clone(),
+                on_output_match,
+            })
+        } else {
+            None
+        };
 
     // Validate and deduplicate tags (preserving first-seen order).
     let tags = dedup_tags(opts.tags)?;

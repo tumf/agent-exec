@@ -105,7 +105,7 @@ pub fn set(opts: NotifySetOpts) -> Result<()> {
 /// - If no new pattern is provided but other output-match fields are provided,
 ///   they overlay the existing config.
 /// - If nothing is provided and there's no existing config, returns `None`.
-fn build_output_match_config(
+pub fn build_output_match_config(
     output_pattern: Option<String>,
     output_match_type: Option<String>,
     output_stream: Option<String>,
