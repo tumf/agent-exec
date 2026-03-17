@@ -283,7 +283,7 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum NotifySubcommand {
-    /// Update the persisted notification command for an existing job.
+    /// Update the persisted notification configuration for an existing job.
     Set {
         /// Override jobs root directory.
         #[arg(long)]
@@ -294,8 +294,28 @@ enum NotifySubcommand {
 
         /// Shell command string to execute on job completion.
         /// Replaces any previously configured notify_command; notify_file is preserved.
-        #[arg(long, value_name = "COMMAND", required = true)]
-        command: String,
+        #[arg(long, value_name = "COMMAND")]
+        command: Option<String>,
+
+        /// Pattern to match against output lines (enables output-match notifications).
+        #[arg(long, value_name = "PATTERN")]
+        output_pattern: Option<String>,
+
+        /// Match type for output-match: contains (default) or regex.
+        #[arg(long, value_name = "TYPE", value_parser = ["contains", "regex"])]
+        output_match_type: Option<String>,
+
+        /// Stream to match: stdout, stderr, or either (default).
+        #[arg(long, value_name = "STREAM", value_parser = ["stdout", "stderr", "either"])]
+        output_stream: Option<String>,
+
+        /// Shell command string to execute on output match.
+        #[arg(long, value_name = "COMMAND")]
+        output_command: Option<String>,
+
+        /// File path that receives one NDJSON event per output match.
+        #[arg(long, value_name = "PATH")]
+        output_file: Option<String>,
     },
 }
 
@@ -476,12 +496,22 @@ fn run(cli: Cli) -> Result<()> {
                     root,
                     job_id,
                     command,
+                    output_pattern,
+                    output_match_type,
+                    output_stream,
+                    output_command,
+                    output_file,
                 },
         } => {
             agent_exec::notify::set(agent_exec::notify::NotifySetOpts {
                 job_id: &job_id,
                 root: root.as_deref(),
                 command,
+                output_pattern,
+                output_match_type,
+                output_stream,
+                output_command,
+                output_file,
             })?;
         }
 

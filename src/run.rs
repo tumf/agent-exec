@@ -127,6 +127,7 @@ pub fn execute(opts: RunOpts) -> Result<()> {
         Some(crate::schema::NotificationConfig {
             notify_command: opts.notify_command.clone(),
             notify_file: opts.notify_file.clone(),
+            on_output_match: None,
         })
     } else {
         None
@@ -505,6 +506,171 @@ fn load_env_file(path: &str) -> Result<Vec<(String, String)>> {
     Ok(vars)
 }
 
+/// Shared state for output-match checking, used by streaming threads in `supervise`.
+///
+/// Reloads `meta.json` on every observed line so that a `notify set` update is
+/// visible for the very next line, regardless of how recently the last reload
+/// occurred.  Multiple streaming threads share the same checker via `Arc`; the
+/// internal `Mutex` serialises access.
+struct OutputMatchChecker {
+    job_dir_path: std::path::PathBuf,
+    shell_wrapper: Vec<String>,
+    inner: std::sync::Mutex<OutputMatchInner>,
+}
+
+struct OutputMatchInner {
+    config: Option<crate::schema::NotificationConfig>,
+}
+
+impl OutputMatchChecker {
+    fn new(
+        job_dir_path: std::path::PathBuf,
+        shell_wrapper: Vec<String>,
+        initial_config: Option<crate::schema::NotificationConfig>,
+    ) -> Self {
+        Self {
+            job_dir_path,
+            shell_wrapper,
+            inner: std::sync::Mutex::new(OutputMatchInner {
+                config: initial_config,
+            }),
+        }
+    }
+
+    /// Check a newly observed output line for a configured match.
+    ///
+    /// Reloads `meta.json` on every call so that `notify set` updates are
+    /// visible for the next line without any delay.
+    /// Dispatches `job.output.matched` events outside the lock to avoid blocking
+    /// other streaming threads.
+    fn check_line(&self, line: &str, stream: &str) {
+        use crate::schema::{OutputMatchStream, OutputMatchType};
+
+        // Lock, reload, evaluate match, then release before dispatching.
+        let match_info: Option<crate::schema::OutputMatchConfig> = {
+            let mut inner = self.inner.lock().unwrap();
+
+            // Reload config on every line to pick up `notify set` updates immediately.
+            {
+                let meta_path = self.job_dir_path.join("meta.json");
+                if let Ok(raw) = std::fs::read(&meta_path) {
+                    if let Ok(meta) =
+                        serde_json::from_slice::<crate::schema::JobMeta>(&raw)
+                    {
+                        inner.config = meta.notification;
+                    }
+                }
+            }
+
+            let Some(ref notification) = inner.config else {
+                return;
+            };
+            let Some(ref match_cfg) = notification.on_output_match else {
+                return;
+            };
+
+            // Check stream filter.
+            let stream_matches = match match_cfg.stream {
+                OutputMatchStream::Stdout => stream == "stdout",
+                OutputMatchStream::Stderr => stream == "stderr",
+                OutputMatchStream::Either => true,
+            };
+            if !stream_matches {
+                return;
+            }
+
+            // Check pattern.
+            let matched = match &match_cfg.match_type {
+                OutputMatchType::Contains => line.contains(&match_cfg.pattern),
+                OutputMatchType::Regex => regex::Regex::new(&match_cfg.pattern)
+                    .map(|re| re.is_match(line))
+                    .unwrap_or(false),
+            };
+
+            if matched {
+                Some(match_cfg.clone())
+            } else {
+                None
+            }
+        }; // Lock released.
+
+        if let Some(match_cfg) = match_info {
+            self.dispatch_match(line, stream, &match_cfg);
+        }
+    }
+
+    /// Dispatch a `job.output.matched` event and append a delivery record to
+    /// `notification_events.ndjson`.  Failures are non-fatal.
+    fn dispatch_match(
+        &self,
+        line: &str,
+        stream: &str,
+        match_cfg: &crate::schema::OutputMatchConfig,
+    ) {
+        use std::io::Write;
+
+        let job_id = self
+            .job_dir_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown");
+
+        let stdout_log_path = self.job_dir_path.join("stdout.log").display().to_string();
+        let stderr_log_path = self.job_dir_path.join("stderr.log").display().to_string();
+        let events_path = self.job_dir_path.join("notification_events.ndjson");
+        let events_path_str = events_path.display().to_string();
+
+        let match_type_str = match &match_cfg.match_type {
+            crate::schema::OutputMatchType::Contains => "contains",
+            crate::schema::OutputMatchType::Regex => "regex",
+        };
+
+        let event = crate::schema::OutputMatchEvent {
+            schema_version: crate::schema::SCHEMA_VERSION.to_string(),
+            event_type: "job.output.matched".to_string(),
+            job_id: job_id.to_string(),
+            pattern: match_cfg.pattern.clone(),
+            match_type: match_type_str.to_string(),
+            stream: stream.to_string(),
+            line: line.to_string(),
+            stdout_log_path,
+            stderr_log_path,
+        };
+
+        let event_json = serde_json::to_string(&event).unwrap_or_default();
+        let mut delivery_results: Vec<crate::schema::SinkDeliveryResult> = Vec::new();
+
+        if let Some(ref cmd) = match_cfg.command {
+            delivery_results.push(dispatch_command_sink(
+                cmd,
+                &event_json,
+                job_id,
+                &events_path_str,
+                &self.shell_wrapper,
+                "job.output.matched",
+            ));
+        }
+        if let Some(ref file_path) = match_cfg.file {
+            delivery_results.push(dispatch_file_sink(file_path, &event_json));
+        }
+
+        // Append delivery record to notification_events.ndjson.
+        let record = crate::schema::OutputMatchEventRecord {
+            event,
+            delivery_results,
+        };
+        if let Ok(record_json) = serde_json::to_string(&record) {
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&events_path)
+            {
+                let _ = writeln!(f, "{record_json}");
+            }
+        }
+    }
+}
+
 /// Stream bytes from a child process output pipe to an individual log file and
 /// to the shared `full.log`.
 ///
@@ -515,16 +681,21 @@ fn load_env_file(path: &str) -> Result<Vec<(String, String)>> {
 /// formatted line is written to `full.log`.  Any remaining bytes at EOF are
 /// flushed as a final line.
 ///
+/// The optional `on_line` callback is invoked for each complete line (without
+/// the trailing newline) and is used to drive output-match checking.
+///
 /// This helper is used by both the stdout and stderr monitoring threads inside
 /// [`supervise`], replacing the previously duplicated per-stream implementations.
 /// Buffer size (8192 bytes) and newline-split logic are preserved unchanged.
-fn stream_to_logs<R>(
+fn stream_to_logs<R, F>(
     stream: R,
     log_path: &std::path::Path,
     full_log: std::sync::Arc<std::sync::Mutex<std::fs::File>>,
     label: &str,
+    on_line: Option<F>,
 ) where
     R: std::io::Read,
+    F: Fn(&str),
 {
     use std::io::Write;
     let mut log_file = std::fs::File::create(log_path).expect("create stream log file in thread");
@@ -547,6 +718,9 @@ fn stream_to_logs<R>(
                             let ts = now_rfc3339();
                             let _ = writeln!(fl, "{ts} [{label}] {line}");
                         }
+                        if let Some(ref f) = on_line {
+                            f(&line);
+                        }
                         line_buf.clear();
                     } else {
                         line_buf.push(b);
@@ -556,12 +730,15 @@ fn stream_to_logs<R>(
             Err(_) => break,
         }
     }
-    // Flush any remaining incomplete line to full.log.
+    // Flush any remaining incomplete line to full.log and trigger callback.
     if !line_buf.is_empty() {
         let line = String::from_utf8_lossy(&line_buf);
         if let Ok(mut fl) = full_log.lock() {
             let ts = now_rfc3339();
             let _ = writeln!(fl, "{ts} [{label}] {line}");
+        }
+        if let Some(ref f) = on_line {
+            f(&line);
         }
     }
 }
@@ -757,6 +934,7 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
                             job_id,
                             &fail_event_path,
                             &opts.shell_wrapper,
+                            "job.finished",
                         ));
                     }
                     if let Some(ref file_path) = opts.notify_file {
@@ -821,18 +999,39 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
     let child_stdout = child.stdout.take().expect("child stdout piped");
     let child_stderr = child.stderr.take().expect("child stderr piped");
 
+    // Create shared output-match checker from the initial meta notification config.
+    let match_checker = std::sync::Arc::new(OutputMatchChecker::new(
+        job_dir.path.clone(),
+        opts.shell_wrapper.clone(),
+        meta.notification.clone(),
+    ));
+
     // Thread: read stdout, write to stdout.log and full.log.
     let stdout_log_path = job_dir.stdout_path();
     let full_log_stdout = Arc::clone(&full_log);
+    let match_checker_stdout = std::sync::Arc::clone(&match_checker);
     let t_stdout = std::thread::spawn(move || {
-        stream_to_logs(child_stdout, &stdout_log_path, full_log_stdout, "STDOUT");
+        stream_to_logs(
+            child_stdout,
+            &stdout_log_path,
+            full_log_stdout,
+            "STDOUT",
+            Some(move |line: &str| match_checker_stdout.check_line(line, "stdout")),
+        );
     });
 
     // Thread: read stderr, write to stderr.log and full.log.
     let stderr_log_path = job_dir.stderr_path();
     let full_log_stderr = Arc::clone(&full_log);
+    let match_checker_stderr = std::sync::Arc::clone(&match_checker);
     let t_stderr = std::thread::spawn(move || {
-        stream_to_logs(child_stderr, &stderr_log_path, full_log_stderr, "STDERR");
+        stream_to_logs(
+            child_stderr,
+            &stderr_log_path,
+            full_log_stderr,
+            "STDERR",
+            Some(move |line: &str| match_checker_stderr.check_line(line, "stderr")),
+        );
     });
 
     // Timeout / kill-after / progress-every handling.
@@ -1030,6 +1229,7 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
                 job_id,
                 &event_path,
                 &opts.shell_wrapper,
+                "job.finished",
             ));
         }
         if let Some(ref file_path) = current_notify_file {
@@ -1062,6 +1262,7 @@ fn dispatch_command_sink(
     job_id: &str,
     event_path: &str,
     shell_wrapper: &[String],
+    event_type: &str,
 ) -> crate::schema::SinkDeliveryResult {
     use std::io::Write;
     let attempted_at = now_rfc3339();
@@ -1092,7 +1293,7 @@ fn dispatch_command_sink(
 
     cmd.env("AGENT_EXEC_EVENT_PATH", event_path);
     cmd.env("AGENT_EXEC_JOB_ID", job_id);
-    cmd.env("AGENT_EXEC_EVENT_TYPE", "job.finished");
+    cmd.env("AGENT_EXEC_EVENT_TYPE", event_type);
     cmd.stdin(std::process::Stdio::piped());
     cmd.stdout(std::process::Stdio::null());
     cmd.stderr(std::process::Stdio::null());

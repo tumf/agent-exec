@@ -160,36 +160,67 @@ agent-exec kill [--signal TERM|INT|KILL] <JOB_ID>
 agent-exec list [--state running|exited|killed|failed] [--limit N]
 ```
 
-### `notify set` — update completion notification
+### `notify set` — update notification configuration
 
 ```bash
-agent-exec notify set <JOB_ID> --command <COMMAND>
+agent-exec notify set <JOB_ID> [--command <COMMAND>] \
+  [--output-pattern <PATTERN>] [--output-match-type contains|regex] \
+  [--output-stream stdout|stderr|either] \
+  [--output-command <COMMAND>] [--output-file <PATH>]
 ```
 
-Updates the persisted `notify_command` for an existing job. This is a **metadata-only** operation: it rewrites `meta.json` and does not immediately execute the command, even when the target job is already in a terminal state.
+Updates the persisted notification configuration for an existing job. This is a **metadata-only** operation: it rewrites `meta.json` and never executes sinks immediately, even when the target job is already in a terminal state.
 
-| Argument / Flag | Description |
-|-----------------|-------------|
-| `<JOB_ID>` | Job identifier. |
-| `--command <COMMAND>` | Shell command string to store as the new `notify_command`. |
+**Completion notification flags:**
+
+| Flag | Description |
+|------|-------------|
+| `--command <COMMAND>` | Shell command string for the `job.finished` command sink. |
 | `--root <PATH>` | Override the jobs root directory. |
+
+**Output-match notification flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--output-pattern <PATTERN>` | — | Pattern to match against newly observed stdout/stderr lines. Required to enable output-match notifications. |
+| `--output-match-type <TYPE>` | `contains` | `contains` for substring matching; `regex` for Rust regex syntax. |
+| `--output-stream <STREAM>` | `either` | `stdout`, `stderr`, or `either` — which stream is eligible for matching. |
+| `--output-command <COMMAND>` | — | Shell command string executed on every match; event JSON is sent on stdin. |
+| `--output-file <PATH>` | — | File that receives one NDJSON `job.output.matched` event per match. |
 
 **Behavior**
 
-- Replaces the existing `notify_command` with the new value.
-- Preserves any existing `notify_file` configuration.
-- If the job has no prior notification block, a new one is created with `notify_command` set.
-- If called before the job reaches a terminal state, the updated command will be used when the job eventually finishes.
+- All flags are optional; unspecified fields are preserved from the existing configuration.
+- `--command` replaces the existing `notify_command`; `notify_file` is always preserved.
+- Output-match configuration is stored under `meta.json.notification.on_output_match`.
+- Once saved, output-match settings apply only to **future** lines observed by the running supervisor — prior output is never replayed.
+- Calling `notify set` on a terminal job succeeds without executing any sink.
 - A missing job returns a JSON error with `error.code = "job_not_found"`.
 
-**Example**
+**Example — completion notification**
 
 ```bash
-# Start a job without a notification hook.
 JOB=$(agent-exec run --snapshot-after 0 -- sleep 5 | jq -r .job_id)
-
-# Add a notification command before the job finishes.
 agent-exec notify set "$JOB" --command 'cat > /tmp/event.json'
+```
+
+**Example — output-match notification**
+
+```bash
+# Run a job that may print error lines.
+JOB=$(agent-exec run --snapshot-after 0 -- sh -c 'sleep 1; echo ERROR foo' | jq -r .job_id)
+
+# Configure output-match: fire on every line containing "ERROR".
+agent-exec notify set "$JOB" \
+  --output-pattern 'ERROR' \
+  --output-command 'cat >> /tmp/matches.ndjson'
+
+# Or use a regex pattern targeting only stderr:
+agent-exec notify set "$JOB" \
+  --output-pattern '^ERR' \
+  --output-match-type regex \
+  --output-stream stderr \
+  --output-file /tmp/stderr_matches.ndjson
 ```
 
 ### `gc` — garbage collect old job data
@@ -379,9 +410,9 @@ A separate worker can tail or batch-process the NDJSON file, retry failed downst
 
 For command sinks, the event JSON is written to stdin and these environment variables are set:
 
-- `AGENT_EXEC_EVENT_PATH`: path to the persisted `completion_event.json`
-- `AGENT_EXEC_JOB_ID`: finished job id
-- `AGENT_EXEC_EVENT_TYPE`: currently `job.finished`
+- `AGENT_EXEC_EVENT_PATH`: path to the persisted event file (`completion_event.json` for `job.finished`, `notification_events.ndjson` for `job.output.matched`)
+- `AGENT_EXEC_JOB_ID`: job id
+- `AGENT_EXEC_EVENT_TYPE`: `job.finished` or `job.output.matched`
 
 Example `job.finished` payload:
 
@@ -403,6 +434,36 @@ Example `job.finished` payload:
 ```
 
 If the job is killed by a signal, `state` becomes `killed`, `exit_code` may be absent, and `signal` is populated when available.
+
+## Output-Match Events
+
+When a job has output-match notification configuration (set via `notify set --output-pattern`), the running supervisor evaluates each newly observed stdout/stderr line and emits a `job.output.matched` event for every line that matches.
+
+**Key properties:**
+
+- Delivery fires on **every matching line**, not once per job.
+- Only **future** lines are eligible — output produced before `notify set` was called is never replayed.
+- Sink failures are recorded in `notification_events.ndjson` and do not affect the job lifecycle state.
+- Matching uses either `contains` (substring) or `regex` (Rust regex syntax) as configured by `--output-match-type`.
+- Stream selection (`--output-stream`) restricts matching to `stdout`, `stderr`, or `either`.
+
+Example `job.output.matched` payload:
+
+```json
+{
+  "schema_version": "0.1",
+  "event_type": "job.output.matched",
+  "job_id": "01J...",
+  "pattern": "ERROR",
+  "match_type": "contains",
+  "stream": "stdout",
+  "line": "ERROR: connection refused",
+  "stdout_log_path": "/jobs/01J.../stdout.log",
+  "stderr_log_path": "/jobs/01J.../stderr.log"
+}
+```
+
+Delivery records for output-match events are appended to `notification_events.ndjson` in the job directory (one JSON object per line). The `completion_event.json` file retains only `job.finished` delivery results.
 
 ## Logging
 

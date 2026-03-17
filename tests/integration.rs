@@ -3203,3 +3203,622 @@ fn subcommand_root_flag_compat_gc() {
     let v = run_cmd_with_subcommand_root_flag("gc", &root, &["--dry-run"]);
     assert_gc_envelope(&v, true);
 }
+
+// ── notify set output-match ─────────────────────────────────────────────────
+
+/// notify set: saves output-match configuration and returns it in the response.
+#[test]
+fn notify_set_saves_output_match_config() {
+    let h = TestHarness::new();
+
+    let v = h.run(&["run", "--snapshot-after", "0", "--", "echo", "hello"]);
+    assert_envelope(&v, "run", true);
+    let job_id = v["job_id"].as_str().expect("job_id").to_string();
+
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    let set_v = h.run(&[
+        "notify",
+        "set",
+        &job_id,
+        "--output-pattern",
+        "ERROR",
+        "--output-command",
+        "cat >/dev/null",
+    ]);
+    assert_envelope(&set_v, "notify.set", true);
+    assert_eq!(
+        set_v["notification"]["on_output_match"]["pattern"]
+            .as_str()
+            .unwrap_or(""),
+        "ERROR",
+        "on_output_match.pattern must be saved"
+    );
+    assert_eq!(
+        set_v["notification"]["on_output_match"]["match_type"]
+            .as_str()
+            .unwrap_or(""),
+        "contains",
+        "on_output_match.match_type defaults to contains"
+    );
+    assert_eq!(
+        set_v["notification"]["on_output_match"]["stream"]
+            .as_str()
+            .unwrap_or(""),
+        "either",
+        "on_output_match.stream defaults to either"
+    );
+
+    // Verify meta.json on disk.
+    let meta_path = std::path::Path::new(h.root())
+        .join(&job_id)
+        .join("meta.json");
+    let meta_raw = std::fs::read_to_string(&meta_path).expect("read meta.json");
+    let meta: serde_json::Value = serde_json::from_str(&meta_raw).expect("parse meta.json");
+    assert_eq!(
+        meta["notification"]["on_output_match"]["pattern"]
+            .as_str()
+            .unwrap_or(""),
+        "ERROR",
+        "meta.json on_output_match.pattern must be persisted"
+    );
+}
+
+/// notify set: output-match on terminal job does not trigger delivery.
+#[test]
+fn notify_set_output_match_terminal_job_no_delivery() {
+    let h = TestHarness::new();
+    let tmp_dir = tempfile::tempdir().expect("tempdir");
+    let marker = tmp_dir.path().join("executed.txt");
+    let marker_str = marker.to_str().unwrap();
+
+    // Run a job and wait for it to finish.
+    let v = h.run(&["run", "--wait", "--", "echo", "done"]);
+    assert_envelope(&v, "run", true);
+    let job_id = v["job_id"].as_str().expect("job_id").to_string();
+
+    let hook_cmd = format!("touch {marker_str}");
+    let set_v = h.run(&[
+        "notify",
+        "set",
+        &job_id,
+        "--output-pattern",
+        "done",
+        "--output-command",
+        &hook_cmd,
+    ]);
+    assert_envelope(&set_v, "notify.set", true);
+
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(
+        !marker.exists(),
+        "notify set on terminal job must not execute output-match command"
+    );
+}
+
+/// notify set: --command and output-match options can be set together (preserving both).
+#[test]
+fn notify_set_completion_and_output_match_coexist() {
+    let h = TestHarness::new();
+
+    let v = h.run(&["run", "--snapshot-after", "0", "--", "echo", "hello"]);
+    assert_envelope(&v, "run", true);
+    let job_id = v["job_id"].as_str().expect("job_id").to_string();
+
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    let set_v = h.run(&[
+        "notify",
+        "set",
+        &job_id,
+        "--command",
+        "cat >/dev/null",
+        "--output-pattern",
+        "ERROR",
+    ]);
+    assert_envelope(&set_v, "notify.set", true);
+
+    assert!(
+        set_v["notification"]["notify_command"].as_str().is_some(),
+        "notify_command must be present"
+    );
+    assert!(
+        set_v["notification"]["on_output_match"]["pattern"]
+            .as_str()
+            .is_some(),
+        "on_output_match must be present"
+    );
+}
+
+/// notify set: missing job returns job_not_found for output-match updates.
+#[test]
+fn notify_set_output_match_missing_job_returns_job_not_found() {
+    let h = TestHarness::new();
+
+    let v = h.run(&[
+        "notify",
+        "set",
+        "NONEXISTENT-JOB",
+        "--output-pattern",
+        "ERROR",
+        "--output-command",
+        "cat >/dev/null",
+    ]);
+    assert_envelope(&v, "error", false);
+    assert_eq!(
+        v["error"]["code"].as_str().unwrap_or(""),
+        "job_not_found",
+        "error.code must be job_not_found"
+    );
+}
+
+/// notify set: --output-pattern with --output-match-type regex is accepted.
+#[test]
+fn notify_set_output_match_regex_type() {
+    let h = TestHarness::new();
+
+    let v = h.run(&["run", "--snapshot-after", "0", "--", "echo", "hello"]);
+    assert_envelope(&v, "run", true);
+    let job_id = v["job_id"].as_str().expect("job_id").to_string();
+
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    let set_v = h.run(&[
+        "notify",
+        "set",
+        &job_id,
+        "--output-pattern",
+        "ERR.*",
+        "--output-match-type",
+        "regex",
+        "--output-stream",
+        "stderr",
+    ]);
+    assert_envelope(&set_v, "notify.set", true);
+    assert_eq!(
+        set_v["notification"]["on_output_match"]["match_type"]
+            .as_str()
+            .unwrap_or(""),
+        "regex",
+    );
+    assert_eq!(
+        set_v["notification"]["on_output_match"]["stream"]
+            .as_str()
+            .unwrap_or(""),
+        "stderr",
+    );
+}
+
+/// Output-match with command sink: matching stdout line triggers job.output.matched delivery.
+#[test]
+fn output_match_command_sink_fires_on_matching_line() {
+    let h = TestHarness::new();
+    let tmp_dir = tempfile::tempdir().expect("tempdir");
+    let captured = tmp_dir.path().join("match.json");
+    let captured_str = captured.to_str().unwrap();
+
+    // Run a job that sleeps briefly, then prints the matching line.
+    let v = h.run(&[
+        "run",
+        "--snapshot-after",
+        "0",
+        "--",
+        "sh",
+        "-c",
+        "sleep 0.3; echo ERROR_LINE",
+    ]);
+    assert_envelope(&v, "run", true);
+    let job_id = v["job_id"].as_str().expect("job_id").to_string();
+
+    // Set output-match config before the ERROR_LINE is printed.
+    let hook_cmd = format!("cat > {captured_str}");
+    let set_v = h.run(&[
+        "notify",
+        "set",
+        &job_id,
+        "--output-pattern",
+        "ERROR_LINE",
+        "--output-command",
+        &hook_cmd,
+    ]);
+    assert_envelope(&set_v, "notify.set", true);
+
+    // Wait long enough for the job to finish and deliver.
+    std::thread::sleep(std::time::Duration::from_millis(2000));
+
+    assert!(
+        captured.exists(),
+        "output-match command sink must have been executed"
+    );
+    let content = std::fs::read_to_string(&captured).expect("read captured");
+    let event: serde_json::Value =
+        serde_json::from_str(content.trim()).expect("captured content must be valid JSON");
+    assert_eq!(
+        event["event_type"].as_str().unwrap_or(""),
+        "job.output.matched",
+        "event_type must be job.output.matched"
+    );
+    assert_eq!(
+        event["job_id"].as_str().unwrap_or(""),
+        job_id,
+        "event job_id must match"
+    );
+    assert_eq!(
+        event["pattern"].as_str().unwrap_or(""),
+        "ERROR_LINE",
+        "event pattern must match configured pattern"
+    );
+    assert_eq!(
+        event["stream"].as_str().unwrap_or(""),
+        "stdout",
+        "event stream must be stdout"
+    );
+}
+
+/// Output-match with file sink: each matching line appends one NDJSON line.
+#[test]
+fn output_match_file_sink_appends_per_match() {
+    let h = TestHarness::new();
+    let tmp_dir = tempfile::tempdir().expect("tempdir");
+    let events_file = tmp_dir.path().join("output_events.ndjson");
+    let events_file_str = events_file.to_str().unwrap();
+
+    // Job prints two matching lines.
+    let v = h.run(&[
+        "run",
+        "--snapshot-after",
+        "0",
+        "--",
+        "sh",
+        "-c",
+        "sleep 0.2; echo MATCH_ONE; echo MATCH_TWO",
+    ]);
+    assert_envelope(&v, "run", true);
+    let job_id = v["job_id"].as_str().expect("job_id").to_string();
+
+    let set_v = h.run(&[
+        "notify",
+        "set",
+        &job_id,
+        "--output-pattern",
+        "MATCH_",
+        "--output-file",
+        events_file_str,
+    ]);
+    assert_envelope(&set_v, "notify.set", true);
+
+    // Wait for both lines to be matched and delivered.
+    std::thread::sleep(std::time::Duration::from_millis(2500));
+
+    assert!(
+        events_file.exists(),
+        "output-match file sink must have been created"
+    );
+    let content = std::fs::read_to_string(&events_file).expect("read events file");
+    let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(lines.len(), 2, "must have exactly two NDJSON lines (one per match)");
+
+    for line in &lines {
+        let ev: serde_json::Value = serde_json::from_str(line).expect("each line must be JSON");
+        assert_eq!(
+            ev["event_type"].as_str().unwrap_or(""),
+            "job.output.matched"
+        );
+        assert_eq!(ev["job_id"].as_str().unwrap_or(""), job_id);
+    }
+}
+
+/// Output-match: pre-existing output is not replayed when notify set is called after job start.
+#[test]
+fn output_match_no_replay_of_pre_existing_output() {
+    let h = TestHarness::new();
+    let tmp_dir = tempfile::tempdir().expect("tempdir");
+    let marker = tmp_dir.path().join("replayed.txt");
+    let marker_str = marker.to_str().unwrap();
+
+    // Run a job that prints "MATCH_EARLY" before we can set output-match config.
+    let v = h.run(&[
+        "run",
+        "--snapshot-after",
+        "0",
+        "--",
+        "sh",
+        "-c",
+        "echo MATCH_EARLY; sleep 2",
+    ]);
+    assert_envelope(&v, "run", true);
+    let job_id = v["job_id"].as_str().expect("job_id").to_string();
+
+    // Wait to ensure "MATCH_EARLY" has been printed.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    // Now set output-match config; "MATCH_EARLY" has already been written.
+    let hook_cmd = format!("touch {marker_str}");
+    let set_v = h.run(&[
+        "notify",
+        "set",
+        &job_id,
+        "--output-pattern",
+        "MATCH_EARLY",
+        "--output-command",
+        &hook_cmd,
+    ]);
+    assert_envelope(&set_v, "notify.set", true);
+
+    // Wait briefly; the hook must not fire because the line was already past.
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    assert!(
+        !marker.exists(),
+        "output-match must not replay pre-existing output"
+    );
+}
+
+/// Output-match sink failure: job lifecycle state remains unchanged.
+#[test]
+fn output_match_sink_failure_does_not_change_job_state() {
+    let h = TestHarness::new();
+
+    // Run a job that prints a matching line.
+    let v = h.run(&[
+        "run",
+        "--snapshot-after",
+        "0",
+        "--",
+        "sh",
+        "-c",
+        "sleep 0.2; echo TRIGGER",
+    ]);
+    assert_envelope(&v, "run", true);
+    let job_id = v["job_id"].as_str().expect("job_id").to_string();
+
+    // Set a command sink that always fails.
+    let set_v = h.run(&[
+        "notify",
+        "set",
+        &job_id,
+        "--output-pattern",
+        "TRIGGER",
+        "--output-command",
+        "exit 1",
+    ]);
+    assert_envelope(&set_v, "notify.set", true);
+
+    // Wait for the job to finish.
+    std::thread::sleep(std::time::Duration::from_millis(2000));
+
+    // Job state must be "exited" (not "failed") despite sink failure.
+    let status_v = h.run(&["status", &job_id]);
+    assert_envelope(&status_v, "status", true);
+    assert_eq!(
+        status_v["state"].as_str().unwrap_or(""),
+        "exited",
+        "job state must be exited even when output-match sink fails"
+    );
+}
+
+/// Output-match: notification_events.ndjson is created for each match.
+#[test]
+fn output_match_notification_events_ndjson_written() {
+    let h = TestHarness::new();
+    let tmp_dir = tempfile::tempdir().expect("tempdir");
+    let events_file = tmp_dir.path().join("output_events.ndjson");
+    let events_file_str = events_file.to_str().unwrap();
+
+    let v = h.run(&[
+        "run",
+        "--snapshot-after",
+        "0",
+        "--",
+        "sh",
+        "-c",
+        "sleep 0.2; echo RECORD_ME",
+    ]);
+    assert_envelope(&v, "run", true);
+    let job_id = v["job_id"].as_str().expect("job_id").to_string();
+
+    let set_v = h.run(&[
+        "notify",
+        "set",
+        &job_id,
+        "--output-pattern",
+        "RECORD_ME",
+        "--output-file",
+        events_file_str,
+    ]);
+    assert_envelope(&set_v, "notify.set", true);
+
+    std::thread::sleep(std::time::Duration::from_millis(2000));
+
+    // Check that notification_events.ndjson was written in the job dir.
+    let notif_events = std::path::Path::new(h.root())
+        .join(&job_id)
+        .join("notification_events.ndjson");
+    assert!(
+        notif_events.exists(),
+        "notification_events.ndjson must be created in job dir"
+    );
+    let content = std::fs::read_to_string(&notif_events).expect("read notification_events.ndjson");
+    assert!(
+        !content.trim().is_empty(),
+        "notification_events.ndjson must contain at least one record"
+    );
+    let record: serde_json::Value =
+        serde_json::from_str(content.lines().next().unwrap_or("{}"))
+            .expect("first line must be JSON");
+    assert_eq!(
+        record["event_type"].as_str().unwrap_or(""),
+        "job.output.matched"
+    );
+}
+
+/// Output-match with --output-match-type regex: matching by regex pattern.
+#[test]
+fn output_match_regex_pattern_fires_on_match() {
+    let h = TestHarness::new();
+    let tmp_dir = tempfile::tempdir().expect("tempdir");
+    let events_file = tmp_dir.path().join("regex_events.ndjson");
+    let events_file_str = events_file.to_str().unwrap();
+
+    let v = h.run(&[
+        "run",
+        "--snapshot-after",
+        "0",
+        "--",
+        "sh",
+        "-c",
+        "sleep 0.2; echo ERR123; echo INFO456",
+    ]);
+    assert_envelope(&v, "run", true);
+    let job_id = v["job_id"].as_str().expect("job_id").to_string();
+
+    let set_v = h.run(&[
+        "notify",
+        "set",
+        &job_id,
+        "--output-pattern",
+        "^ERR",
+        "--output-match-type",
+        "regex",
+        "--output-file",
+        events_file_str,
+    ]);
+    assert_envelope(&set_v, "notify.set", true);
+
+    std::thread::sleep(std::time::Duration::from_millis(2500));
+
+    assert!(
+        events_file.exists(),
+        "regex match must have triggered file sink"
+    );
+    let content = std::fs::read_to_string(&events_file).expect("read regex events file");
+    let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+    // Only ERR123 should match ^ERR; INFO456 must not.
+    assert_eq!(lines.len(), 1, "only ERR123 must match ^ERR regex");
+    let ev: serde_json::Value = serde_json::from_str(lines[0]).expect("line must be JSON");
+    assert_eq!(ev["event_type"].as_str().unwrap_or(""), "job.output.matched");
+    assert_eq!(ev["line"].as_str().unwrap_or(""), "ERR123");
+}
+
+/// Output-match with --output-stream stderr: only stderr lines trigger delivery.
+#[test]
+fn output_match_stream_stderr_only() {
+    let h = TestHarness::new();
+    let tmp_dir = tempfile::tempdir().expect("tempdir");
+    let events_file = tmp_dir.path().join("stderr_events.ndjson");
+    let events_file_str = events_file.to_str().unwrap();
+
+    // Print "MATCH" to both stdout and stderr.
+    let v = h.run(&[
+        "run",
+        "--snapshot-after",
+        "0",
+        "--",
+        "sh",
+        "-c",
+        "sleep 0.2; echo MATCH; echo MATCH >&2",
+    ]);
+    assert_envelope(&v, "run", true);
+    let job_id = v["job_id"].as_str().expect("job_id").to_string();
+
+    let set_v = h.run(&[
+        "notify",
+        "set",
+        &job_id,
+        "--output-pattern",
+        "MATCH",
+        "--output-stream",
+        "stderr",
+        "--output-file",
+        events_file_str,
+    ]);
+    assert_envelope(&set_v, "notify.set", true);
+
+    std::thread::sleep(std::time::Duration::from_millis(2500));
+
+    assert!(
+        events_file.exists(),
+        "stderr match must have triggered file sink"
+    );
+    let content = std::fs::read_to_string(&events_file).expect("read stderr events file");
+    let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(
+        lines.len(),
+        1,
+        "only the stderr MATCH must be recorded (stdout MATCH must be ignored)"
+    );
+    let ev: serde_json::Value = serde_json::from_str(lines[0]).expect("line must be JSON");
+    assert_eq!(ev["stream"].as_str().unwrap_or(""), "stderr");
+}
+
+/// Output-match: `notify set` configured immediately before a near-future (~50 ms)
+/// matching line must trigger delivery even when the supervisor's last config
+/// reload occurred within the same 100 ms window.
+///
+/// Regression: prior to per-line reload, a 100 ms throttle on `meta.json` reads
+/// could suppress a `notify set` update so that a matching line arriving less
+/// than 100 ms later was silently missed.
+#[test]
+fn output_match_near_future_line_triggers_delivery() {
+    let h = TestHarness::new();
+    let tmp_dir = tempfile::tempdir().expect("tempdir");
+    let events_file = tmp_dir.path().join("near_future_events.ndjson");
+    let events_file_str = events_file.to_str().unwrap();
+
+    // The job prints 8 non-matching heartbeat lines at 50 ms intervals to keep
+    // the OutputMatchChecker's last reload close to "now", then prints the target
+    // line ~50 ms after the last heartbeat.  We call `notify set` after the 8th
+    // heartbeat so the config update must be picked up for the very next line.
+    let v = h.run(&[
+        "run",
+        "--snapshot-after",
+        "0",
+        "--",
+        "sh",
+        "-c",
+        "for i in $(seq 1 8); do echo heartbeat_$i; sleep 0.05; done; echo CLOSE_CALL_MATCH",
+    ]);
+    assert_envelope(&v, "run", true);
+    let job_id = v["job_id"].as_str().expect("job_id").to_string();
+
+    // Wait until after the 8th heartbeat (~400 ms) so the checker has recently
+    // reloaded, then configure output-match ~50 ms before CLOSE_CALL_MATCH.
+    std::thread::sleep(std::time::Duration::from_millis(420));
+
+    let set_v = h.run(&[
+        "notify",
+        "set",
+        &job_id,
+        "--output-pattern",
+        "CLOSE_CALL_MATCH",
+        "--output-file",
+        events_file_str,
+    ]);
+    assert_envelope(&set_v, "notify.set", true);
+
+    // Wait long enough for the job to finish and delivery to complete.
+    std::thread::sleep(std::time::Duration::from_millis(2000));
+
+    assert!(
+        events_file.exists(),
+        "output-match file sink must have been written: per-line reload must make \
+         the notify set update visible even when the matching line arrives <100 ms after it"
+    );
+    let content = std::fs::read_to_string(&events_file).expect("read near_future_events");
+    let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(
+        lines.len(),
+        1,
+        "exactly one match must be recorded for CLOSE_CALL_MATCH"
+    );
+    let ev: serde_json::Value = serde_json::from_str(lines[0]).expect("line must be JSON");
+    assert_eq!(
+        ev["event_type"].as_str().unwrap_or(""),
+        "job.output.matched",
+        "event_type must be job.output.matched"
+    );
+    assert_eq!(
+        ev["line"].as_str().unwrap_or(""),
+        "CLOSE_CALL_MATCH",
+        "line field must contain the matched output line"
+    );
+}
