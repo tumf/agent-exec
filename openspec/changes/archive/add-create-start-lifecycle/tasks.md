@@ -1,0 +1,22 @@
+## Implementation Tasks
+
+- [x] Add `create` and `start` subcommands in `src/main.rs`, including clear option boundaries between definition-time flags and start-time snapshot/wait flags, and keep `run` as the immediate-start compatibility path (verification: `src/main.rs` defines both subcommands and dispatches them into dedicated handlers without changing the JSON-only stdout boundary).
+- [x] Extend the persisted schema in `src/schema.rs` and job initialization helpers in `src/jobstore.rs` so jobs can be written in `created` state and `meta.json` stores the durable execution definition needed by `start` (`env_vars`, `env_files`, `inherit_env`, timeout settings, notification settings, shell wrapper, and related fields) (verification: `src/schema.rs` models `created` plus the new persisted fields, and `src/jobstore.rs` writes `state.json` / `meta.json` consistent with that model).
+- [x] Refactor execution flow in `src/run.rs` into reusable create/start stages so `create` persists job definitions without spawning, `start` launches only `created` jobs, and `run` remains the immediate-start wrapper (verification: `src/run.rs` contains shared helpers used by `create`, `start`, and `run`, and `start` reads persisted configuration instead of requiring the original CLI arguments).
+- [x] Update lifecycle consumers in `src/status.rs`, `src/wait.rs`, `src/kill.rs`, `src/list.rs`, and any related JSON payload types so `created` jobs are reported consistently and invalid transitions return stable API errors (verification: those modules and response structs explicitly handle `created`, `list --state created`, and the chosen non-terminal semantics for `wait`).
+- [x] Expand contract coverage in `tests/integration.rs` for create-only jobs, persisted `--env` / `--env-file` configuration, start-only execution, `run` compatibility, and lifecycle edge cases such as starting non-created jobs or waiting on created jobs (verification: `tests/integration.rs` contains end-to-end cases for `create`, `start`, env persistence, and transition rejection).
+- [x] Update `README.md` and relevant OpenSpec specs to describe the new lifecycle, persisted env semantics, and command examples, then run proposal and repo verification (verification: docs mention `create` / `start`, `python3 "$SKILL_ROOT/scripts/cflx.py" validate add-create-start-lifecycle --strict` succeeds, and implementation-time checks include `cargo test --all`).
+
+## Future Work
+
+- Consider whether a follow-up should add a dedicated `restart` or `rerun` concept instead of overloading `start` with repeat-execution semantics.
+- Consider whether persisted env values should gain stronger opt-in warnings in CLI help now that the contract explicitly treats `--env` as durable non-secret configuration.
+
+## Acceptance #1 Failure Follow-up
+
+- [x] Ensure `create --mask KEY` redacts only response/metadata views while `start` still applies the original persisted `--env KEY=VALUE` value at runtime.
+- [x] Add create/start integration coverage for `--env-file` deferred loading semantics and for masked env runtime behavior so task claims remain truthful.
+
+## Acceptance #2 Failure Follow-up
+
+- [x] Update `create_start_env_file_deferred_loading` to modify the env file after `create` and before `start`, then assert `start --wait` observes the updated value (proves deferred load at start time rather than create time).

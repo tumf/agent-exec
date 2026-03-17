@@ -97,6 +97,235 @@ impl<'a> Default for RunOpts<'a> {
 /// Maximum allowed value for `snapshot_after` in milliseconds (10 seconds).
 const MAX_SNAPSHOT_AFTER_MS: u64 = 10_000;
 
+/// Parameters for spawning a supervisor process.
+///
+/// Shared by `run::execute` and `start::execute`.
+pub struct SpawnSupervisorParams {
+    pub job_id: String,
+    pub root: std::path::PathBuf,
+    pub full_log_path: String,
+    pub timeout_ms: u64,
+    pub kill_after_ms: u64,
+    pub cwd: Option<String>,
+    /// Real (unmasked) KEY=VALUE env var pairs.
+    pub env_vars: Vec<String>,
+    pub env_files: Vec<String>,
+    pub inherit_env: bool,
+    pub progress_every_ms: u64,
+    pub notify_command: Option<String>,
+    pub notify_file: Option<String>,
+    pub shell_wrapper: Vec<String>,
+    pub command: Vec<String>,
+}
+
+/// Spawn the supervisor process and write the initial running state to `state.json`.
+///
+/// Returns the supervisor PID and the actual `started_at` timestamp.
+/// Also handles the Windows Job Object handshake before returning.
+pub fn spawn_supervisor_process(
+    job_dir: &JobDir,
+    params: SpawnSupervisorParams,
+) -> Result<(u32, String)> {
+    let started_at = now_rfc3339();
+
+    let exe = std::env::current_exe().context("resolve current exe")?;
+    let mut supervisor_cmd = Command::new(&exe);
+    supervisor_cmd
+        .arg("_supervise")
+        .arg("--job-id")
+        .arg(&params.job_id)
+        .arg("--supervise-root")
+        .arg(params.root.display().to_string())
+        .arg("--full-log")
+        .arg(&params.full_log_path);
+
+    if params.timeout_ms > 0 {
+        supervisor_cmd
+            .arg("--timeout")
+            .arg(params.timeout_ms.to_string());
+    }
+    if params.kill_after_ms > 0 {
+        supervisor_cmd
+            .arg("--kill-after")
+            .arg(params.kill_after_ms.to_string());
+    }
+    if let Some(ref cwd) = params.cwd {
+        supervisor_cmd.arg("--cwd").arg(cwd);
+    }
+    for env_file in &params.env_files {
+        supervisor_cmd.arg("--env-file").arg(env_file);
+    }
+    for env_var in &params.env_vars {
+        supervisor_cmd.arg("--env").arg(env_var);
+    }
+    if !params.inherit_env {
+        supervisor_cmd.arg("--no-inherit-env");
+    }
+    if params.progress_every_ms > 0 {
+        supervisor_cmd
+            .arg("--progress-every")
+            .arg(params.progress_every_ms.to_string());
+    }
+    if let Some(ref nc) = params.notify_command {
+        supervisor_cmd.arg("--notify-command").arg(nc);
+    }
+    if let Some(ref nf) = params.notify_file {
+        supervisor_cmd.arg("--notify-file").arg(nf);
+    }
+    let wrapper_json =
+        serde_json::to_string(&params.shell_wrapper).context("serialize shell wrapper")?;
+    supervisor_cmd
+        .arg("--shell-wrapper-resolved")
+        .arg(&wrapper_json);
+
+    supervisor_cmd
+        .arg("--")
+        .args(&params.command)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+
+    let supervisor = supervisor_cmd.spawn().context("spawn supervisor")?;
+    let supervisor_pid = supervisor.id();
+    debug!(supervisor_pid, "supervisor spawned");
+
+    // Write initial running state.
+    job_dir.init_state(supervisor_pid, &started_at)?;
+
+    // Windows Job Object handshake.
+    #[cfg(windows)]
+    {
+        let handshake_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            if let Ok(current_state) = job_dir.read_state() {
+                let supervisor_updated = current_state
+                    .pid
+                    .map(|p| p != supervisor_pid)
+                    .unwrap_or(false)
+                    || *current_state.status() == crate::schema::JobStatus::Failed;
+                if supervisor_updated {
+                    if *current_state.status() == crate::schema::JobStatus::Failed {
+                        anyhow::bail!(
+                            "supervisor failed to assign child process to Job Object \
+                             (Windows MUST requirement); see stderr for details"
+                        );
+                    }
+                    debug!("supervisor confirmed Job Object assignment via state.json handshake");
+                    break;
+                }
+            }
+            if std::time::Instant::now() >= handshake_deadline {
+                debug!("supervisor handshake timed out; proceeding with initial state");
+                break;
+            }
+        }
+    }
+
+    Ok((supervisor_pid, started_at))
+}
+
+/// Pre-create empty log files (stdout.log, stderr.log, full.log) so they exist
+/// immediately after job creation, before the supervisor starts writing.
+pub fn pre_create_log_files(job_dir: &JobDir) -> Result<()> {
+    for log_path in [
+        job_dir.stdout_path(),
+        job_dir.stderr_path(),
+        job_dir.full_log_path(),
+    ] {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .with_context(|| format!("pre-create log file {}", log_path.display()))?;
+    }
+    Ok(())
+}
+
+/// Options controlling the snapshot/wait phase after job launch.
+pub struct SnapshotWaitOpts {
+    pub snapshot_after: u64,
+    pub tail_lines: u64,
+    pub max_bytes: u64,
+    pub wait: bool,
+    pub wait_poll_ms: u64,
+}
+
+/// Run the snapshot/wait phase and return (final_state_str, exit_code, finished_at,
+/// snapshot, final_snapshot, waited_ms).
+pub fn run_snapshot_wait(
+    job_dir: &JobDir,
+    opts: &SnapshotWaitOpts,
+) -> (
+    String,
+    Option<i32>,
+    Option<String>,
+    Option<Snapshot>,
+    Option<Snapshot>,
+    u64,
+) {
+    use crate::schema::JobStatus;
+
+    let effective_snapshot_after = if opts.wait {
+        0
+    } else {
+        opts.snapshot_after.min(MAX_SNAPSHOT_AFTER_MS)
+    };
+
+    let wait_start = std::time::Instant::now();
+
+    let snapshot = if effective_snapshot_after > 0 {
+        debug!(ms = effective_snapshot_after, "polling for snapshot");
+        let deadline = wait_start + std::time::Duration::from_millis(effective_snapshot_after);
+        let poll_interval = std::time::Duration::from_millis(15);
+        loop {
+            std::thread::sleep(poll_interval);
+            if let Ok(st) = job_dir.read_state()
+                && !st.status().is_non_terminal()
+            {
+                debug!("snapshot poll: job no longer running/created, exiting early");
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                debug!("snapshot poll: deadline reached");
+                break;
+            }
+        }
+        Some(build_snapshot(job_dir, opts.tail_lines, opts.max_bytes))
+    } else {
+        None
+    };
+
+    let (final_state, exit_code_opt, finished_at_opt, final_snapshot_opt) = if opts.wait {
+        debug!("--wait: polling for terminal state");
+        let poll = std::time::Duration::from_millis(opts.wait_poll_ms.max(1));
+        loop {
+            std::thread::sleep(poll);
+            if let Ok(st) = job_dir.read_state()
+                && !st.status().is_non_terminal()
+            {
+                let snap = build_snapshot(job_dir, opts.tail_lines, opts.max_bytes);
+                let ec = st.exit_code();
+                let fa = st.finished_at.clone();
+                let state_str = st.status().as_str().to_string();
+                break (state_str, ec, fa, Some(snap));
+            }
+        }
+    } else {
+        (JobStatus::Running.as_str().to_string(), None, None, None)
+    };
+
+    let waited_ms = wait_start.elapsed().as_millis() as u64;
+    (
+        final_state,
+        exit_code_opt,
+        finished_at_opt,
+        snapshot,
+        final_snapshot_opt,
+        waited_ms,
+    )
+}
+
 /// Execute `run`: spawn job, possibly wait for snapshot, return JSON.
 pub fn execute(opts: RunOpts) -> Result<()> {
     if opts.command.is_empty() {
@@ -148,9 +377,19 @@ pub fn execute(opts: RunOpts) -> Result<()> {
         root: root.display().to_string(),
         env_keys,
         env_vars: masked_env_vars.clone(),
+        // For `run`, env_vars_runtime is not populated because the supervisor
+        // is spawned immediately with the real values; no deferred start needed.
+        env_vars_runtime: vec![],
         mask: opts.mask.clone(),
         cwd: Some(effective_cwd),
         notification,
+        // Execution-definition fields (used by start if ever applicable).
+        inherit_env: opts.inherit_env,
+        env_files: opts.env_files.clone(),
+        timeout_ms: opts.timeout_ms,
+        kill_after_ms: opts.kill_after_ms,
+        progress_every_ms: opts.progress_every_ms,
+        shell_wrapper: Some(opts.shell_wrapper.clone()),
         tags: tags.clone(),
     };
 
@@ -165,208 +404,46 @@ pub fn execute(opts: RunOpts) -> Result<()> {
     };
 
     // Pre-create empty log files so they exist before the supervisor starts.
-    // This guarantees that `stdout.log`, `stderr.log`, and `full.log` are
-    // present immediately after `run` returns, even if the supervisor has
-    // not yet begun writing.
-    for log_path in [
-        job_dir.stdout_path(),
-        job_dir.stderr_path(),
-        job_dir.full_log_path(),
-    ] {
-        std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)
-            .with_context(|| format!("pre-create log file {}", log_path.display()))?;
-    }
+    pre_create_log_files(&job_dir)?;
 
-    // Spawn the supervisor (same binary, internal `_supervise` sub-command).
-    let exe = std::env::current_exe().context("resolve current exe")?;
-    let mut supervisor_cmd = Command::new(&exe);
-    supervisor_cmd
-        .arg("_supervise")
-        .arg("--job-id")
-        .arg(&job_id)
-        .arg("--supervise-root")
-        .arg(root.display().to_string())
-        .arg("--full-log")
-        .arg(&full_log_path);
-
-    if opts.timeout_ms > 0 {
-        supervisor_cmd
-            .arg("--timeout")
-            .arg(opts.timeout_ms.to_string());
-    }
-    if opts.kill_after_ms > 0 {
-        supervisor_cmd
-            .arg("--kill-after")
-            .arg(opts.kill_after_ms.to_string());
-    }
-    if let Some(cwd) = opts.cwd {
-        supervisor_cmd.arg("--cwd").arg(cwd);
-    }
-    for env_file in &opts.env_files {
-        supervisor_cmd.arg("--env-file").arg(env_file);
-    }
-    for env_var in &opts.env_vars {
-        supervisor_cmd.arg("--env").arg(env_var);
-    }
-    if !opts.inherit_env {
-        supervisor_cmd.arg("--no-inherit-env");
-    }
+    // Spawn the supervisor using the shared helper.
     // Note: masking is handled by `run` (meta.json + JSON response). The supervisor
     // receives the real env var values so the child process can use them as intended.
-    if opts.progress_every_ms > 0 {
-        supervisor_cmd
-            .arg("--progress-every")
-            .arg(opts.progress_every_ms.to_string());
-    }
-    if let Some(ref nc) = opts.notify_command {
-        supervisor_cmd.arg("--notify-command").arg(nc);
-    }
-    if let Some(ref nf) = opts.notify_file {
-        supervisor_cmd.arg("--notify-file").arg(nf);
-    }
-    // Pass the resolved shell wrapper to the supervisor as a JSON array to
-    // preserve argv fidelity (no join/split round-trip).
-    let wrapper_json =
-        serde_json::to_string(&opts.shell_wrapper).context("serialize shell wrapper")?;
-    supervisor_cmd
-        .arg("--shell-wrapper-resolved")
-        .arg(&wrapper_json);
-
-    supervisor_cmd
-        .arg("--")
-        .args(&opts.command)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-
-    let supervisor = supervisor_cmd.spawn().context("spawn supervisor")?;
-
-    let supervisor_pid = supervisor.id();
-    debug!(supervisor_pid, "supervisor spawned");
-
-    // Write initial state with supervisor PID so `status` can track it.
-    // On Windows, this also pre-records the deterministic Job Object name
-    // (AgentExec-{job_id}) so that callers can find it immediately after run returns.
-    job_dir.init_state(supervisor_pid, &created_at)?;
-
-    // On Windows, poll state.json until the supervisor confirms Job Object
-    // assignment (state pid changes to child pid or state changes to "failed").
-    // This handshake ensures `run` can detect Job Object assignment failures
-    // before returning.  We wait up to 5 seconds (500 × 10ms intervals).
-    #[cfg(windows)]
-    {
-        let handshake_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            std::thread::sleep(std::time::Duration::from_millis(10));
-            if let Ok(current_state) = job_dir.read_state() {
-                // Supervisor has updated state once the pid changes from
-                // supervisor_pid to the child pid (success), or state becomes
-                // "failed" (Job Object assignment error).
-                let supervisor_updated = current_state
-                    .pid
-                    .map(|p| p != supervisor_pid)
-                    .unwrap_or(false)
-                    || *current_state.status() == JobStatus::Failed;
-                if supervisor_updated {
-                    if *current_state.status() == JobStatus::Failed {
-                        // Supervisor failed to assign the child to a Job Object
-                        // and has already killed the child and updated state.json.
-                        // Report failure to the caller.
-                        anyhow::bail!(
-                            "supervisor failed to assign child process to Job Object \
-                             (Windows MUST requirement); see stderr for details"
-                        );
-                    }
-                    debug!("supervisor confirmed Job Object assignment via state.json handshake");
-                    break;
-                }
-            }
-            if std::time::Instant::now() >= handshake_deadline {
-                // Supervisor did not confirm within 5 seconds. Proceed with
-                // the initial state (deterministic job name already written).
-                debug!("supervisor handshake timed out; proceeding with initial state");
-                break;
-            }
-        }
-    }
+    let (_supervisor_pid, _started_at) = spawn_supervisor_process(
+        &job_dir,
+        SpawnSupervisorParams {
+            job_id: job_id.clone(),
+            root: root.clone(),
+            full_log_path: full_log_path.clone(),
+            timeout_ms: opts.timeout_ms,
+            kill_after_ms: opts.kill_after_ms,
+            cwd: opts.cwd.map(|s| s.to_string()),
+            env_vars: opts.env_vars.clone(),
+            env_files: opts.env_files.clone(),
+            inherit_env: opts.inherit_env,
+            progress_every_ms: opts.progress_every_ms,
+            notify_command: opts.notify_command.clone(),
+            notify_file: opts.notify_file.clone(),
+            shell_wrapper: opts.shell_wrapper.clone(),
+            command: opts.command.clone(),
+        },
+    )?;
 
     // Compute absolute paths for stdout.log and stderr.log.
     let stdout_log_path = job_dir.stdout_path().display().to_string();
     let stderr_log_path = job_dir.stderr_path().display().to_string();
 
-    // Clamp snapshot_after to MAX_SNAPSHOT_AFTER_MS, but only when --wait is NOT set.
-    // When --wait is set, we skip the snapshot_after phase entirely (the final_snapshot
-    // from the --wait phase replaces it), so the clamp is irrelevant.
-    let effective_snapshot_after = if opts.wait {
-        // Skip the snapshot_after wait when --wait is active; the terminal-state
-        // poll below will produce the definitive final_snapshot.
-        0
-    } else {
-        opts.snapshot_after.min(MAX_SNAPSHOT_AFTER_MS)
-    };
-
-    // Start a single wait_start timer that spans both the snapshot_after phase
-    // and the optional --wait phase so waited_ms reflects total wait time.
-    let wait_start = std::time::Instant::now();
-
-    // Optionally wait for snapshot and measure waited_ms.
-    // Uses a polling loop so we can exit early when output is available
-    // or the job has finished, rather than always sleeping the full duration.
-    let snapshot = if effective_snapshot_after > 0 {
-        debug!(ms = effective_snapshot_after, "polling for snapshot");
-        let deadline = wait_start + std::time::Duration::from_millis(effective_snapshot_after);
-        // Poll interval: 15ms gives good responsiveness without excessive CPU.
-        let poll_interval = std::time::Duration::from_millis(15);
-        loop {
-            std::thread::sleep(poll_interval);
-            // Early exit: job state changed from running (finished or failed).
-            // Output availability alone does NOT cause early exit; we always
-            // wait until the deadline when the job is still running.
-            if let Ok(st) = job_dir.read_state()
-                && *st.status() != JobStatus::Running
-            {
-                debug!("snapshot poll: job no longer running, exiting early");
-                break;
-            }
-            // Exit when deadline is reached.
-            if std::time::Instant::now() >= deadline {
-                debug!("snapshot poll: deadline reached");
-                break;
-            }
-        }
-        let snap = build_snapshot(&job_dir, opts.tail_lines, opts.max_bytes);
-        Some(snap)
-    } else {
-        None
-    };
-
-    // If --wait is set, wait for the job to reach a terminal state.
-    // Unlike snapshot_after, there is no upper bound on wait time.
-    // waited_ms will accumulate the full time spent (snapshot_after + wait phases).
-    let (final_state, exit_code_opt, finished_at_opt, final_snapshot_opt) = if opts.wait {
-        debug!("--wait: polling for terminal state");
-        let poll = std::time::Duration::from_millis(opts.wait_poll_ms.max(1));
-        loop {
-            std::thread::sleep(poll);
-            if let Ok(st) = job_dir.read_state()
-                && *st.status() != JobStatus::Running
-            {
-                let snap = build_snapshot(&job_dir, opts.tail_lines, opts.max_bytes);
-                let ec = st.exit_code();
-                let fa = st.finished_at.clone();
-                let state_str = st.status().as_str().to_string();
-                break (state_str, ec, fa, Some(snap));
-            }
-        }
-    } else {
-        (JobStatus::Running.as_str().to_string(), None, None, None)
-    };
-
-    // waited_ms reflects the total time spent waiting (snapshot_after + --wait phases).
-    let waited_ms = wait_start.elapsed().as_millis() as u64;
+    let (final_state, exit_code_opt, finished_at_opt, snapshot, final_snapshot_opt, waited_ms) =
+        run_snapshot_wait(
+            &job_dir,
+            &SnapshotWaitOpts {
+                snapshot_after: opts.snapshot_after,
+                tail_lines: opts.tail_lines,
+                max_bytes: opts.max_bytes,
+                wait: opts.wait,
+                wait_poll_ms: opts.wait_poll_ms,
+            },
+        );
 
     let elapsed_ms = elapsed_start.elapsed().as_millis() as u64;
 
@@ -473,7 +550,7 @@ pub fn resolve_effective_cwd(cwd_override: Option<&str>) -> String {
 
 /// Mask the values of specified keys in a list of KEY=VALUE strings.
 /// Keys listed in `mask_keys` will have their value replaced with "***".
-fn mask_env_vars(env_vars: &[String], mask_keys: &[String]) -> Vec<String> {
+pub fn mask_env_vars(env_vars: &[String], mask_keys: &[String]) -> Vec<String> {
     if mask_keys.is_empty() {
         return env_vars.to_vec();
     }
@@ -771,9 +848,12 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
 
     let job_dir = JobDir::open(root, job_id)?;
 
-    // Read meta.json to get the started_at timestamp.
+    // Read meta.json for notification config and cwd (used in completion event).
     let meta = job_dir.read_meta()?;
-    let started_at = meta.created_at.clone();
+    // Use the actual execution start time, not meta.created_at.
+    // For `run`, these are nearly identical. For `start`, the job may have
+    // been created long before it was started.
+    let started_at = now_rfc3339();
 
     // Determine full.log path.
     let full_log_path = if let Some(p) = opts.full_log {
@@ -878,7 +958,7 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
                     job: JobStateJob {
                         id: job_id.to_string(),
                         status: JobStatus::Failed,
-                        started_at: started_at.clone(),
+                        started_at: Some(started_at.clone()),
                     },
                     result: JobStateResult {
                         exit_code: None,
@@ -985,7 +1065,7 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
         job: JobStateJob {
             id: job_id.to_string(),
             status: JobStatus::Running,
-            started_at: started_at.clone(),
+            started_at: Some(started_at.clone()),
         },
         result: JobStateResult {
             exit_code: None,
@@ -1169,7 +1249,7 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
         job: JobStateJob {
             id: job_id.to_string(),
             status: terminal_status.clone(),
-            started_at: started_at.clone(),
+            started_at: Some(started_at.clone()),
         },
         result: JobStateResult {
             exit_code,

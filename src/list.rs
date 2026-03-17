@@ -189,11 +189,15 @@ pub fn execute(opts: ListOpts) -> Result<()> {
             ("unknown".to_string(), None, None, None)
         };
 
+        let job_started_at = state_opt
+            .as_ref()
+            .and_then(|s| s.started_at().map(|t| t.to_string()));
         jobs.push(JobSummary {
             job_id: meta.job.id.clone(),
             state: state_str,
             exit_code,
-            started_at: meta.created_at.clone(),
+            created_at: meta.created_at.clone(),
+            started_at: job_started_at,
             finished_at,
             updated_at,
             tags: meta.tags.clone(),

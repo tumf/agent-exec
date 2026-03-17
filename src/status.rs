@@ -29,7 +29,8 @@ pub fn execute(opts: StatusOpts) -> Result<()> {
             job_id: opts.job_id.to_string(),
             state: state.status().as_str().to_string(),
             exit_code: state.exit_code(),
-            started_at: meta.created_at,
+            created_at: meta.created_at,
+            started_at: state.started_at().map(|s| s.to_string()),
             finished_at: state.finished_at,
         },
     );

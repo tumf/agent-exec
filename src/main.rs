@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
-use agent_exec::jobstore::JobNotFound;
+use agent_exec::jobstore::{InvalidJobState, JobNotFound};
 use agent_exec::schema::ErrorResponse;
 use agent_exec::skills::UnknownSourceScheme;
 use agent_exec::tag::InvalidTag;
@@ -44,6 +44,99 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Create a job definition without starting it. Returns JSON with type="create".
+    Create {
+        /// Override jobs root directory.
+        #[arg(long)]
+        root: Option<String>,
+
+        /// Timeout in milliseconds; 0 = no timeout.
+        #[arg(long, default_value = "0")]
+        timeout: u64,
+
+        /// Milliseconds after SIGTERM to send SIGKILL; 0 = immediate SIGKILL on timeout.
+        #[arg(long, default_value = "0")]
+        kill_after: u64,
+
+        /// Working directory for the command.
+        #[arg(long)]
+        cwd: Option<String>,
+
+        /// Set environment variable KEY=VALUE (persisted as durable config; may be repeated).
+        #[arg(long = "env", value_name = "KEY=VALUE")]
+        env_vars: Vec<String>,
+
+        /// Load environment variables from a file (persisted as path reference; may be repeated).
+        #[arg(long = "env-file", value_name = "FILE")]
+        env_files: Vec<String>,
+
+        /// Do not inherit the current process environment at start time.
+        #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue, conflicts_with = "inherit_env")]
+        no_inherit_env: bool,
+
+        /// Inherit the current process environment at start time (default; conflicts with --no-inherit-env).
+        #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue, conflicts_with = "no_inherit_env")]
+        inherit_env: bool,
+
+        /// Mask secret values in JSON output (key name only; may be repeated).
+        #[arg(long = "mask", value_name = "KEY")]
+        mask: Vec<String>,
+
+        /// Interval (ms) at which state.json.updated_at is refreshed; 0 = disabled.
+        #[arg(long, default_value = "0")]
+        progress_every: u64,
+
+        /// Shell command string to run on job completion.
+        #[arg(long, value_name = "COMMAND")]
+        notify_command: Option<String>,
+
+        /// File path that receives one NDJSON `job.finished` event per completed job.
+        #[arg(long, value_name = "PATH")]
+        notify_file: Option<String>,
+
+        /// Path to a config.toml file to load (overrides XDG default).
+        #[arg(long, value_name = "PATH")]
+        config: Option<String>,
+
+        /// Shell wrapper program and flags (e.g. "bash -lc"). Overrides config and built-in default.
+        #[arg(long, value_name = "PROGRAM AND FLAGS")]
+        shell_wrapper: Option<String>,
+
+        /// Command and arguments to run when `start` is called.
+        #[arg(required = true, trailing_var_arg = true)]
+        command: Vec<String>,
+    },
+
+    /// Start a previously created job. Returns JSON with type="start".
+    Start {
+        /// Override jobs root directory.
+        #[arg(long)]
+        root: Option<String>,
+
+        /// Wait N ms before returning (0 = return immediately, default = 10000ms).
+        #[arg(long, default_value = "10000")]
+        snapshot_after: u64,
+
+        /// Number of tail lines to include in snapshot.
+        #[arg(long, default_value = "50")]
+        tail_lines: u64,
+
+        /// Maximum bytes for tail.
+        #[arg(long, default_value = "65536")]
+        max_bytes: u64,
+
+        /// Wait for the job to reach a terminal state before returning.
+        #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue)]
+        wait: bool,
+
+        /// Poll interval in milliseconds while waiting for a terminal state.
+        #[arg(long, default_value = "200")]
+        wait_poll_ms: u64,
+
+        /// Job ID of a previously created job.
+        job_id: String,
+    },
+
     /// Run a command as a background job and return JSON immediately.
     Run {
         /// Wait N ms before returning (0 = return immediately, default = 10000ms).
@@ -200,8 +293,8 @@ enum Command {
         #[arg(long, default_value = "0")]
         limit: u64,
 
-        /// Filter jobs by state: running|exited|killed|failed|unknown.
-        #[arg(long, value_parser = ["running", "exited", "killed", "failed", "unknown"])]
+        /// Filter jobs by state: created|running|exited|killed|failed|unknown.
+        #[arg(long, value_parser = ["created", "running", "exited", "killed", "failed", "unknown"])]
         state: Option<String>,
 
         /// Filter jobs by working directory (conflicts with --all).
@@ -398,6 +491,8 @@ fn main() {
             ErrorResponse::new("unknown_source_scheme", format!("{e:#}"), false).print();
         } else if e.downcast_ref::<InvalidTag>().is_some() {
             ErrorResponse::new("invalid_tag", format!("{e:#}"), false).print();
+        } else if e.downcast_ref::<InvalidJobState>().is_some() {
+            ErrorResponse::new("invalid_state", format!("{e:#}"), false).print();
         } else {
             ErrorResponse::new("internal_error", format!("{e:#}"), false).print();
         }
@@ -408,6 +503,65 @@ fn main() {
 fn run(cli: Cli) -> Result<()> {
     let root = cli.root;
     match cli.command {
+        Command::Create {
+            root,
+            timeout,
+            kill_after,
+            cwd,
+            env_vars,
+            env_files,
+            no_inherit_env,
+            inherit_env: _inherit_env,
+            mask,
+            progress_every,
+            notify_command,
+            notify_file,
+            config,
+            shell_wrapper,
+            command,
+        } => {
+            let should_inherit = !no_inherit_env;
+            let resolved_wrapper = agent_exec::config::resolve_shell_wrapper(
+                shell_wrapper.as_deref(),
+                config.as_deref(),
+            )?;
+            agent_exec::create::execute(agent_exec::create::CreateOpts {
+                command,
+                root: root.as_deref(),
+                timeout_ms: timeout,
+                kill_after_ms: kill_after,
+                cwd: cwd.as_deref(),
+                env_vars,
+                env_files,
+                inherit_env: should_inherit,
+                mask,
+                progress_every_ms: progress_every,
+                notify_command,
+                notify_file,
+                shell_wrapper: resolved_wrapper,
+            })?;
+        }
+
+        Command::Start {
+            root,
+            snapshot_after,
+            tail_lines,
+            max_bytes,
+            wait,
+            wait_poll_ms,
+            job_id,
+        } => {
+            agent_exec::start::execute(agent_exec::start::StartOpts {
+                job_id: &job_id,
+                root: root.as_deref(),
+                snapshot_after,
+                tail_lines,
+                max_bytes,
+                wait,
+                wait_poll_ms,
+            })?;
+        }
+
         Command::Run {
             snapshot_after,
             tail_lines,
