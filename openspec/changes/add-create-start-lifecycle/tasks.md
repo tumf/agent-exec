@@ -16,3 +16,7 @@
 
 - [x] Ensure `create --mask KEY` redacts only response/metadata views while `start` still applies the original persisted `--env KEY=VALUE` value at runtime.
 - [x] Add create/start integration coverage for `--env-file` deferred loading semantics and for masked env runtime behavior so task claims remain truthful.
+
+## Acceptance #2 Failure Follow-up
+
+- [x] Update `create_start_env_file_deferred_loading` to modify the env file after `create` and before `start`, then assert `start --wait` observes the updated value (proves deferred load at start time rather than create time).

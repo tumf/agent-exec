@@ -3000,15 +3000,16 @@ fn wait_on_created_job_polls_until_terminal() {
 
 /// Acceptance #1 follow-up: `create --env-file` persists the file path so that
 /// `start` reads the file at start time (deferred loading).
-/// The env var value must appear in the child process output.
+/// This test proves deferred loading by modifying the env file after `create`
+/// and before `start`, then asserting the updated value (not the original) is observed.
 #[test]
 fn create_start_env_file_deferred_loading() {
     let h = TestHarness::new();
 
-    // Write an env file containing a variable.
+    // Write an env file with an initial value.
     let env_file = tempfile::NamedTempFile::new().unwrap();
     let env_file_path = env_file.path().to_str().unwrap().to_string();
-    std::fs::write(&env_file_path, "DEFERRED_VAR=from_env_file\n").unwrap();
+    std::fs::write(&env_file_path, "DEFERRED_VAR=original_value\n").unwrap();
 
     // Create the job with --env-file; the file path is persisted, not the contents.
     let cv = h.run(&[
@@ -3023,17 +3024,27 @@ fn create_start_env_file_deferred_loading() {
     let job_id = cv["job_id"].as_str().unwrap();
     assert_eq!(cv["state"].as_str().unwrap_or(""), "created");
 
+    // Modify the env file AFTER create and BEFORE start to prove deferred loading.
+    // If env file contents were loaded at create time, the output would still show
+    // "original_value". Deferred loading means `start` reads the file fresh.
+    std::fs::write(&env_file_path, "DEFERRED_VAR=updated_value\n").unwrap();
+
     // Start the job and wait for completion.
     let sv = h.run(&["start", "--wait", job_id]);
     assert_envelope(&sv, "start", true);
     assert_eq!(sv["exit_code"].as_i64().unwrap_or(-1), 0);
 
-    // The env var value loaded from the file must appear in stdout.
+    // The env var value must be the UPDATED value, proving deferred loading at start time.
     let stdout_tail = sv["final_snapshot"]["stdout_tail"].as_str().unwrap_or("");
     assert!(
-        stdout_tail.contains("from_env_file"),
-        "expected env_file value in stdout: {}",
-        sv
+        stdout_tail.contains("updated_value"),
+        "expected updated env_file value 'updated_value' in stdout (got: {})",
+        stdout_tail
+    );
+    assert!(
+        !stdout_tail.contains("original_value"),
+        "expected original value to be absent from stdout (deferred loading should use updated file): {}",
+        stdout_tail
     );
 }
 
