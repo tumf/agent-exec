@@ -96,6 +96,9 @@ impl ErrorResponse {
 pub struct RunData {
     pub job_id: String,
     pub state: String,
+    /// Tags assigned to this job (always present; empty array when none).
+    #[serde(default)]
+    pub tags: Vec<String>,
     /// Environment variables passed to the job, with masked values replaced by "***".
     /// Omitted from JSON when empty.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
@@ -198,6 +201,17 @@ pub struct JobSummary {
     pub finished_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<String>,
+    /// Tags assigned to this job (always present; empty array when none).
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+/// Response for `tag set` command.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TagSetData {
+    pub job_id: String,
+    /// The new deduplicated tag list as persisted to meta.json.
+    pub tags: Vec<String>,
 }
 
 /// Response for `list` command.
@@ -396,6 +410,9 @@ pub struct JobMeta {
     /// Notification configuration (present only when --notify-command or --notify-file was used).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub notification: Option<NotificationConfig>,
+    /// User-defined tags for grouping and filtering. Empty array when none.
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 impl JobMeta {

@@ -14,5 +14,6 @@ pub mod schema;
 pub mod schema_cmd;
 pub mod skills;
 pub mod status;
+pub mod tag;
 pub mod tail;
 pub mod wait;

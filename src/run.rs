@@ -17,6 +17,7 @@ use crate::schema::{
     JobMeta, JobMetaJob, JobState, JobStateJob, JobStateResult, JobStatus, Response, RunData,
     Snapshot,
 };
+use crate::tag::dedup_tags;
 
 /// Options for the `run` sub-command.
 #[derive(Debug)]
@@ -45,6 +46,8 @@ pub struct RunOpts<'a> {
     pub inherit_env: bool,
     /// Keys to mask in JSON output (values replaced with "***").
     pub mask: Vec<String>,
+    /// User-defined tags for this job (deduplicated preserving first-seen order).
+    pub tags: Vec<String>,
     /// Override full.log path; None = use job dir.
     pub log: Option<&'a str>,
     /// Interval (ms) for state.json updated_at refresh; 0 = disabled.
@@ -79,6 +82,7 @@ impl<'a> Default for RunOpts<'a> {
             env_files: vec![],
             inherit_env: true,
             mask: vec![],
+            tags: vec![],
             log: None,
             progress_every_ms: 0,
             wait: false,
@@ -132,6 +136,9 @@ pub fn execute(opts: RunOpts) -> Result<()> {
         None
     };
 
+    // Validate and deduplicate tags (preserving first-seen order).
+    let tags = dedup_tags(opts.tags)?;
+
     let meta = JobMeta {
         job: JobMetaJob { id: job_id.clone() },
         schema_version: crate::schema::SCHEMA_VERSION.to_string(),
@@ -143,6 +150,7 @@ pub fn execute(opts: RunOpts) -> Result<()> {
         mask: opts.mask.clone(),
         cwd: Some(effective_cwd),
         notification,
+        tags: tags.clone(),
     };
 
     let job_dir = JobDir::create(&root, &job_id, &meta)?;
@@ -366,6 +374,7 @@ pub fn execute(opts: RunOpts) -> Result<()> {
         RunData {
             job_id,
             state: final_state,
+            tags,
             // Include masked env_vars in the JSON response so callers can inspect
             // which variables were set (with secret values replaced by "***").
             env_vars: masked_env_vars,

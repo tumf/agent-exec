@@ -9,6 +9,7 @@ use tracing_subscriber::EnvFilter;
 use agent_exec::jobstore::JobNotFound;
 use agent_exec::schema::ErrorResponse;
 use agent_exec::skills::UnknownSourceScheme;
+use agent_exec::tag::InvalidTag;
 
 #[derive(Debug, Parser)]
 #[command(name = "agent-exec")]
@@ -73,6 +74,10 @@ enum Command {
         /// Mask secret values in JSON output (key name only, may be repeated).
         #[arg(long = "mask", value_name = "KEY")]
         mask: Vec<String>,
+
+        /// Assign a tag to this job (may be repeated; duplicates are deduplicated).
+        #[arg(long = "tag", value_name = "TAG")]
+        tags: Vec<String>,
 
         /// Override full.log path.
         #[arg(long)]
@@ -215,6 +220,17 @@ enum Command {
         /// Show all jobs regardless of working directory (conflicts with --cwd).
         #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue, conflicts_with = "cwd")]
         all: bool,
+
+        /// Filter jobs by tag pattern (may be repeated; all patterns must match).
+        /// Supports exact match (e.g. "aaa") and namespace prefix match (e.g. "hoge.*").
+        #[arg(long = "tag", value_name = "PATTERN")]
+        tags: Vec<String>,
+    },
+
+    /// Manage job tags.
+    Tag {
+        #[command(subcommand)]
+        subcommand: TagSubcommand,
     },
 
     /// Install agent skills into .agents/skills/.
@@ -298,6 +314,23 @@ enum Command {
     },
 }
 
+#[derive(Debug, Subcommand)]
+enum TagSubcommand {
+    /// Replace all tags on an existing job.
+    Set {
+        /// Override jobs root directory.
+        #[arg(long)]
+        root: Option<String>,
+
+        /// Job ID.
+        job_id: String,
+
+        /// Tag to assign (may be repeated; replaces all existing tags).
+        #[arg(long = "tag", value_name = "TAG", required = false)]
+        tags: Vec<String>,
+    },
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -321,12 +354,15 @@ fn main() {
         // Distinguish "job not found" from generic internal errors.
         // "job_not_found" is not retryable: the job does not exist.
         // "unknown_source_scheme" is not retryable: the source scheme is invalid.
+        // "invalid_tag" is not retryable: the tag value is malformed.
         // "internal_error" is not retryable by default; a transient I/O error
         // would need its own code+retryable=true if we ever surface it.
         if e.downcast_ref::<JobNotFound>().is_some() {
             ErrorResponse::new("job_not_found", format!("{e:#}"), false).print();
         } else if e.downcast_ref::<UnknownSourceScheme>().is_some() {
             ErrorResponse::new("unknown_source_scheme", format!("{e:#}"), false).print();
+        } else if e.downcast_ref::<InvalidTag>().is_some() {
+            ErrorResponse::new("invalid_tag", format!("{e:#}"), false).print();
         } else {
             ErrorResponse::new("internal_error", format!("{e:#}"), false).print();
         }
@@ -349,6 +385,7 @@ fn run(cli: Cli) -> Result<()> {
             no_inherit_env,
             inherit_env: _inherit_env,
             mask,
+            tags,
             log,
             progress_every,
             wait,
@@ -381,6 +418,7 @@ fn run(cli: Cli) -> Result<()> {
                 env_files,
                 inherit_env: should_inherit,
                 mask,
+                tags,
                 log: log.as_deref(),
                 progress_every_ms: progress_every,
                 wait,
@@ -467,6 +505,7 @@ fn run(cli: Cli) -> Result<()> {
             state,
             cwd,
             all,
+            tags,
         } => {
             agent_exec::list::execute(agent_exec::list::ListOpts {
                 root: root.as_deref(),
@@ -474,6 +513,17 @@ fn run(cli: Cli) -> Result<()> {
                 state: state.as_deref(),
                 cwd: cwd.as_deref(),
                 all,
+                tags,
+            })?;
+        }
+
+        Command::Tag {
+            subcommand: TagSubcommand::Set { root, job_id, tags },
+        } => {
+            agent_exec::tag::execute(agent_exec::tag::TagOpts {
+                root: root.as_deref(),
+                job_id: &job_id,
+                tags,
             })?;
         }
 
