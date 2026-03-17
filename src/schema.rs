@@ -275,6 +275,14 @@ pub struct InstalledSkillSummary {
     pub path: String,
 }
 
+/// Response for `notify set` command.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct NotifySetData {
+    pub job_id: String,
+    /// Updated notification configuration saved to meta.json.
+    pub notification: NotificationConfig,
+}
+
 /// Response for `install-skills` command.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct InstallSkillsData {
@@ -306,6 +314,44 @@ pub struct Snapshot {
 
 // ---------- Notification / completion event models ----------
 
+/// Match type for output-match notification.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum OutputMatchType {
+    #[default]
+    Contains,
+    Regex,
+}
+
+/// Stream selector for output-match notification.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum OutputMatchStream {
+    Stdout,
+    Stderr,
+    #[default]
+    Either,
+}
+
+/// Configuration for output-match notifications.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct OutputMatchConfig {
+    /// Pattern to match against output lines.
+    pub pattern: String,
+    /// Match type: contains (substring) or regex.
+    #[serde(default)]
+    pub match_type: OutputMatchType,
+    /// Which stream to match: stdout, stderr, or either.
+    #[serde(default)]
+    pub stream: OutputMatchStream,
+    /// Shell command string for command sink; executed via platform shell on match.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// File path for NDJSON append sink.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+}
+
 /// Notification configuration persisted in meta.json.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct NotificationConfig {
@@ -315,6 +361,9 @@ pub struct NotificationConfig {
     /// File path for NDJSON append sink.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notify_file: Option<String>,
+    /// Output-match notification configuration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on_output_match: Option<OutputMatchConfig>,
 }
 
 /// The `job.finished` event payload.
@@ -355,6 +404,28 @@ pub struct SinkDeliveryResult {
 pub struct CompletionEventRecord {
     #[serde(flatten)]
     pub event: CompletionEvent,
+    pub delivery_results: Vec<SinkDeliveryResult>,
+}
+
+/// The `job.output.matched` event payload.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct OutputMatchEvent {
+    pub schema_version: String,
+    pub event_type: String,
+    pub job_id: String,
+    pub pattern: String,
+    pub match_type: String,
+    pub stream: String,
+    pub line: String,
+    pub stdout_log_path: String,
+    pub stderr_log_path: String,
+}
+
+/// Delivery record for a single output-match event; appended to `notification_events.ndjson`.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct OutputMatchEventRecord {
+    #[serde(flatten)]
+    pub event: OutputMatchEvent,
     pub delivery_results: Vec<SinkDeliveryResult>,
 }
 

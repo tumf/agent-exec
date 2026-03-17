@@ -75,6 +75,29 @@ agent-exec run \
   sleep 60
 ```
 
+## Global Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--root <PATH>` | XDG default | Override the jobs root directory for all subcommands. Precedence: `--root` > `AGENT_EXEC_ROOT` > `$XDG_DATA_HOME/agent-exec/jobs` > platform default. |
+| `-v` / `-vv` | warn | Increase log verbosity (logs go to stderr). |
+
+The `--root` flag is a **global** option that applies to all job-store subcommands (`run`, `status`, `tail`, `wait`, `kill`, `list`, `gc`). The preferred placement is before the subcommand name:
+
+```bash
+agent-exec --root /tmp/jobs run echo hello
+agent-exec --root /tmp/jobs status <JOB_ID>
+agent-exec --root /tmp/jobs list
+agent-exec --root /tmp/jobs gc --dry-run
+```
+
+For backward compatibility, `--root` is also accepted after the subcommand name (both forms are equivalent):
+
+```bash
+agent-exec run --root /tmp/jobs echo hello
+agent-exec status --root /tmp/jobs <JOB_ID>
+```
+
 ## Commands
 
 ### `run` — start a background job
@@ -177,10 +200,72 @@ agent-exec tag set 01J9ABC123
 
 **Tag format**: dot-separated segments of alphanumeric characters and hyphens (e.g. `ci`, `project.build`, `hoge-fuga.v2`). The `.*` suffix is reserved for list filter patterns and cannot be used as a stored tag.
 
+### `notify set` — update notification configuration
+
+```bash
+agent-exec notify set <JOB_ID> [--command <COMMAND>] \
+  [--output-pattern <PATTERN>] [--output-match-type contains|regex] \
+  [--output-stream stdout|stderr|either] \
+  [--output-command <COMMAND>] [--output-file <PATH>]
+```
+
+Updates the persisted notification configuration for an existing job. This is a **metadata-only** operation: it rewrites `meta.json` and never executes sinks immediately, even when the target job is already in a terminal state.
+
+**Completion notification flags:**
+
+| Flag | Description |
+|------|-------------|
+| `--command <COMMAND>` | Shell command string for the `job.finished` command sink. |
+| `--root <PATH>` | Override the jobs root directory. |
+
+**Output-match notification flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--output-pattern <PATTERN>` | — | Pattern to match against newly observed stdout/stderr lines. Required to enable output-match notifications. |
+| `--output-match-type <TYPE>` | `contains` | `contains` for substring matching; `regex` for Rust regex syntax. |
+| `--output-stream <STREAM>` | `either` | `stdout`, `stderr`, or `either` — which stream is eligible for matching. |
+| `--output-command <COMMAND>` | — | Shell command string executed on every match; event JSON is sent on stdin. |
+| `--output-file <PATH>` | — | File that receives one NDJSON `job.output.matched` event per match. |
+
+**Behavior**
+
+- All flags are optional; unspecified fields are preserved from the existing configuration.
+- `--command` replaces the existing `notify_command`; `notify_file` is always preserved.
+- Output-match configuration is stored under `meta.json.notification.on_output_match`.
+- Once saved, output-match settings apply only to **future** lines observed by the running supervisor — prior output is never replayed.
+- Calling `notify set` on a terminal job succeeds without executing any sink.
+- A missing job returns a JSON error with `error.code = "job_not_found"`.
+
+**Example — completion notification**
+
+```bash
+JOB=$(agent-exec run --snapshot-after 0 -- sleep 5 | jq -r .job_id)
+agent-exec notify set "$JOB" --command 'cat > /tmp/event.json'
+```
+
+**Example — output-match notification**
+
+```bash
+# Run a job that may print error lines.
+JOB=$(agent-exec run --snapshot-after 0 -- sh -c 'sleep 1; echo ERROR foo' | jq -r .job_id)
+
+# Configure output-match: fire on every line containing "ERROR".
+agent-exec notify set "$JOB" \
+  --output-pattern 'ERROR' \
+  --output-command 'cat >> /tmp/matches.ndjson'
+
+# Or use a regex pattern targeting only stderr:
+agent-exec notify set "$JOB" \
+  --output-pattern '^ERR' \
+  --output-match-type regex \
+  --output-stream stderr \
+  --output-file /tmp/stderr_matches.ndjson
+```
 ### `gc` — garbage collect old job data
 
 ```bash
-agent-exec gc [--older-than <DURATION>] [--dry-run] [--root <PATH>]
+agent-exec [--root <PATH>] gc [--older-than <DURATION>] [--dry-run]
 ```
 
 Deletes job directories under the root whose terminal state (`exited`, `killed`, or `failed`) is older than the retention window. Running jobs are never touched.
@@ -189,7 +274,6 @@ Deletes job directories under the root whose terminal state (`exited`, `killed`,
 |------|---------|-------------|
 | `--older-than <DURATION>` | `30d` | Retention window: jobs older than this are eligible for deletion. Supports `30d`, `24h`, `60m`, `3600s`. |
 | `--dry-run` | false | Report candidates without deleting anything. |
-| `--root <PATH>` | XDG default | Override the jobs root directory. |
 
 **Retention semantics**
 
@@ -208,6 +292,9 @@ agent-exec gc --older-than 7d --dry-run
 
 # Delete jobs older than 7 days.
 agent-exec gc --older-than 7d
+
+# Operate on a specific jobs root directory.
+agent-exec --root /tmp/jobs gc --older-than 7d
 ```
 
 **JSON response fields**
@@ -362,9 +449,9 @@ A separate worker can tail or batch-process the NDJSON file, retry failed downst
 
 For command sinks, the event JSON is written to stdin and these environment variables are set:
 
-- `AGENT_EXEC_EVENT_PATH`: path to the persisted `completion_event.json`
-- `AGENT_EXEC_JOB_ID`: finished job id
-- `AGENT_EXEC_EVENT_TYPE`: currently `job.finished`
+- `AGENT_EXEC_EVENT_PATH`: path to the persisted event file (`completion_event.json` for `job.finished`, `notification_events.ndjson` for `job.output.matched`)
+- `AGENT_EXEC_JOB_ID`: job id
+- `AGENT_EXEC_EVENT_TYPE`: `job.finished` or `job.output.matched`
 
 Example `job.finished` payload:
 
@@ -386,6 +473,36 @@ Example `job.finished` payload:
 ```
 
 If the job is killed by a signal, `state` becomes `killed`, `exit_code` may be absent, and `signal` is populated when available.
+
+## Output-Match Events
+
+When a job has output-match notification configuration (set via `notify set --output-pattern`), the running supervisor evaluates each newly observed stdout/stderr line and emits a `job.output.matched` event for every line that matches.
+
+**Key properties:**
+
+- Delivery fires on **every matching line**, not once per job.
+- Only **future** lines are eligible — output produced before `notify set` was called is never replayed.
+- Sink failures are recorded in `notification_events.ndjson` and do not affect the job lifecycle state.
+- Matching uses either `contains` (substring) or `regex` (Rust regex syntax) as configured by `--output-match-type`.
+- Stream selection (`--output-stream`) restricts matching to `stdout`, `stderr`, or `either`.
+
+Example `job.output.matched` payload:
+
+```json
+{
+  "schema_version": "0.1",
+  "event_type": "job.output.matched",
+  "job_id": "01J...",
+  "pattern": "ERROR",
+  "match_type": "contains",
+  "stream": "stdout",
+  "line": "ERROR: connection refused",
+  "stdout_log_path": "/jobs/01J.../stdout.log",
+  "stderr_log_path": "/jobs/01J.../stderr.log"
+}
+```
+
+Delivery records for output-match events are appended to `notification_events.ndjson` in the job directory (one JSON object per line). The `completion_event.json` file retains only `job.finished` delivery results.
 
 ## Logging
 

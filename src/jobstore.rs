@@ -132,6 +132,9 @@ impl JobDir {
     pub fn completion_event_path(&self) -> PathBuf {
         self.path.join("completion_event.json")
     }
+    pub fn notification_events_path(&self) -> PathBuf {
+        self.path.join("notification_events.ndjson")
+    }
 
     /// Write `completion_event.json` atomically.
     pub fn write_completion_event_atomic(

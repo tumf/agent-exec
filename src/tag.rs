@@ -60,8 +60,7 @@ pub fn validate_stored_tag(tag: &str) -> Result<(), InvalidTag> {
         {
             return Err(InvalidTag {
                 value: tag.to_string(),
-                reason:
-                    "tag segments may only contain alphanumeric characters and hyphens",
+                reason: "tag segments may only contain alphanumeric characters and hyphens",
             });
         }
     }
@@ -138,10 +137,13 @@ pub fn execute(opts: TagOpts) -> Result<()> {
     meta.tags = new_tags.clone();
     job_dir.write_meta_atomic(&meta)?;
 
-    let response = Response::new("tag_set", TagSetData {
-        job_id: opts.job_id.to_string(),
-        tags: new_tags,
-    });
+    let response = Response::new(
+        "tag_set",
+        TagSetData {
+            job_id: opts.job_id.to_string(),
+            tags: new_tags,
+        },
+    );
     response.print();
     Ok(())
 }

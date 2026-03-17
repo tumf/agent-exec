@@ -33,6 +33,11 @@ struct Cli {
     #[arg(short, long, action = clap::ArgAction::Count, global = true)]
     verbose: u8,
 
+    /// Override jobs root directory (applies to all job-store subcommands).
+    /// Precedence: --root > AGENT_EXEC_ROOT > $XDG_DATA_HOME/agent-exec/jobs > platform default.
+    #[arg(long, global = true, value_name = "PATH")]
+    root: Option<String>,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -41,10 +46,6 @@ struct Cli {
 enum Command {
     /// Run a command as a background job and return JSON immediately.
     Run {
-        /// Override jobs root directory.
-        #[arg(long)]
-        root: Option<String>,
-
         /// Wait N ms before returning (0 = return immediately, default = 10000ms).
         #[arg(long, default_value = "10000")]
         snapshot_after: u64,
@@ -136,20 +137,12 @@ enum Command {
 
     /// Get status of a job.
     Status {
-        /// Override jobs root directory.
-        #[arg(long)]
-        root: Option<String>,
-
         /// Job ID.
         job_id: String,
     },
 
     /// Get stdout/stderr tail of a job.
     Tail {
-        /// Override jobs root directory.
-        #[arg(long)]
-        root: Option<String>,
-
         /// Number of tail lines.
         #[arg(long, default_value = "50")]
         tail_lines: u64,
@@ -164,10 +157,6 @@ enum Command {
 
     /// Wait for a job to finish.
     Wait {
-        /// Override jobs root directory.
-        #[arg(long)]
-        root: Option<String>,
-
         /// Poll interval in milliseconds.
         #[arg(long, default_value = "200")]
         poll_ms: u64,
@@ -182,10 +171,6 @@ enum Command {
 
     /// Send a signal to a job.
     Kill {
-        /// Override jobs root directory.
-        #[arg(long)]
-        root: Option<String>,
-
         /// Signal: TERM | INT | KILL (default: TERM).
         #[arg(long, default_value = "TERM")]
         signal: String,
@@ -196,10 +181,6 @@ enum Command {
 
     /// Garbage collect old terminal job directories.
     Gc {
-        /// Override jobs root directory.
-        #[arg(long)]
-        root: Option<String>,
-
         /// Retention duration: jobs older than this are deleted (e.g. 30d, 24h, 7d).
         /// When omitted, defaults to 30d.
         #[arg(long, value_name = "DURATION")]
@@ -215,10 +196,6 @@ enum Command {
 
     /// List all jobs under the root directory.
     List {
-        /// Override jobs root directory.
-        #[arg(long)]
-        root: Option<String>,
-
         /// Maximum number of jobs to return (0 = no limit).
         #[arg(long, default_value = "0")]
         limit: u64,
@@ -259,6 +236,12 @@ enum Command {
         global: bool,
     },
 
+    /// Manage job notification configuration.
+    Notify {
+        #[command(subcommand)]
+        subcommand: NotifySubcommand,
+    },
+
     /// [Internal] Supervise a child process — not for direct use.
     #[command(name = "_supervise", hide = true)]
     Supervise {
@@ -266,7 +249,7 @@ enum Command {
         job_id: String,
 
         #[arg(long)]
-        root: String,
+        supervise_root: String,
 
         /// Override full.log path.
         #[arg(long)]
@@ -345,6 +328,44 @@ enum TagSubcommand {
     },
 }
 
+#[derive(Debug, Subcommand)]
+enum NotifySubcommand {
+    /// Update the persisted notification configuration for an existing job.
+    Set {
+        /// Override jobs root directory.
+        #[arg(long)]
+        root: Option<String>,
+
+        /// Job ID.
+        job_id: String,
+
+        /// Shell command string to execute on job completion.
+        /// Replaces any previously configured notify_command; notify_file is preserved.
+        #[arg(long, value_name = "COMMAND")]
+        command: Option<String>,
+
+        /// Pattern to match against output lines (enables output-match notifications).
+        #[arg(long, value_name = "PATTERN")]
+        output_pattern: Option<String>,
+
+        /// Match type for output-match: contains (default) or regex.
+        #[arg(long, value_name = "TYPE", value_parser = ["contains", "regex"])]
+        output_match_type: Option<String>,
+
+        /// Stream to match: stdout, stderr, or either (default).
+        #[arg(long, value_name = "STREAM", value_parser = ["stdout", "stderr", "either"])]
+        output_stream: Option<String>,
+
+        /// Shell command string to execute on output match.
+        #[arg(long, value_name = "COMMAND")]
+        output_command: Option<String>,
+
+        /// File path that receives one NDJSON event per output match.
+        #[arg(long, value_name = "PATH")]
+        output_file: Option<String>,
+    },
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -385,9 +406,9 @@ fn main() {
 }
 
 fn run(cli: Cli) -> Result<()> {
+    let root = cli.root;
     match cli.command {
         Command::Run {
-            root,
             snapshot_after,
             tail_lines,
             max_bytes,
@@ -443,7 +464,7 @@ fn run(cli: Cli) -> Result<()> {
             })?;
         }
 
-        Command::Status { root, job_id } => {
+        Command::Status { job_id } => {
             agent_exec::status::execute(agent_exec::status::StatusOpts {
                 job_id: &job_id,
                 root: root.as_deref(),
@@ -451,7 +472,6 @@ fn run(cli: Cli) -> Result<()> {
         }
 
         Command::Tail {
-            root,
             tail_lines,
             max_bytes,
             job_id,
@@ -465,7 +485,6 @@ fn run(cli: Cli) -> Result<()> {
         }
 
         Command::Wait {
-            root,
             poll_ms,
             timeout_ms,
             job_id,
@@ -478,11 +497,7 @@ fn run(cli: Cli) -> Result<()> {
             })?;
         }
 
-        Command::Kill {
-            root,
-            signal,
-            job_id,
-        } => {
+        Command::Kill { signal, job_id } => {
             agent_exec::kill::execute(agent_exec::kill::KillOpts {
                 job_id: &job_id,
                 root: root.as_deref(),
@@ -491,7 +506,6 @@ fn run(cli: Cli) -> Result<()> {
         }
 
         Command::Gc {
-            root,
             older_than,
             dry_run,
         } => {
@@ -514,7 +528,6 @@ fn run(cli: Cli) -> Result<()> {
         }
 
         Command::List {
-            root,
             limit,
             state,
             cwd,
@@ -541,9 +554,34 @@ fn run(cli: Cli) -> Result<()> {
             })?;
         }
 
+        Command::Notify {
+            subcommand:
+                NotifySubcommand::Set {
+                    root,
+                    job_id,
+                    command,
+                    output_pattern,
+                    output_match_type,
+                    output_stream,
+                    output_command,
+                    output_file,
+                },
+        } => {
+            agent_exec::notify::set(agent_exec::notify::NotifySetOpts {
+                job_id: &job_id,
+                root: root.as_deref(),
+                command,
+                output_pattern,
+                output_match_type,
+                output_stream,
+                output_command,
+                output_file,
+            })?;
+        }
+
         Command::Supervise {
             job_id,
-            root,
+            supervise_root,
             full_log,
             timeout,
             kill_after,
@@ -570,7 +608,7 @@ fn run(cli: Cli) -> Result<()> {
             };
             agent_exec::run::supervise(agent_exec::run::SuperviseOpts {
                 job_id: &job_id,
-                root: std::path::Path::new(&root),
+                root: std::path::Path::new(&supervise_root),
                 command: &command,
                 full_log: full_log.as_deref(),
                 timeout_ms: timeout,
