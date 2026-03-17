@@ -4189,3 +4189,334 @@ fn output_match_near_future_line_triggers_delivery() {
         "line field must contain the matched output line"
     );
 }
+
+// ── create/run definition-time option alignment ─────────────────────────────
+
+/// `create --tag` persists tags in meta.json with the same shape as `run --tag`.
+#[test]
+fn create_tag_persisted_same_shape_as_run() {
+    let h = TestHarness::new();
+
+    // create path
+    let c = h.run(&["create", "--tag", "aaa", "--tag", "bbb", "--", "true"]);
+    assert_envelope(&c, "create", true);
+    let create_job_id = c["job_id"].as_str().expect("job_id");
+    let create_meta_path = std::path::Path::new(h.root())
+        .join(create_job_id)
+        .join("meta.json");
+    let create_meta: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&create_meta_path).unwrap()).unwrap();
+    let create_tags: Vec<&str> = create_meta["tags"]
+        .as_array()
+        .expect("tags in create meta.json")
+        .iter()
+        .map(|t| t.as_str().unwrap())
+        .collect();
+
+    // run path
+    let r = h.run(&[
+        "run",
+        "--snapshot-after",
+        "0",
+        "--tag",
+        "aaa",
+        "--tag",
+        "bbb",
+        "--",
+        "true",
+    ]);
+    assert_envelope(&r, "run", true);
+    let run_job_id = r["job_id"].as_str().expect("job_id");
+    let run_meta_path = std::path::Path::new(h.root())
+        .join(run_job_id)
+        .join("meta.json");
+    let run_meta: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&run_meta_path).unwrap()).unwrap();
+    let run_tags: Vec<&str> = run_meta["tags"]
+        .as_array()
+        .expect("tags in run meta.json")
+        .iter()
+        .map(|t| t.as_str().unwrap())
+        .collect();
+
+    assert_eq!(
+        create_tags, run_tags,
+        "create and run must persist the same tag shape"
+    );
+    assert_eq!(create_tags, vec!["aaa", "bbb"]);
+}
+
+/// Duplicate tags on `create` are deduplicated preserving first-seen order.
+#[test]
+fn create_tag_deduplication() {
+    let h = TestHarness::new();
+    let v = h.run(&[
+        "create",
+        "--tag",
+        "aaa",
+        "--tag",
+        "bbb",
+        "--tag",
+        "aaa",
+        "--",
+        "true",
+    ]);
+    assert_envelope(&v, "create", true);
+    let job_id = v["job_id"].as_str().unwrap();
+    let meta_path = std::path::Path::new(h.root())
+        .join(job_id)
+        .join("meta.json");
+    let meta: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&meta_path).unwrap()).unwrap();
+    let tags: Vec<&str> = meta["tags"]
+        .as_array()
+        .expect("tags")
+        .iter()
+        .map(|t| t.as_str().unwrap())
+        .collect();
+    assert_eq!(tags, vec!["aaa", "bbb"], "duplicates must be removed");
+}
+
+/// `create` with no tags persists an empty tags array.
+#[test]
+fn create_no_tags_persists_empty_array() {
+    let h = TestHarness::new();
+    let v = h.run(&["create", "--", "true"]);
+    assert_envelope(&v, "create", true);
+    let job_id = v["job_id"].as_str().unwrap();
+    let meta_path = std::path::Path::new(h.root())
+        .join(job_id)
+        .join("meta.json");
+    let meta: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&meta_path).unwrap()).unwrap();
+    let tags = meta["tags"].as_array().expect("tags must be present");
+    assert!(tags.is_empty(), "tags must be empty when none specified");
+}
+
+/// `create --notify-command` persists notification metadata with the same shape as `run`.
+#[test]
+fn create_notify_command_persisted_same_shape_as_run() {
+    let h = TestHarness::new();
+    let notify_cmd = "cat >/dev/null";
+
+    // create path
+    let c = h.run(&["create", "--notify-command", notify_cmd, "--", "true"]);
+    assert_envelope(&c, "create", true);
+    let create_job_id = c["job_id"].as_str().unwrap();
+    let create_meta: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(
+            std::path::Path::new(h.root())
+                .join(create_job_id)
+                .join("meta.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+
+    // run path
+    let r = h.run(&[
+        "run",
+        "--snapshot-after",
+        "0",
+        "--notify-command",
+        notify_cmd,
+        "--",
+        "true",
+    ]);
+    assert_envelope(&r, "run", true);
+    let run_job_id = r["job_id"].as_str().unwrap();
+    let run_meta: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(
+            std::path::Path::new(h.root())
+                .join(run_job_id)
+                .join("meta.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        create_meta["notification"]["notify_command"],
+        run_meta["notification"]["notify_command"],
+        "notify_command must be persisted with the same shape by create and run"
+    );
+}
+
+/// `create --output-pattern` persists output-match metadata with the same shape as `run`.
+#[test]
+fn create_output_pattern_persisted_same_shape_as_run() {
+    let h = TestHarness::new();
+    let tmp_dir = tempfile::tempdir().expect("tempdir");
+    let events_file = tmp_dir.path().join("events.ndjson");
+    let events_path = events_file.to_str().unwrap();
+
+    // create path
+    let c = h.run(&[
+        "create",
+        "--output-pattern",
+        "ERROR",
+        "--output-command",
+        "cat >/dev/null",
+        "--output-file",
+        events_path,
+        "--",
+        "sh",
+        "-c",
+        "echo ERROR",
+    ]);
+    assert_envelope(&c, "create", true);
+    let create_job_id = c["job_id"].as_str().unwrap();
+    let create_meta: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(
+            std::path::Path::new(h.root())
+                .join(create_job_id)
+                .join("meta.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+
+    // run path
+    let r = h.run(&[
+        "run",
+        "--snapshot-after",
+        "0",
+        "--output-pattern",
+        "ERROR",
+        "--output-command",
+        "cat >/dev/null",
+        "--output-file",
+        events_path,
+        "--",
+        "sh",
+        "-c",
+        "echo ERROR",
+    ]);
+    assert_envelope(&r, "run", true);
+    let run_job_id = r["job_id"].as_str().unwrap();
+    let run_meta: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(
+            std::path::Path::new(h.root())
+                .join(run_job_id)
+                .join("meta.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+
+    let create_match = &create_meta["notification"]["on_output_match"];
+    let run_match = &run_meta["notification"]["on_output_match"];
+
+    assert_eq!(
+        create_match["pattern"], run_match["pattern"],
+        "on_output_match.pattern must match between create and run"
+    );
+    assert_eq!(
+        create_match["command"], run_match["command"],
+        "on_output_match.command must match between create and run"
+    );
+    assert_eq!(
+        create_match["file"], run_match["file"],
+        "on_output_match.file must match between create and run"
+    );
+}
+
+/// `create --output-pattern` does NOT trigger notification delivery during create itself.
+#[test]
+fn create_does_not_trigger_notification_side_effects() {
+    let h = TestHarness::new();
+    let tmp_dir = tempfile::tempdir().expect("tempdir");
+    let events_file = tmp_dir.path().join("create_side_effects.ndjson");
+    let events_path = events_file.to_str().unwrap();
+
+    // Create the job with output-match and completion notification configured.
+    let c = h.run(&[
+        "create",
+        "--notify-command",
+        &format!("echo triggered >> {}", events_path),
+        "--output-pattern",
+        "ERROR",
+        "--output-file",
+        events_path,
+        "--",
+        "sh",
+        "-c",
+        "echo ERROR",
+    ]);
+    assert_envelope(&c, "create", true);
+
+    // `create` must return immediately without executing the command.
+    // Give a brief window for any inadvertent side effects.
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    assert!(
+        !events_file.exists(),
+        "create must not execute notification sinks or the command"
+    );
+}
+
+/// Tags persisted by `create` are used by `start` as the job's initial tag set.
+#[test]
+fn start_uses_tags_persisted_by_create() {
+    let h = TestHarness::new();
+
+    let c = h.run(&["create", "--tag", "mytag", "--tag", "other", "--", "true"]);
+    assert_envelope(&c, "create", true);
+    let job_id = c["job_id"].as_str().unwrap().to_string();
+
+    let s = h.run(&["start", "--snapshot-after", "0", &job_id]);
+    assert_envelope(&s, "start", true);
+    let tags: Vec<&str> = s["tags"]
+        .as_array()
+        .expect("tags in start response")
+        .iter()
+        .map(|t| t.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        tags,
+        vec!["mytag", "other"],
+        "start must return the tags persisted by create"
+    );
+}
+
+/// Output-match notification persisted by `create` is used by `start` when executing the job.
+#[test]
+fn start_uses_output_match_notification_persisted_by_create() {
+    let h = TestHarness::new();
+    let tmp_dir = tempfile::tempdir().expect("tempdir");
+    let events_file = tmp_dir.path().join("start_output_match.ndjson");
+    let events_path = events_file.to_str().unwrap();
+
+    // Create with output-match notification; do NOT execute.
+    let c = h.run(&[
+        "create",
+        "--output-pattern",
+        "MATCH_ME",
+        "--output-file",
+        events_path,
+        "--",
+        "sh",
+        "-c",
+        "echo MATCH_ME",
+    ]);
+    assert_envelope(&c, "create", true);
+    let job_id = c["job_id"].as_str().unwrap().to_string();
+
+    // Start the job; the supervisor must pick up the persisted output-match config.
+    let s = h.run(&["start", "--snapshot-after", "0", &job_id]);
+    assert_envelope(&s, "start", true);
+
+    // Allow time for the supervisor to process output and deliver the notification.
+    std::thread::sleep(std::time::Duration::from_millis(2000));
+
+    assert!(
+        events_file.exists(),
+        "output-match event file must be written when start uses persisted create config"
+    );
+    let content = std::fs::read_to_string(&events_file).unwrap();
+    let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(lines.len(), 1, "exactly one match event must be written");
+    let ev: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(ev["event_type"].as_str().unwrap_or(""), "job.output.matched");
+    assert_eq!(ev["line"].as_str().unwrap_or(""), "MATCH_ME");
+}

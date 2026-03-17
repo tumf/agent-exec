@@ -102,6 +102,30 @@ enum Command {
         #[arg(long, value_name = "PROGRAM AND FLAGS")]
         shell_wrapper: Option<String>,
 
+        /// Assign a tag to this job (may be repeated; duplicates are deduplicated).
+        #[arg(long = "tag", value_name = "TAG", value_parser = parse_stored_tag)]
+        tags: Vec<String>,
+
+        /// Pattern to match against output lines (enables output-match notifications).
+        #[arg(long, value_name = "PATTERN")]
+        output_pattern: Option<String>,
+
+        /// Match type for output-match: contains (default) or regex.
+        #[arg(long, value_name = "TYPE", value_parser = ["contains", "regex"])]
+        output_match_type: Option<String>,
+
+        /// Stream to match: stdout, stderr, or either (default).
+        #[arg(long, value_name = "STREAM", value_parser = ["stdout", "stderr", "either"])]
+        output_stream: Option<String>,
+
+        /// Shell command string to execute on output match.
+        #[arg(long, value_name = "COMMAND")]
+        output_command: Option<String>,
+
+        /// File path that receives one NDJSON event per output match.
+        #[arg(long, value_name = "PATH")]
+        output_file: Option<String>,
+
         /// Command and arguments to run when `start` is called.
         #[arg(required = true, trailing_var_arg = true)]
         command: Vec<String>,
@@ -213,6 +237,26 @@ enum Command {
         /// File path that receives one NDJSON `job.finished` event per completed job.
         #[arg(long, value_name = "PATH")]
         notify_file: Option<String>,
+
+        /// Pattern to match against output lines (enables output-match notifications).
+        #[arg(long, value_name = "PATTERN")]
+        output_pattern: Option<String>,
+
+        /// Match type for output-match: contains (default) or regex.
+        #[arg(long, value_name = "TYPE", value_parser = ["contains", "regex"])]
+        output_match_type: Option<String>,
+
+        /// Stream to match: stdout, stderr, or either (default).
+        #[arg(long, value_name = "STREAM", value_parser = ["stdout", "stderr", "either"])]
+        output_stream: Option<String>,
+
+        /// Shell command string to execute on output match.
+        #[arg(long, value_name = "COMMAND")]
+        output_command: Option<String>,
+
+        /// File path that receives one NDJSON event per output match.
+        #[arg(long = "output-file", value_name = "PATH")]
+        output_file: Option<String>,
 
         /// Path to a config.toml file to load (overrides XDG default).
         #[arg(long, value_name = "PATH")]
@@ -518,6 +562,12 @@ fn run(cli: Cli) -> Result<()> {
             notify_file,
             config,
             shell_wrapper,
+            tags,
+            output_pattern,
+            output_match_type,
+            output_stream,
+            output_command,
+            output_file,
             command,
         } => {
             let should_inherit = !no_inherit_env;
@@ -539,6 +589,12 @@ fn run(cli: Cli) -> Result<()> {
                 notify_command,
                 notify_file,
                 shell_wrapper: resolved_wrapper,
+                tags,
+                output_pattern,
+                output_match_type,
+                output_stream,
+                output_command,
+                output_file,
             })?;
         }
 
@@ -581,6 +637,11 @@ fn run(cli: Cli) -> Result<()> {
             wait_poll_ms,
             notify_command,
             notify_file,
+            output_pattern,
+            output_match_type,
+            output_stream,
+            output_command,
+            output_file,
             config,
             shell_wrapper,
             command,
@@ -614,6 +675,11 @@ fn run(cli: Cli) -> Result<()> {
                 wait_poll_ms,
                 notify_command,
                 notify_file,
+                output_pattern,
+                output_match_type,
+                output_stream,
+                output_command,
+                output_file,
                 shell_wrapper: resolved_wrapper,
             })?;
         }
