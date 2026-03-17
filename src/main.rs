@@ -206,6 +206,12 @@ enum Command {
         global: bool,
     },
 
+    /// Manage job notification configuration.
+    Notify {
+        #[command(subcommand)]
+        subcommand: NotifySubcommand,
+    },
+
     /// [Internal] Supervise a child process — not for direct use.
     #[command(name = "_supervise", hide = true)]
     Supervise {
@@ -272,6 +278,24 @@ enum Command {
 
         #[arg(required = true, trailing_var_arg = true)]
         command: Vec<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum NotifySubcommand {
+    /// Update the persisted notification command for an existing job.
+    Set {
+        /// Override jobs root directory.
+        #[arg(long)]
+        root: Option<String>,
+
+        /// Job ID.
+        job_id: String,
+
+        /// Shell command string to execute on job completion.
+        /// Replaces any previously configured notify_command; notify_file is preserved.
+        #[arg(long, value_name = "COMMAND", required = true)]
+        command: String,
     },
 }
 
@@ -409,7 +433,10 @@ fn run(cli: Cli) -> Result<()> {
             })?;
         }
 
-        Command::Gc { older_than, dry_run } => {
+        Command::Gc {
+            older_than,
+            dry_run,
+        } => {
             agent_exec::gc::execute(agent_exec::gc::GcOpts {
                 root: root.as_deref(),
                 older_than: older_than.as_deref(),
@@ -440,6 +467,21 @@ fn run(cli: Cli) -> Result<()> {
                 state: state.as_deref(),
                 cwd: cwd.as_deref(),
                 all,
+            })?;
+        }
+
+        Command::Notify {
+            subcommand:
+                NotifySubcommand::Set {
+                    root,
+                    job_id,
+                    command,
+                },
+        } => {
+            agent_exec::notify::set(agent_exec::notify::NotifySetOpts {
+                job_id: &job_id,
+                root: root.as_deref(),
+                command,
             })?;
         }
 

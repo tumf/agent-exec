@@ -160,6 +160,38 @@ agent-exec kill [--signal TERM|INT|KILL] <JOB_ID>
 agent-exec list [--state running|exited|killed|failed] [--limit N]
 ```
 
+### `notify set` — update completion notification
+
+```bash
+agent-exec notify set <JOB_ID> --command <COMMAND>
+```
+
+Updates the persisted `notify_command` for an existing job. This is a **metadata-only** operation: it rewrites `meta.json` and does not immediately execute the command, even when the target job is already in a terminal state.
+
+| Argument / Flag | Description |
+|-----------------|-------------|
+| `<JOB_ID>` | Job identifier. |
+| `--command <COMMAND>` | Shell command string to store as the new `notify_command`. |
+| `--root <PATH>` | Override the jobs root directory. |
+
+**Behavior**
+
+- Replaces the existing `notify_command` with the new value.
+- Preserves any existing `notify_file` configuration.
+- If the job has no prior notification block, a new one is created with `notify_command` set.
+- If called before the job reaches a terminal state, the updated command will be used when the job eventually finishes.
+- A missing job returns a JSON error with `error.code = "job_not_found"`.
+
+**Example**
+
+```bash
+# Start a job without a notification hook.
+JOB=$(agent-exec run --snapshot-after 0 -- sleep 5 | jq -r .job_id)
+
+# Add a notification command before the job finishes.
+agent-exec notify set "$JOB" --command 'cat > /tmp/event.json'
+```
+
 ### `gc` — garbage collect old job data
 
 ```bash

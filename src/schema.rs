@@ -261,6 +261,14 @@ pub struct InstalledSkillSummary {
     pub path: String,
 }
 
+/// Response for `notify set` command.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct NotifySetData {
+    pub job_id: String,
+    /// Updated notification configuration saved to meta.json.
+    pub notification: NotificationConfig,
+}
+
 /// Response for `install-skills` command.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct InstallSkillsData {
