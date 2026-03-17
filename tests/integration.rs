@@ -4131,10 +4131,11 @@ fn output_match_near_future_line_triggers_delivery() {
     let events_file = tmp_dir.path().join("near_future_events.ndjson");
     let events_file_str = events_file.to_str().unwrap();
 
-    // The job prints 8 non-matching heartbeat lines at 50 ms intervals to keep
-    // the OutputMatchChecker's last reload close to "now", then prints the target
-    // line ~50 ms after the last heartbeat.  We call `notify set` after the 8th
-    // heartbeat so the config update must be picked up for the very next line.
+    // The job prints 8 non-matching heartbeat lines at 200 ms intervals to keep
+    // the OutputMatchChecker's last reload close to "now", then sleeps 500 ms
+    // before printing the target line.  We call `notify set` during the gap
+    // between the last heartbeat and the target line so the config update must
+    // be picked up for the very next line.  Intervals are generous for CI.
     let v = h.run(&[
         "run",
         "--snapshot-after",
@@ -4142,14 +4143,15 @@ fn output_match_near_future_line_triggers_delivery() {
         "--",
         "sh",
         "-c",
-        "for i in $(seq 1 8); do echo heartbeat_$i; sleep 0.05; done; echo CLOSE_CALL_MATCH",
+        "for i in $(seq 1 8); do echo heartbeat_$i; sleep 0.2; done; sleep 0.5; echo CLOSE_CALL_MATCH",
     ]);
     assert_envelope(&v, "run", true);
     let job_id = v["job_id"].as_str().expect("job_id").to_string();
 
-    // Wait until after the 8th heartbeat (~400 ms) so the checker has recently
-    // reloaded, then configure output-match ~50 ms before CLOSE_CALL_MATCH.
-    std::thread::sleep(std::time::Duration::from_millis(420));
+    // Wait until after the 8th heartbeat (~1600 ms) so the checker has recently
+    // reloaded, then configure output-match during the 500 ms gap before the
+    // target line.
+    std::thread::sleep(std::time::Duration::from_millis(1800));
 
     let set_v = h.run(&[
         "notify",
@@ -4163,7 +4165,7 @@ fn output_match_near_future_line_triggers_delivery() {
     assert_envelope(&set_v, "notify.set", true);
 
     // Wait long enough for the job to finish and delivery to complete.
-    std::thread::sleep(std::time::Duration::from_millis(2000));
+    std::thread::sleep(std::time::Duration::from_millis(3000));
 
     assert!(
         events_file.exists(),
