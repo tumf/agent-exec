@@ -4757,3 +4757,34 @@ fn argv_mode_completion_aligns_with_workload_boundary_issue5_regression() {
          (issue #5 regression); stuck in state={observed_state:?}"
     );
 }
+
+/// On non-Unix platforms argv-mode falls back to shell-string semantics (wrapper
+/// invoked with joined argv string) so that cmd /C launch semantics are preserved.
+///
+/// This test verifies that a multi-element argv command completes successfully on
+/// Windows using the shell-string fallback path.
+#[test]
+#[cfg(not(unix))]
+fn argv_mode_non_unix_shell_string_fallback_completes() {
+    let h = TestHarness::new();
+
+    // Multi-element argv on Windows: should fall back to joined shell-string mode.
+    let v = h.run(&["run", "--wait", "--", "cmd", "/C", "echo argv-win-ok"]);
+    assert_envelope(&v, "run", true);
+    assert_eq!(v["exit_code"], 0, "argv-mode non-Unix job must exit 0");
+
+    let job_id = v["job_id"].as_str().unwrap();
+    let status_v = h.run(&["status", job_id]);
+    assert_eq!(
+        status_v["state"].as_str().unwrap_or(""),
+        "exited",
+        "argv-mode non-Unix job must reach exited state"
+    );
+
+    let logs_v = h.run(&["tail", job_id, "--tail-lines", "5"]);
+    let stdout_tail = logs_v["stdout_tail"].as_str().unwrap_or("");
+    assert!(
+        stdout_tail.contains("argv-win-ok"),
+        "stdout must contain 'argv-win-ok' on non-Unix argv fallback; got: {stdout_tail:?}"
+    );
+}

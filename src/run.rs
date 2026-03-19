@@ -928,14 +928,43 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
         // Shell-string mode: pass the command string to the wrapper as-is.
         child_cmd.args(&opts.shell_wrapper[1..]).arg(&command[0]);
     } else {
-        // Argv mode: exec handoff — the shell replaces itself with the workload.
-        // `--` serves as $0; argv elements become $1..$n so `$@` expands to
-        // the full workload argv.
-        child_cmd
-            .args(&opts.shell_wrapper[1..])
-            .arg("exec \"$@\"")
-            .arg("--")
-            .args(command);
+        // Argv mode: launch the workload via the shell wrapper.
+        //
+        // On Unix the wrapper hands off to the workload via `exec "$@"` so the
+        // shell replaces itself and the observed PID / lifecycle align with the
+        // intended workload, not the wrapper.
+        //
+        // On non-Unix platforms (Windows) there is no POSIX `exec`; the wrapper
+        // is invoked in shell-string mode with the argv joined into a single
+        // quoted command string, preserving the existing cmd/C semantics.
+        #[cfg(unix)]
+        {
+            // `--` serves as $0; argv elements become $1..$n so `$@` expands
+            // to the full workload argv.
+            child_cmd
+                .args(&opts.shell_wrapper[1..])
+                .arg("exec \"$@\"")
+                .arg("--")
+                .args(command);
+        }
+        #[cfg(not(unix))]
+        {
+            // Windows fallback: join argv into a shell-compatible string and
+            // pass it to the wrapper as a single command string (same as
+            // shell-string mode), so cmd /C semantics are preserved.
+            let joined = command
+                .iter()
+                .map(|a| {
+                    if a.contains(' ') {
+                        format!("\"{}\"", a)
+                    } else {
+                        a.clone()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            child_cmd.args(&opts.shell_wrapper[1..]).arg(joined);
+        }
     }
 
     if opts.inherit_env {
