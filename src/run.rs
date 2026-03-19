@@ -905,19 +905,38 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
     let full_log_file = std::fs::File::create(&full_log_path).context("create full.log")?;
     let full_log = Arc::new(Mutex::new(full_log_file));
 
-    // Execute command through the shell wrapper (same launcher as --notify-command).
+    // Execute command through the shell wrapper.
     //
-    // Single-element commands are treated as shell command strings and passed
-    // as-is (e.g. `"echo hello && ls"` preserves shell operators).
-    // Multi-element argv have each element POSIX-single-quoted before joining so
-    // that arguments with spaces, `$`, or special characters are preserved through
-    // the shell layer (e.g. `["sh", "-c", "exit 42"]` → `'sh' '-c' 'exit 42'`).
-    let cmd_str = build_cmd_str(command);
+    // Two launch modes:
+    //
+    //   String mode (command.len() == 1):  The single element is a shell command
+    //   string passed as-is to the wrapper (e.g. `"echo hello && ls"` preserves
+    //   shell operators).  The wrapper process is the workload boundary.
+    //
+    //   Argv mode (command.len() > 1):  The wrapper is used for login-shell
+    //   environment initialisation but immediately hands off to the target via
+    //   `exec "$@"`.  The shell replaces itself so the observed child PID and
+    //   lifecycle align with the intended workload, not the wrapper.
+    //
+    // --notify-command delivery always uses the wrapper in string mode
+    // (see dispatch_command_sink); this change only affects job argv launches.
     if opts.shell_wrapper.is_empty() {
         anyhow::bail!("supervisor: shell wrapper must not be empty");
     }
     let mut child_cmd = Command::new(&opts.shell_wrapper[0]);
-    child_cmd.args(&opts.shell_wrapper[1..]).arg(&cmd_str);
+    if command.len() == 1 {
+        // Shell-string mode: pass the command string to the wrapper as-is.
+        child_cmd.args(&opts.shell_wrapper[1..]).arg(&command[0]);
+    } else {
+        // Argv mode: exec handoff — the shell replaces itself with the workload.
+        // `--` serves as $0; argv elements become $1..$n so `$@` expands to
+        // the full workload argv.
+        child_cmd
+            .args(&opts.shell_wrapper[1..])
+            .arg("exec \"$@\"")
+            .arg("--")
+            .args(command);
+    }
 
     if opts.inherit_env {
         // Start with the current environment (default).
@@ -1687,30 +1706,6 @@ fn assign_to_job_object(job_id: &str, pid: u32) -> Result<String> {
 
     info!(job_id, name = %job_name, "supervisor: child assigned to Job Object");
     Ok(job_name)
-}
-
-/// Build the shell command string passed to the shell wrapper.
-///
-/// - Single-element commands are treated as shell command strings and passed
-///   as-is, preserving shell operators like `&&`, pipes, etc.
-/// - Multi-element commands have each element POSIX-single-quoted before
-///   joining so that argv semantics survive the shell layer, including
-///   arguments that contain spaces, `$`, quotes, or other special characters.
-fn build_cmd_str(command: &[String]) -> String {
-    if command.len() == 1 {
-        command[0].clone()
-    } else {
-        command
-            .iter()
-            .map(|s| posix_single_quote(s))
-            .collect::<Vec<_>>()
-            .join(" ")
-    }
-}
-
-/// Wrap a string in POSIX single quotes, escaping any embedded single quotes.
-fn posix_single_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 #[cfg(test)]

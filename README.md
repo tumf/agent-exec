@@ -414,7 +414,18 @@ Both keys are optional. Absent values fall back to the built-in platform default
 3. Default XDG config file (`~/.config/agent-exec/config.toml`)
 4. Built-in platform default (lowest priority)
 
-The configured wrapper applies to **both** `run` command-string execution and `--notify-command` delivery so the two execution paths stay consistent.
+### Command launch modes (Unix)
+
+`agent-exec run` supports two launch modes, selected by the number of arguments after `--`:
+
+| Mode | Example | Behaviour |
+|------|---------|-----------|
+| **Shell-string** | `agent-exec run -- "echo hi && ls"` | Single argument is passed as-is to the shell wrapper. Shell operators (`&&`, pipes, etc.) are preserved. The wrapper process is the workload boundary. |
+| **Argv** | `agent-exec run -- cflx run` | Two or more arguments trigger an `exec "$@"` handoff. The shell wrapper runs briefly for login-shell environment initialisation, then replaces itself with the target workload. The observed child PID and lifecycle align with the intended command, not the shell. |
+
+The `exec` handoff means that for argv-mode invocations, completion tracking aligns with the target workload rather than the shell wrapper, which resolves lingering-shell issues when the target replaces the wrapper process.
+
+The configured wrapper applies to **both** `run` command-string execution and `--notify-command` delivery. Notify delivery always uses shell-string mode regardless of how the job was launched.
 
 ### Override per invocation
 

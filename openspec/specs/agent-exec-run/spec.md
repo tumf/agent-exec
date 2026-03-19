@@ -185,7 +185,43 @@ And `final_snapshot.stdout_tail` に `hi` が含まれる
 And `finished_at` が含まれる
 
 
-#
+### Requirement: Unix shell-wrapper exec handoff for argv-mode launches
 
+On Unix-like platforms, when `run` receives a multi-element command (argv mode, e.g.
+`agent-exec run -- cflx run`), the supervisor MUST launch the workload through the
+configured shell wrapper using an `exec "$@"` handoff pattern so that:
 
-#
+- The shell wrapper is still used (preserving login-shell environment initialisation).
+- The shell immediately replaces itself with the target argv workload via `exec`.
+- The observed child PID and lifecycle align with the intended workload, not a
+  lingering shell parent.
+
+Single-element (shell-string) commands MUST retain existing semantics: the command
+string is passed as-is to the shell wrapper, and the wrapper process is the workload
+boundary.
+
+The resolved shell wrapper MUST remain shared between argv-mode job execution and
+`--notify-command` delivery.  Only job argv-mode launch semantics change; notify
+delivery continues to use shell-string mode.
+
+#### Scenario: argv-mode job uses exec handoff and completes
+
+Given `agent-exec run --wait -- sh -c "echo argv-ok"` is executed
+When the run JSON is returned
+Then `exit_code` is 0
+And `state` is `exited`
+And `stdout_tail` contains `argv-ok`
+
+#### Scenario: shell-string mode is unchanged
+
+Given `agent-exec run --wait -- "echo string-ok && echo string-two"` is executed
+When the run JSON is returned
+Then `exit_code` is 0
+And `stdout_tail` contains both `string-ok` and `string-two`
+
+#### Scenario: argv-mode completion tracking aligns with workload boundary (issue #5 regression)
+
+Given `agent-exec run -- sh -c "sleep 30 &"` is executed in argv mode
+When the main workload (`sh -c "sleep 30 &"`) exits
+Then the job MUST reach a terminal state promptly
+And the lingering background `sleep 30` descendant MUST NOT prevent terminal state

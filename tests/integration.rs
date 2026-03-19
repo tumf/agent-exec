@@ -4655,3 +4655,105 @@ fn supervise_exits_promptly_after_root_exits_despite_inherited_stdio() {
          (job_id={job_id}; background sleep 30 holds inherited pipe ends)"
     );
 }
+
+// ─── argv-mode exec handoff tests ──────────────────────────────────────────
+
+/// Verify that argv-mode launches (multi-element command) complete successfully
+/// through the exec handoff semantics and produce the expected output.
+#[test]
+#[cfg(unix)]
+fn argv_mode_exec_handoff_completes() {
+    let h = TestHarness::new();
+
+    // Multi-element argv: ["sh", "-c", "echo argv-ok"]
+    // Should exec into `sh -c 'echo argv-ok'` via wrapper's exec handoff.
+    let v = h.run(&["run", "--wait", "--", "sh", "-c", "echo argv-ok"]);
+    assert_envelope(&v, "run", true);
+    assert_eq!(v["exit_code"], 0, "argv-mode job must exit 0");
+
+    let job_id = v["job_id"].as_str().unwrap();
+    let status_v = h.run(&["status", job_id]);
+    assert_eq!(
+        status_v["state"].as_str().unwrap_or(""),
+        "exited",
+        "argv-mode job must reach exited state"
+    );
+
+    // Verify the command output reached stdout.log.
+    let logs_v = h.run(&["tail", job_id, "--tail-lines", "5"]);
+    let stdout_tail = logs_v["stdout_tail"].as_str().unwrap_or("");
+    assert!(
+        stdout_tail.contains("argv-ok"),
+        "stdout must contain 'argv-ok'; got: {stdout_tail:?}"
+    );
+}
+
+/// Verify that shell-string mode (single-element command) still works correctly
+/// after the argv exec handoff change, preserving shell operator semantics.
+#[test]
+#[cfg(unix)]
+fn shell_string_mode_preserved_after_argv_change() {
+    let h = TestHarness::new();
+
+    // Single-element command string with shell operators.
+    let v = h.run(&["run", "--wait", "--", "echo string-ok && echo string-two"]);
+    assert_envelope(&v, "run", true);
+    assert_eq!(v["exit_code"], 0, "shell-string mode job must exit 0");
+
+    let job_id = v["job_id"].as_str().unwrap();
+    let logs_v = h.run(&["tail", job_id, "--tail-lines", "5"]);
+    let stdout_tail = logs_v["stdout_tail"].as_str().unwrap_or("");
+    assert!(
+        stdout_tail.contains("string-ok"),
+        "stdout must contain 'string-ok'; got: {stdout_tail:?}"
+    );
+    assert!(
+        stdout_tail.contains("string-two"),
+        "stdout must contain 'string-two' (shell && operator); got: {stdout_tail:?}"
+    );
+}
+
+/// Regression test for issue #5 — argv-mode: completion tracking aligns with
+/// the intended workload boundary after the exec handoff.
+///
+/// A background descendant (`sleep 30 &`) that inherits stdio must NOT prevent
+/// the job from reaching a terminal state promptly when the main argv workload
+/// exits.  This mirrors the existing string-mode regression but uses argv-style
+/// invocation so the exec handoff path is exercised.
+#[test]
+#[cfg(unix)]
+fn argv_mode_completion_aligns_with_workload_boundary_issue5_regression() {
+    let h = TestHarness::new();
+
+    // Argv-mode: main workload exits immediately; background sleep inherits pipes.
+    let run_v = h.run(&[
+        "run",
+        "--snapshot-after",
+        "0",
+        "--",
+        "sh",
+        "-c",
+        "sleep 30 &",
+    ]);
+    assert_envelope(&run_v, "run", true);
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+
+    // The job must reach a terminal state promptly despite the lingering descendant.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let poll = std::time::Duration::from_millis(50);
+    let mut observed_state = String::new();
+    while std::time::Instant::now() < deadline {
+        let v = h.run(&["status", &job_id]);
+        let state = v["state"].as_str().unwrap_or("").to_string();
+        if state != "running" && state != "created" {
+            observed_state = state;
+            break;
+        }
+        std::thread::sleep(poll);
+    }
+    assert!(
+        !observed_state.is_empty() && observed_state != "running",
+        "argv-mode job must reach terminal state promptly after workload exits \
+         (issue #5 regression); stuck in state={observed_state:?}"
+    );
+}
