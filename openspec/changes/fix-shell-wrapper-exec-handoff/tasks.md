@@ -9,3 +9,8 @@
 ## Future Work
 
 - Consider whether Windows should gain a comparable main-workload handoff strategy in a separate proposal.
+
+## Acceptance #2 Failure Follow-up
+
+- [ ] Restrict argv-mode `exec "$@"` handoff to Unix-only code paths in `src/run.rs` (e.g. `#[cfg(unix)]` or equivalent branch) so non-Unix platforms keep existing wrapper execution semantics; current `supervise_job` applies the handoff unconditionally for `command.len() > 1` at `src/run.rs:930`.
+- [ ] Add/adjust integration coverage to prove non-Unix behavior is preserved for multi-element argv launches (at minimum, keep Windows `cmd /C` launch semantics for argv mode), because new argv handoff tests in `tests/integration.rs:4663`-`tests/integration.rs:4759` are Unix-only.
