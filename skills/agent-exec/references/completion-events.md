@@ -41,9 +41,9 @@ Use these `run` options:
 
 ### Choosing a sink
 
-- Use `--notify-command` for immediate, low-latency reactions such as posting to chat, invoking a webhook helper, or returning the event to the launching OpenClaw session via either `openclaw message send` or `openclaw agent --session-id ... --deliver`, depending on the workflow.
+- Use `--notify-command` for immediate, low-latency reactions such as invoking a webhook helper or returning the event to the launching OpenClaw session via `openclaw agent --deliver --reply-channel ... --session-id ... -m ...`.
 - Use `--notify-file` when a durable worker should process events later, retries are important, or multiple downstream consumers need the same event stream.
-- Prefer checked-in helper scripts over large inline shell or Python snippets. Small wrappers are easier to quote correctly, review, and reuse.
+- Prefer a compact one-liner when an agent is wiring an OpenClaw callback on the fly, and prefer `AGENT_EXEC_EVENT_PATH` over stdin parsing when the downstream command accepts a file.
 
 Command sinks also receive:
 
@@ -61,12 +61,12 @@ Command sinks also receive:
 ### Best practices
 
 - Keep command sinks small, fast, and idempotent.
-- Use stdin for the full event JSON and the environment variables for cheap routing metadata.
-- Treat command sinks as a trigger, not a workflow engine; move retries, fanout, and heavier logic into a checked-in helper or a separate worker.
+- Use `AGENT_EXEC_EVENT_PATH` for file-based delivery and use stdin only when the downstream command truly needs the raw event stream.
+- Treat command sinks as a trigger, not a workflow engine; keep inline commands short and move retries, fanout, and heavier logic into a separate worker only when needed.
 
 ### Common failure modes
 
-- Quoting issues in the shell command string passed to `--notify-command`; prefer simple commands or checked-in helper scripts over complex inline pipelines.
+- Quoting issues in the shell command string passed to `--notify-command`; prefer short one-liners and avoid complex inline pipelines.
 - PATH or environment mismatch inside the sink process; use absolute paths or wrapper scripts when possible.
 - Downstream command exits non-zero even though the main job succeeded.
 - Wrong reply target, chat id, session id, or delivery mode in the notify helper.
@@ -74,6 +74,8 @@ Command sinks also receive:
 
 ### OpenClaw-oriented patterns
 
-- Notify a chat or session directly: a helper reads the event from stdin and uses `openclaw message send` when you want a lightweight delivery path for either a user or an agent.
-- Return the event to the launching OpenClaw session: a helper forwards the event back to the original session with either `openclaw message send` or `openclaw agent --session-id ... --deliver`; choose based on whether you want simple delivery or explicit agent re-entry.
+Read `references/openclaw.md` when you need OpenClaw-specific routing guidance, delivery-style selection, or helper design advice.
+
+- Return the event to the launching OpenClaw session: an inline command forwards the event back to the original session with `openclaw agent --deliver --reply-channel ... --session-id ... -m ...`.
+- Update notification later: `notify set --command ...` can attach or replace the completion callback for a job that is already running.
 - Durable file worker: append events with `--notify-file` and let a separate process handle retries, fanout, or rate-limited APIs.

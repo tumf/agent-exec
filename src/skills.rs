@@ -37,6 +37,11 @@ impl std::error::Error for UnknownSourceScheme {}
 
 /// Embedded content of `skills/agent-exec/SKILL.md`.
 const EMBEDDED_SKILL_MD: &[u8] = include_bytes!("../skills/agent-exec/SKILL.md");
+const EMBEDDED_CLI_CONTRACT_MD: &[u8] =
+    include_bytes!("../skills/agent-exec/references/cli-contract.md");
+const EMBEDDED_COMPLETION_EVENTS_MD: &[u8] =
+    include_bytes!("../skills/agent-exec/references/completion-events.md");
+const EMBEDDED_OPENCLAW_MD: &[u8] = include_bytes!("../skills/agent-exec/references/openclaw.md");
 
 /// Represents a single embedded file: relative path within the skill dir and content.
 pub struct EmbeddedFile {
@@ -45,10 +50,24 @@ pub struct EmbeddedFile {
 }
 
 /// All embedded files for the built-in `agent-exec` skill.
-pub static EMBEDDED_AGENT_EXEC_FILES: &[EmbeddedFile] = &[EmbeddedFile {
-    relative_path: "SKILL.md",
-    content: EMBEDDED_SKILL_MD,
-}];
+pub static EMBEDDED_AGENT_EXEC_FILES: &[EmbeddedFile] = &[
+    EmbeddedFile {
+        relative_path: "SKILL.md",
+        content: EMBEDDED_SKILL_MD,
+    },
+    EmbeddedFile {
+        relative_path: "references/cli-contract.md",
+        content: EMBEDDED_CLI_CONTRACT_MD,
+    },
+    EmbeddedFile {
+        relative_path: "references/completion-events.md",
+        content: EMBEDDED_COMPLETION_EVENTS_MD,
+    },
+    EmbeddedFile {
+        relative_path: "references/openclaw.md",
+        content: EMBEDDED_OPENCLAW_MD,
+    },
+];
 
 // ---------------------------------------------------------------------------
 // Source

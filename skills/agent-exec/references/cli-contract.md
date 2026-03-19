@@ -57,3 +57,10 @@ Common exit codes:
 - `list` filters by the caller's current working directory by default.
 - Use `--cwd <dir>` for an explicit directory filter.
 - Use `--all` to disable cwd filtering.
+
+## `install-skills` notes
+
+- Expect `skills[*].name`, `skills[*].source_type`, and `skills[*].path` in the success payload.
+- Expect `lock_file_path` to point at the updated `.agents/.skill-lock.json` file.
+- Use `--global` when the skill should be installed into `~/.agents/` instead of the current directory.
+- `self` installs the built-in `agent-exec` skill; `local:<path>` installs a local skill directory.

@@ -440,9 +440,9 @@ When `run` is called with `--notify-command` or `--notify-file`, `agent-exec` em
 
 Choose the sink based on the next consumer:
 
-- Use `--notify-command` for small, direct reactions such as posting to chat or forwarding the event back to the launching OpenClaw session with either `openclaw message send` or `openclaw agent --session-id ... --deliver`.
+- Use `--notify-command` for small, direct reactions such as forwarding the event back to the launching OpenClaw session with `openclaw agent --deliver --reply-channel ... --session-id ... -m ...`.
 - Use `--notify-file` when you want a durable queue-like handoff to a separate worker that can retry or fan out.
-- Prefer checked-in helper scripts over large inline shell or Python snippets.
+- Prefer a compact one-liner for agent-authored OpenClaw callbacks, and prefer `AGENT_EXEC_EVENT_PATH` over parsing stdin when the downstream command accepts a file.
 
 Example:
 
@@ -464,43 +464,39 @@ agent-exec run \
 
 ### OpenClaw examples
 
-#### Notify a Telegram chat directly
-
-Pass a plain shell command string to `--notify-command`. The command runs via the configured shell wrapper (default: `sh -lc`) and has access to the event JSON on stdin and the `AGENT_EXEC_EVENT_PATH` environment variable.
-
-```bash
-agent-exec run \
-  --notify-command 'openclaw message send --chat telegram:deployments --text "job $(jq -r .job_id "$AGENT_EXEC_EVENT_PATH") finished: state=$(jq -r .state "$AGENT_EXEC_EVENT_PATH")"' \
-  -- long-running-command --flag value
-```
-
-For repeated use, a checked-in helper script is easier to review and maintain than a long inline command.
-
 #### Return the event to the launching OpenClaw session
 
-This pattern is often more flexible than sending a final user message directly from the notify command. The launching session can inspect logs, decide whether the result is meaningful, and summarize it in context. Depending on the workflow, either `openclaw message send` or `openclaw agent --session-id ... --deliver` may be the better fit.
+This pattern is often more flexible than sending a final user message directly from the notify command. The launching session can inspect logs, decide whether the result is meaningful, and summarize it in context. In same-host agent-to-agent flows, `job_id` plus `event_path` is a good default.
+
+Call `openclaw agent --deliver` with the reply channel and session id directly:
 
 ```bash
-SESSION_ID="oc_session_123"
+SESSION_ID="01bb09d5-6485-4a50-8d3b-3f6e80c61f9c"
+REPLY_CHANNEL="telegram"
 
 agent-exec run \
-  --notify-command "openclaw message send --session $SESSION_ID --text \"\$(jq -c . \"\$AGENT_EXEC_EVENT_PATH\")\"" \
+  --notify-command "openclaw agent --deliver --reply-channel $REPLY_CHANNEL --session-id $SESSION_ID -m \"job_id=\$AGENT_EXEC_JOB_ID event_path=\$AGENT_EXEC_EVENT_PATH\"" \
   -- ./scripts/run-heavy-task.sh
 ```
 
-With this pattern, the receiving OpenClaw session can read the event payload, inspect `stdout_log_path` or `stderr_log_path`, and decide whether to reply, retry, or trigger follow-up work.
+With this pattern, the receiving OpenClaw session can open the persisted event file immediately and still keep the job id for follow-up commands.
 
-If you want explicit agent re-entry instead of lightweight message delivery, call `openclaw agent --deliver` directly:
+Prefer sending `job_id` and `event_path` instead of the full JSON blob when the receiver can access the same filesystem.
+
+#### Attach or replace the callback later with `notify set`
+
+Use `notify set` when the job is already running and you only learn the OpenClaw destination afterward.
 
 ```bash
-SESSION_ID="oc_session_123"
+JOB=$(agent-exec run --snapshot-after 0 -- ./scripts/run-heavy-task.sh | jq -r .job_id)
+SESSION_ID="01bb09d5-6485-4a50-8d3b-3f6e80c61f9c"
+REPLY_CHANNEL="telegram"
 
-agent-exec run \
-  --notify-command "openclaw agent --session-id $SESSION_ID --deliver \"\$(jq -c . \"\$AGENT_EXEC_EVENT_PATH\")\"" \
-  -- ./scripts/run-heavy-task.sh
+agent-exec notify set "$JOB" \
+  --command "openclaw agent --deliver --reply-channel $REPLY_CHANNEL --session-id $SESSION_ID -m \"job_id=\$AGENT_EXEC_JOB_ID event_path=\$AGENT_EXEC_EVENT_PATH\""
 ```
 
-In practice, both `message send` and `agent --deliver` can target either a user-facing or agent-facing flow; pick the one that matches the downstream behavior you want.
+`notify set` is metadata-only: it updates the stored callback for future completion delivery and does not execute the sink immediately.
 
 #### Durable file-based worker
 
@@ -518,6 +514,7 @@ A separate worker can tail or batch-process the NDJSON file, retry failed downst
 
 - `--notify-command` accepts a plain shell command string; no JSON encoding is needed.
 - Keep notify commands small, fast, and idempotent.
+- Prefer `AGENT_EXEC_EVENT_PATH` when the downstream command already knows how to read a file.
 - Common sink failures include quoting mistakes, PATH or env mismatches, downstream non-zero exits, and wrong chat, session, or delivery-mode targets.
 - If you need heavier orchestration, let the notify sink hand off to a checked-in helper or durable worker.
 

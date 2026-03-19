@@ -1988,6 +1988,24 @@ fn install_skills_self_source_succeeds() {
         skill_dir.join("SKILL.md").exists(),
         "SKILL.md must exist inside the installed skill directory"
     );
+    assert!(
+        skill_dir
+            .join("references")
+            .join("cli-contract.md")
+            .exists(),
+        "cli-contract.md must exist inside the installed skill directory"
+    );
+    assert!(
+        skill_dir
+            .join("references")
+            .join("completion-events.md")
+            .exists(),
+        "completion-events.md must exist inside the installed skill directory"
+    );
+    assert!(
+        skill_dir.join("references").join("openclaw.md").exists(),
+        "openclaw.md must exist inside the installed skill directory"
+    );
 
     // The lock file must exist.
     let lock_path = agents_dir.join(".skill-lock.json");
@@ -4251,15 +4269,7 @@ fn create_tag_persisted_same_shape_as_run() {
 fn create_tag_deduplication() {
     let h = TestHarness::new();
     let v = h.run(&[
-        "create",
-        "--tag",
-        "aaa",
-        "--tag",
-        "bbb",
-        "--tag",
-        "aaa",
-        "--",
-        "true",
+        "create", "--tag", "aaa", "--tag", "bbb", "--tag", "aaa", "--", "true",
     ]);
     assert_envelope(&v, "create", true);
     let job_id = v["job_id"].as_str().unwrap();
@@ -4336,8 +4346,7 @@ fn create_notify_command_persisted_same_shape_as_run() {
     .unwrap();
 
     assert_eq!(
-        create_meta["notification"]["notify_command"],
-        run_meta["notification"]["notify_command"],
+        create_meta["notification"]["notify_command"], run_meta["notification"]["notify_command"],
         "notify_command must be persisted with the same shape by create and run"
     );
 }
@@ -4517,6 +4526,9 @@ fn start_uses_output_match_notification_persisted_by_create() {
     let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
     assert_eq!(lines.len(), 1, "exactly one match event must be written");
     let ev: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
-    assert_eq!(ev["event_type"].as_str().unwrap_or(""), "job.output.matched");
+    assert_eq!(
+        ev["event_type"].as_str().unwrap_or(""),
+        "job.output.matched"
+    );
     assert_eq!(ev["line"].as_str().unwrap_or(""), "MATCH_ME");
 }

@@ -7,6 +7,8 @@ description: Run and manage non-interactive background jobs with the `agent-exec
 
 Use `agent-exec` when a command should run as a managed job instead of an inline shell process.
 
+Choose it when work should outlive the current turn, return a job id immediately, be polled later, or trigger a completion hook. Keep using a normal shell command for short, blocking tasks that should finish in one response.
+
 ## Follow these rules
 
 - Keep stdout machine-readable. `agent-exec` prints one JSON object to stdout; diagnostic logs belong on stderr.
@@ -18,6 +20,16 @@ Use `agent-exec` when a command should run as a managed job instead of an inline
 Read `references/cli-contract.md` when you need the exact response envelope, exit-code behavior, or `run`/`list` contract details.
 
 Read `references/completion-events.md` when you need the `job.finished` payload shape, sink behavior, or `completion_event.json` semantics.
+
+Read `references/openclaw.md` when a job completion should be routed back into an OpenClaw chat, user flow, or agent session.
+
+## Typical workflow
+
+1. Start the job with `agent-exec run`.
+2. Capture the returned `job_id`.
+3. Use `status` or `wait` for lifecycle state.
+4. Use `tail` to inspect output without breaking the JSON-only contract.
+5. Use `kill` when the job should stop early.
 
 ## Run a job
 
@@ -48,7 +60,7 @@ Choose the sink based on who needs the event next:
 
 - Use `--notify-command` when a small, fast, direct action should happen immediately after completion, such as posting to a chat, calling a webhook helper, or routing the event back to a launcher session.
 - Use `--notify-file` when another durable worker should consume events later, retries matter, or several downstream systems may need the same event.
-- Prefer checked-in helper scripts over large inline shell or Python snippets so quoting, dependencies, and reply-target logic stay reviewable.
+- Prefer a compact one-liner for agent-authored OpenClaw callbacks; move to a separate script only when quoting or branching becomes hard to keep correct.
 
 ## Inspect a job
 
@@ -58,6 +70,9 @@ Use these commands after `run`:
 - `agent-exec tail [--tail-lines N] [--max-bytes N] <JOB_ID>`: read stdout/stderr tails
 - `agent-exec wait [--timeout-ms N] [--poll-ms N] <JOB_ID>`: block until terminal state
 - `agent-exec kill [--signal TERM|INT|KILL] <JOB_ID>`: request termination
+- `agent-exec notify set <JOB_ID> --command <COMMAND>`: attach or replace the completion callback after the job has already started
+
+Use `wait` when the caller needs a terminal outcome before proceeding. Use `status` when the job should continue running while the caller does other work.
 
 ## List jobs
 
@@ -73,10 +88,11 @@ agent-exec list [--state running|exited|killed|failed|unknown] [--cwd DIR] [--al
 
 Read `references/completion-events.md` for the full `job.finished` payload, sink environment variables, and persistence details.
 
+Read `references/openclaw.md` when the completion path should re-enter OpenClaw.
+
 Suggested patterns:
 
-- Notify a chat or session directly: use `--notify-command` with a checked-in helper that reads event JSON from stdin and delivers it with the OpenClaw entrypoint that fits the case, such as `openclaw message send` or `openclaw agent --session-id ... --deliver`.
-- Return the event to the launching OpenClaw session: use `--notify-command` to call a helper that forwards the event to the original session or conversation id; both `message` and `agent --deliver` can be valid depending on whether you want lightweight delivery or explicit agent re-entry.
+- Return the event to the launching OpenClaw session: use `--notify-command` to forward the event to the original session or conversation id with `openclaw agent --deliver --reply-channel ... --session-id ... -m ...`.
 - Append to a file for a durable worker: use `--notify-file` when a separate process should handle retries, fanout, or slower downstream APIs.
 
 Operational reminders:
@@ -95,6 +111,7 @@ agent-exec install-skills [--source self|local:<path>] [--global]
 - Use `local:<path>` to install a local skill directory.
 - Expect installation into `./.agents/skills/` by default or `~/.agents/skills/` with `--global`.
 - Expect `.agents/.skill-lock.json` to be created or updated.
+- Expect the success payload to include installed skill summaries plus `lock_file_path`.
 
 ## Respect the contract
 
