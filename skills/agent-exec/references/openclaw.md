@@ -6,7 +6,6 @@ Use this reference when `agent-exec` jobs must report completion back into an Op
 
 - Start long-running work with `agent-exec run` when the current turn should return before the command finishes.
 - Attach `--notify-command` when OpenClaw should react immediately after completion.
-- Attach `--notify-file` when another worker should consume events later with retry or fanout logic.
 
 ## Choose a delivery style
 
