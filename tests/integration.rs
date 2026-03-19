@@ -4534,3 +4534,124 @@ fn start_uses_output_match_notification_persisted_by_create() {
     );
     assert_eq!(ev["line"].as_str().unwrap_or(""), "MATCH_ME");
 }
+
+// ── regression: lingering running state ────────────────────────────────────────
+
+/// Regression test: job transitions out of `running` promptly after the wrapped root
+/// process exits, even when a descendant keeps inherited stdout/stderr handles open.
+///
+/// The root `sh` spawns `sleep 30` in the background (`&`) and exits immediately.
+/// `sleep 30` inherits the pipe write-ends and keeps them open. Prior to the fix,
+/// the supervisor blocked on log-thread EOF, keeping the job in `running` indefinitely.
+#[test]
+#[cfg(unix)]
+fn status_becomes_terminal_when_root_exits_despite_inherited_stdio() {
+    let h = TestHarness::new();
+
+    // Root shell exits immediately; background sleep inherits pipe ends and keeps them open.
+    let run_v = h.run(&[
+        "run",
+        "--snapshot-after",
+        "0",
+        "--",
+        "sh",
+        "-c",
+        "sleep 30 &",
+    ]);
+    assert_envelope(&run_v, "run", true);
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+
+    // Poll for terminal state. Allow 10 s as a generous bound for slow CI environments.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let poll = std::time::Duration::from_millis(50);
+    let mut observed_state = String::new();
+    while std::time::Instant::now() < deadline {
+        let v = h.run(&["status", &job_id]);
+        let state = v["state"].as_str().unwrap_or("").to_string();
+        if state != "running" && state != "created" {
+            observed_state = state;
+            break;
+        }
+        std::thread::sleep(poll);
+    }
+    assert!(
+        !observed_state.is_empty() && observed_state != "running",
+        "job must reach a terminal state promptly after wrapped root exits; \
+         stuck in state={observed_state:?} (regression: lingering running state)"
+    );
+}
+
+/// Regression test: `_supervise` exits promptly after the wrapped root process ends,
+/// even when a descendant keeps inherited stdio handles open.
+///
+/// This complements `status_becomes_terminal_when_root_exits_despite_inherited_stdio`
+/// by asserting that the supervisor process itself is no longer visible in the process
+/// table after the job reaches a terminal state.
+#[test]
+#[cfg(unix)]
+fn supervise_exits_promptly_after_root_exits_despite_inherited_stdio() {
+    let h = TestHarness::new();
+
+    let run_v = h.run(&[
+        "run",
+        "--snapshot-after",
+        "0",
+        "--",
+        "sh",
+        "-c",
+        "sleep 30 &",
+    ]);
+    assert_envelope(&run_v, "run", true);
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+
+    // Step 1: wait for terminal state (same as previous regression test).
+    let status_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let poll = std::time::Duration::from_millis(50);
+    let mut reached_terminal = false;
+    while std::time::Instant::now() < status_deadline {
+        let v = h.run(&["status", &job_id]);
+        let state = v["state"].as_str().unwrap_or("");
+        if state != "running" && state != "created" {
+            reached_terminal = true;
+            break;
+        }
+        std::thread::sleep(poll);
+    }
+    assert!(
+        reached_terminal,
+        "prerequisite: job must reach terminal state before checking supervisor linger"
+    );
+
+    // Step 2: assert that _supervise is no longer in the process table.
+    // We give it 5 s of grace after terminal state is observed, which is far more
+    // than the supervisor needs to dispatch notifications and exit.
+    let linger_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut supervisor_lingering = true;
+    let pgrep_pattern = format!("_supervise.*{job_id}");
+    while std::time::Instant::now() < linger_deadline {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let result = std::process::Command::new("pgrep")
+            .arg("-f")
+            .arg(&pgrep_pattern)
+            .output();
+        match result {
+            Ok(output) => {
+                if output.stdout.iter().all(|b| b.is_ascii_whitespace()) {
+                    // pgrep found no matching process.
+                    supervisor_lingering = false;
+                    break;
+                }
+            }
+            Err(_) => {
+                // pgrep unavailable on this platform; skip supervisor linger check.
+                supervisor_lingering = false;
+                break;
+            }
+        }
+    }
+    assert!(
+        !supervisor_lingering,
+        "_supervise must not linger after job reaches terminal state \
+         (job_id={job_id}; background sleep 30 holds inherited pipe ends)"
+    );
+}

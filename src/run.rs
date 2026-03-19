@@ -1126,6 +1126,12 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
         meta.notification.clone(),
     ));
 
+    // Completion channels for log threads: each thread sends `()` after stream_to_logs returns.
+    // Used for bounded joins below (allows supervisor to exit promptly when descendants
+    // hold inherited pipe ends open indefinitely).
+    let (tx_stdout_done, rx_stdout_done) = std::sync::mpsc::channel::<()>();
+    let (tx_stderr_done, rx_stderr_done) = std::sync::mpsc::channel::<()>();
+
     // Thread: read stdout, write to stdout.log and full.log.
     let stdout_log_path = job_dir.stdout_path();
     let full_log_stdout = Arc::clone(&full_log);
@@ -1138,6 +1144,7 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
             "STDOUT",
             Some(move |line: &str| match_checker_stdout.check_line(line, "stdout")),
         );
+        let _ = tx_stdout_done.send(());
     });
 
     // Thread: read stderr, write to stderr.log and full.log.
@@ -1152,6 +1159,7 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
             "STDERR",
             Some(move |line: &str| match_checker_stderr.check_line(line, "stderr")),
         );
+        let _ = tx_stderr_done.send(());
     });
 
     // Timeout / kill-after / progress-every handling.
@@ -1253,15 +1261,12 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
     // Signal the watcher that the child has finished so it can exit its loop.
     child_done.store(true, Ordering::Relaxed);
 
-    // Join logging threads.
-    let _ = t_stdout.join();
-    let _ = t_stderr.join();
-
-    // Join watcher if present.
-    if let Some(w) = watcher {
-        let _ = w.join();
-    }
-
+    // Persist terminal state immediately after the wrapped root process exits.
+    // This must happen BEFORE joining log threads, because log threads block on
+    // EOF of stdout/stderr pipes and descendant processes that inherited those
+    // pipes may keep them open indefinitely. Persisting state here ensures that
+    // `status` and `wait` can observe the terminal state without waiting for
+    // all descendants to close their inherited handles.
     let duration_ms = child_start_time.elapsed().as_millis() as u64;
     let exit_code = exit_status.code();
     let finished_at = now_rfc3339();
@@ -1297,6 +1302,42 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
     };
     job_dir.write_state(&state)?;
     info!(job_id, ?exit_code, "child process finished");
+
+    // Bounded join for log-reader threads.
+    //
+    // After the wrapped root process exits, we give log threads a short window
+    // to drain any remaining output and fire output-match callbacks (which is
+    // the common case: no descendants, pipe write-end closes promptly).
+    //
+    // If a thread does not complete within the window, it is detached (dropped).
+    // Detaching means the thread will be killed when the supervisor process exits,
+    // which is the correct trade-off: supervisor must not linger indefinitely
+    // because a descendant holds an inherited pipe write-end open.
+    const LOG_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(2000);
+    let drain_deadline = std::time::Instant::now() + LOG_DRAIN_TIMEOUT;
+
+    let remaining = drain_deadline
+        .checked_duration_since(std::time::Instant::now())
+        .unwrap_or(std::time::Duration::ZERO);
+    if rx_stdout_done.recv_timeout(remaining).is_ok() {
+        let _ = t_stdout.join();
+    } else {
+        drop(t_stdout); // detach: descendant holds the pipe open
+    }
+
+    let remaining = drain_deadline
+        .checked_duration_since(std::time::Instant::now())
+        .unwrap_or(std::time::Duration::ZERO);
+    if rx_stderr_done.recv_timeout(remaining).is_ok() {
+        let _ = t_stderr.join();
+    } else {
+        drop(t_stderr); // detach: descendant holds the pipe open
+    }
+
+    // Join watcher if present; it exits promptly once child_done is set.
+    if let Some(w) = watcher {
+        let _ = w.join();
+    }
 
     // Reload the latest notification config from meta.json to pick up any post-creation
     // updates (e.g. from `notify set` invoked after the job was launched).
