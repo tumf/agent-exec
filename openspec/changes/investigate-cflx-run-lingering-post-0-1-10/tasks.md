@@ -8,3 +8,7 @@
 ## Future Work
 
 - If the final root cause is upstream in `cflx`, create a dedicated follow-up change proposal in that project and link it from this investigation.
+
+## Acceptance #1 Failure Follow-up
+
+- [x] Add explicit cleanup to `status_remains_running_while_root_alive_despite_success_output_post_0_1_10_issue5` in `tests/integration.rs:4785` (for example `agent-exec kill --signal KILL <job_id>` after assertions). The current test starts `sleep 30` and returns immediately, leaving `_supervise` / `sh` / `sleep` processes alive for a period after the test, which weakens integration-test isolation.

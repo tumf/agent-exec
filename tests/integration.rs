@@ -4824,6 +4824,10 @@ fn status_remains_running_while_root_alive_despite_success_output_post_0_1_10_is
          even when success-like output is already present in the log \
          (post-0.1.10 issue #5 shape; fix must be in the upstream workload)"
     );
+
+    // Cleanup: forcibly kill the lingering workload (sleep 30 + _supervise) so
+    // this test does not leak processes and weaken integration-test isolation.
+    h.run(&["kill", "--signal", "KILL", &job_id]);
 }
 
 /// On non-Unix platforms argv-mode falls back to shell-string semantics (wrapper
