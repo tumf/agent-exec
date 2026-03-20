@@ -5,16 +5,15 @@ TBD - created by archiving change define-agent-exec-run-supervise-v0-1. Update P
 ## Requirements
 ### Requirement: run の監視分離
 
-MUST: `run` は `snapshot-after` で指定された待機期限までブロックし、
-ジョブが `running` のままであれば期限到達まで待機を継続しなければならない（MUST）。
-出力が既に存在する場合でも、ジョブが継続中であれば待機を短縮してはならない（MUST）。
-ただしジョブが終了した場合は期限より前に返却してよい（MAY）。
+Issue `#5` verification must distinguish between visible success output and actual workload termination. A job must not be considered reliably complete merely because its logs contain apparent success lines, and regressions for lingering `running` state must include a reproduction shape where the wrapped workload process itself may remain alive after success-like output (MUST).
 
-#### Scenario: 出力が先に出ても期限まで待つ
+#### Scenario: cflx-like workload logs success before job leaves running
 
-Given `agent-exec run --snapshot-after 200 -- sh -c "printf 'hi'; sleep 1"` を実行する
-When `run` の JSON が返る
-Then `waited_ms` は 200 以上である
+Given a workload launched via `agent-exec run --snapshot-after 0 -- <workload>` emits success-like completion lines to stdout
+And the job still has a live wrapped workload process after those lines are visible
+When `agent-exec status <job_id>` and `agent-exec wait <job_id>` are evaluated for issue `#5`
+Then the regression analysis must treat this as a distinct failure shape from descendant-held stdio only
+And any accepted fix must be verified against this workload-liveness case, not only shell-only synthetic cases
 
 ### Requirement: snapshot/tail の末尾取得
 

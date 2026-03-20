@@ -30,6 +30,14 @@ The immediate goal of this proposal is not to pick one speculative mechanism pre
 - `status` / `wait` semantics for the final fix are defined against the reproduced workload behavior rather than only against synthetic shell-only reproductions.
 - Any follow-up implementation or design notes state clearly whether the ultimate fix belongs in `agent-exec`, `cflx`, or both.
 
+## Ownership
+
+Code path audit of `src/status.rs`, `src/wait.rs`, and `src/run.rs` confirms that agent-exec's state model is correct: `running` is set at job creation and cleared only when `child.wait()` returns (i.e., when the root workload process exits). There is no heuristic based on log output, no process liveness probe, and no other transition path.
+
+**The fix belongs in `cflx`.** `cflx run` must exit promptly after its orchestration work completes. The reproduction shows that it currently lingers after printing success lines. See `design.md` for the full code path audit, the specific evidence required before `running` can exit, and the ranked list of plausible `cflx`-side root causes.
+
+If a follow-up investigation reveals a race between `cflx run`'s exit and agent-exec's polling interval, a coordinated fix may be needed. That scenario requires timing instrumentation to confirm before changing agent-exec behavior.
+
 ## Out of Scope
 
 - Claiming that shell-wrapper `exec` handoff alone resolves issue `#5`.

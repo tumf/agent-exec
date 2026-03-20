@@ -4758,6 +4758,78 @@ fn argv_mode_completion_aligns_with_workload_boundary_issue5_regression() {
     );
 }
 
+// ── post-0.1.10 regression: cflx run lingering workload shape ────────────────
+
+/// Post-0.1.10 regression for issue #5: models the failure shape where a workload
+/// emits apparent success output ("Orchestrator completed successfully") but the root
+/// workload process itself remains alive.
+///
+/// This is distinct from the already-addressed case where the root process exits
+/// immediately but background descendants keep inherited stdio handles open. In this
+/// shape, the root workload process (simulating `cflx run`) is still alive, so
+/// `child.wait()` in `_supervise` has not returned, and `state.json` correctly
+/// continues to report `running`.
+///
+/// The test documents two facts:
+///   1. Success-like output is captured and visible in `tail` immediately.
+///   2. `status` correctly remains `running` while the root process is alive.
+///
+/// The mismatch between (1) and (2) is the observable bug from the user's perspective.
+/// The fix belongs in the workload (`cflx run`), which must exit promptly after
+/// completing its orchestration work, not in agent-exec's state model.
+///
+/// Acceptance criterion: this test must continue to pass after any proposed fix,
+/// demonstrating that the fix-forward path is evaluated against this workload shape.
+#[test]
+#[cfg(unix)]
+fn status_remains_running_while_root_alive_despite_success_output_post_0_1_10_issue5() {
+    let h = TestHarness::new();
+
+    // Simulate cflx run: print apparent success lines, then linger (root stays alive).
+    let run_v = h.run(&[
+        "run",
+        "--snapshot-after",
+        "0",
+        "--",
+        "sh",
+        "-c",
+        concat!(
+            "echo 'No changes found for parallel execution'; ",
+            "echo 'Orchestrator completed successfully'; ",
+            "sleep 30"
+        ),
+    ]);
+    assert_envelope(&run_v, "run", true);
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+
+    // Allow log threads time to capture the output before polling.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    // Fact 1: success-like output is captured and visible.
+    let tail_v = h.run(&["tail", &job_id, "--tail-lines", "20"]);
+    let stdout_tail = tail_v["stdout_tail"].as_str().unwrap_or("");
+    assert!(
+        stdout_tail.contains("Orchestrator completed successfully"),
+        "success-like output must be visible in stdout log before process exits; \
+         got: {stdout_tail:?}"
+    );
+
+    // Fact 2: status is still `running` because the root workload process (sleep 30)
+    // has not exited. agent-exec's state model is correct here; the bug is upstream.
+    let status_v = h.run(&["status", &job_id]);
+    let state = status_v["state"].as_str().unwrap_or("");
+    assert_eq!(
+        state, "running",
+        "status must remain `running` while the root workload process is alive, \
+         even when success-like output is already present in the log \
+         (post-0.1.10 issue #5 shape; fix must be in the upstream workload)"
+    );
+
+    // Cleanup: forcibly kill the lingering workload (sleep 30 + _supervise) so
+    // this test does not leak processes and weaken integration-test isolation.
+    h.run(&["kill", "--signal", "KILL", &job_id]);
+}
+
 /// On non-Unix platforms argv-mode falls back to shell-string semantics (wrapper
 /// invoked with joined argv string) so that cmd /C launch semantics are preserved.
 ///
