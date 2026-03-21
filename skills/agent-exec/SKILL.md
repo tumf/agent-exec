@@ -23,6 +23,8 @@ Read `references/completion-events.md` when you need the `job.finished` payload 
 
 Read `references/openclaw.md` when a job completion should be routed back into an OpenClaw chat, user flow, or agent session.
 
+Read `references/hermes.md` when a job completion should notify a Hermes Agent session (e.g. deliver interpreted results to Telegram via `hermes notify`).
+
 ## Typical workflow
 
 1. Start the job with `agent-exec run`.
@@ -93,6 +95,7 @@ Read `references/openclaw.md` when the completion path should re-enter OpenClaw.
 Suggested patterns:
 
 - Return the event to the launching OpenClaw session: use `--notify-command` to forward the event to the original session or conversation id with `openclaw agent --deliver --reply-channel ... --session-id ... -m ...`.
+- Deliver interpreted results via Hermes Agent: use `--notify-command` with `hermes notify` to spin up a one-shot agent that reads the payload, inspects logs/files, and posts a human-readable summary to the origin chat. Read `references/hermes.md` for setup and examples.
 - Append to a file for a durable worker: use `--notify-file` when a separate process should handle retries, fanout, or slower downstream APIs.
 
 Operational reminders:

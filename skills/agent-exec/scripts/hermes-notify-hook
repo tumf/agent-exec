@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# hermes-notify-hook — agent-exec completion callback for Hermes Agent
+#
+# Usage:
+#   agent-exec run \
+#     --env HERMES_SESSION_PLATFORM=telegram \
+#     --env HERMES_SESSION_CHAT_ID=<chat_id> \
+#     --env HERMES_SESSION_THREAD_ID=<thread_id> \
+#     --notify-command hermes-notify-hook \
+#     -- <command>
+#
+# Environment variables (set by agent-exec):
+#   AGENT_EXEC_JOB_ID       — completed job id
+#   AGENT_EXEC_EVENT_PATH   — path to completion_event.json
+#   AGENT_EXEC_EVENT_TYPE   — always "job.finished"
+#
+# Environment variables (set by caller via --env):
+#   HERMES_SESSION_PLATFORM  — delivery platform (telegram, discord, slack, ...)
+#   HERMES_SESSION_CHAT_ID   — target chat id
+#   HERMES_SESSION_THREAD_ID — target thread/topic id (optional)
+#
+# Optional overrides:
+#   HERMES_BIN              — path to hermes binary (default: auto-detect)
+#   HERMES_NOTIFY_PROVIDER  — LLM provider for the callback agent (default: cliproxy)
+#   HERMES_NOTIFY_MODEL     — model override (optional)
+set -euo pipefail
+
+# Resolve hermes binary
+if [[ -n "${HERMES_BIN:-}" ]]; then
+  HERMES="$HERMES_BIN"
+elif command -v hermes &>/dev/null; then
+  HERMES="hermes"
+elif [[ -x "$HOME/.hermes/hermes-agent/venv/bin/hermes" ]]; then
+  HERMES="$HOME/.hermes/hermes-agent/venv/bin/hermes"
+else
+  echo "hermes-notify-hook: hermes binary not found" >&2
+  exit 1
+fi
+
+PROVIDER="${HERMES_NOTIFY_PROVIDER:-cliproxy}"
+MODEL_FLAG=""
+if [[ -n "${HERMES_NOTIFY_MODEL:-}" ]]; then
+  MODEL_FLAG="--model $HERMES_NOTIFY_MODEL"
+fi
+
+exec "$HERMES" notify \
+  --provider "$PROVIDER" \
+  $MODEL_FLAG \
+  -m "job_id=$AGENT_EXEC_JOB_ID event_path=$AGENT_EXEC_EVENT_PATH"
