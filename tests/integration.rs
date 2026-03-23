@@ -4860,3 +4860,113 @@ fn argv_mode_non_unix_shell_string_fallback_completes() {
         "stdout must contain 'argv-win-ok' on non-Unix argv fallback; got: {stdout_tail:?}"
     );
 }
+
+// ── --yaml output format ────────────────────────────────────────────────────────
+
+/// Helper: run binary with --yaml flag and return raw stdout string.
+fn run_yaml_raw(args: &[&str], root: &str) -> String {
+    let bin = binary();
+    let mut cmd = Command::new(&bin);
+    cmd.arg("--yaml");
+    cmd.args(args);
+    cmd.env("AGENT_EXEC_ROOT", root);
+    let output = cmd.output().expect("run binary");
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+/// Helper: run binary with --yaml flag and parse stdout as YAML → serde_json::Value.
+fn run_yaml(args: &[&str], root: &str) -> serde_json::Value {
+    let raw = run_yaml_raw(args, root);
+    let stderr = {
+        let bin = binary();
+        let mut cmd = Command::new(&bin);
+        cmd.arg("--yaml");
+        cmd.args(args);
+        cmd.env("AGENT_EXEC_ROOT", root);
+        let output = cmd.output().expect("run binary");
+        String::from_utf8_lossy(&output.stderr).into_owned()
+    };
+    assert!(!raw.trim().is_empty(), "stdout is empty (stderr: {stderr})");
+    // Parse YAML into serde_json::Value via serde_yaml.
+    let yaml_val: serde_yaml::Value =
+        serde_yaml::from_str(&raw).unwrap_or_else(|e| {
+            panic!("stdout is not valid YAML: {e}\nstdout: {raw}\nstderr: {stderr}")
+        });
+    // Convert to JSON value for reuse of assert_envelope helper.
+    serde_json::to_value(&yaml_val).expect("yaml->json conversion")
+}
+
+#[test]
+fn yaml_flag_run_returns_yaml() {
+    let h = TestHarness::new();
+    let raw = run_yaml_raw(&["run", "--snapshot-after", "0", "echo", "yaml_test"], h.root());
+    // Must be parseable YAML (not JSON object on one line).
+    assert!(!raw.trim().is_empty(), "stdout empty");
+    // A JSON single-line response would start with '{'; YAML mapping starts with key or '---'.
+    // Either way it must not be a single-line JSON blob.
+    let parsed: serde_yaml::Value = serde_yaml::from_str(&raw)
+        .unwrap_or_else(|e| panic!("not valid YAML: {e}\nstdout: {raw}"));
+    assert!(parsed.is_mapping(), "expected YAML mapping");
+}
+
+#[test]
+fn yaml_flag_run_envelope_fields() {
+    let h = TestHarness::new();
+    let v = run_yaml(&["run", "--snapshot-after", "0", "echo", "hi"], h.root());
+    assert_envelope(&v, "run", true);
+    assert!(v["job_id"].as_str().is_some(), "job_id missing: {v}");
+}
+
+#[test]
+fn yaml_flag_status_success() {
+    let h = TestHarness::new();
+    let run_v = run_yaml(&["run", "--snapshot-after", "0", "echo", "hi"], h.root());
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+    let v = run_yaml(&["status", &job_id], h.root());
+    assert_envelope(&v, "status", true);
+    assert_eq!(v["job_id"].as_str().unwrap_or(""), job_id);
+}
+
+#[test]
+fn yaml_flag_error_response() {
+    let h = TestHarness::new();
+    let v = run_yaml(&["status", "NONEXISTENT_JOB_ID_YAML"], h.root());
+    assert_envelope(&v, "error", false);
+    assert_eq!(
+        v["error"]["code"].as_str().unwrap_or(""),
+        "job_not_found"
+    );
+}
+
+#[test]
+fn yaml_flag_schema_returns_yaml() {
+    let h = TestHarness::new();
+    let v = run_yaml(&["schema"], h.root());
+    assert_envelope(&v, "schema", true);
+    assert!(v["schema"].is_object() || v["schema"].is_string(), "schema field missing or wrong type: {v}");
+}
+
+#[test]
+fn json_default_still_works_without_yaml_flag() {
+    let h = TestHarness::new();
+    // Without --yaml, stdout should be valid JSON (original behavior).
+    let v = h.run(&["run", "--snapshot-after", "0", "echo", "json_default"]);
+    assert_envelope(&v, "run", true);
+}
+
+#[test]
+fn yaml_flag_after_subcommand_works() {
+    // --yaml declared with global=true, so it can appear after the subcommand name too.
+    let h = TestHarness::new();
+    let bin = binary();
+    let mut cmd = Command::new(&bin);
+    cmd.args(["run", "--yaml", "--snapshot-after", "0", "echo", "global_test"]);
+    cmd.env("AGENT_EXEC_ROOT", h.root());
+    let output = cmd.output().expect("run binary");
+    let raw = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_yaml::Value =
+        serde_yaml::from_str(&raw).unwrap_or_else(|e| {
+            panic!("not valid YAML: {e}\nstdout: {raw}")
+        });
+    assert!(parsed.is_mapping(), "expected YAML mapping");
+}

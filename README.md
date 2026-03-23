@@ -4,7 +4,7 @@ Non-interactive agent job runner. Runs commands as background jobs and returns s
 
 ## Output Contract
 
-- **stdout**: JSON only — every command prints exactly one JSON object
+- **stdout**: JSON by default — every command prints exactly one JSON object; pass `--yaml` to get YAML instead
 - **stderr**: Diagnostic logs (controlled by `RUST_LOG` or `-v`/`-vv` flags)
 
 This separation lets agents parse stdout reliably without filtering log noise.
@@ -120,6 +120,7 @@ durable (non-secret) configuration and applied when `start` is called.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--root <PATH>` | XDG default | Override the jobs root directory for all subcommands. Precedence: `--root` > `AGENT_EXEC_ROOT` > `$XDG_DATA_HOME/agent-exec/jobs` > platform default. |
+| `--yaml` | false | Output responses as YAML instead of JSON (applies to all subcommands). |
 | `-v` / `-vv` | warn | Increase log verbosity (logs go to stderr). |
 
 The `--root` flag is a **global** option that applies to all job-store subcommands (`run`, `status`, `tail`, `wait`, `kill`, `list`, `gc`). The preferred placement is before the subcommand name:

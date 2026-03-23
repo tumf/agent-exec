@@ -1,21 +1,38 @@
-//! Shared JSON output schema types for agent-exec v0.1.
+//! Shared output schema types for agent-exec v0.1.
 //!
-//! All stdout output is JSON only. Tracing logs go to stderr.
+//! Stdout output is JSON by default; YAML when --yaml is set.
+//! Tracing logs go to stderr.
 //! Schema version is fixed at "0.1".
 
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Global flag: when true, print YAML instead of JSON on stdout.
+static YAML_OUTPUT: AtomicBool = AtomicBool::new(false);
+
+/// Set the output format.  Call once from `main` before running any subcommand.
+pub fn set_yaml_output(yaml: bool) {
+    YAML_OUTPUT.store(yaml, Ordering::Relaxed);
+}
 
 pub const SCHEMA_VERSION: &str = "0.1";
 
-/// Serialize `value` to a JSON string and print it as a single line to stdout.
+/// Serialize `value` and print to stdout in the selected format (JSON default, YAML with --yaml).
 ///
-/// This is the single place where stdout JSON output is written, ensuring the
-/// stdout-is-JSON-only contract is enforced uniformly across all response types.
-fn print_json_to_stdout(value: &impl Serialize) {
-    println!(
-        "{}",
-        serde_json::to_string(value).expect("JSON serialization failed")
-    );
+/// This is the single place where stdout output is written, ensuring the
+/// stdout-is-machine-readable contract is enforced uniformly across all response types.
+fn print_to_stdout(value: &impl Serialize) {
+    if YAML_OUTPUT.load(Ordering::Relaxed) {
+        print!(
+            "{}",
+            serde_yaml::to_string(value).expect("YAML serialization failed")
+        );
+    } else {
+        println!(
+            "{}",
+            serde_json::to_string(value).expect("JSON serialization failed")
+        );
+    }
 }
 
 /// Top-level envelope used for every successful response.
@@ -41,7 +58,7 @@ impl<T: Serialize> Response<T> {
 
     /// Serialize to a JSON string and print to stdout.
     pub fn print(&self) {
-        print_json_to_stdout(self);
+        print_to_stdout(self);
     }
 }
 
@@ -85,7 +102,7 @@ impl ErrorResponse {
     }
 
     pub fn print(&self) {
-        print_json_to_stdout(self);
+        print_to_stdout(self);
     }
 }
 
