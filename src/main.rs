@@ -38,6 +38,10 @@ struct Cli {
     #[arg(long, global = true, value_name = "PATH")]
     root: Option<String>,
 
+    /// Output responses as YAML instead of JSON (applies to all subcommands).
+    #[arg(long, global = true, default_value = "false", action = clap::ArgAction::SetTrue)]
+    yaml: bool,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -505,6 +509,9 @@ enum NotifySubcommand {
 
 fn main() {
     let cli = Cli::parse();
+
+    // Set output format before any subcommand runs (including error paths).
+    agent_exec::schema::set_yaml_output(cli.yaml);
 
     let default_level = match cli.verbose {
         0 => "warn",
