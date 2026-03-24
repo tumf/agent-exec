@@ -4,14 +4,35 @@
 
 use anyhow::{Context, Result};
 use clap::builder::ValueHint;
-use clap::{CommandFactory, Parser, Subcommand};
-use clap_complete::Shell;
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use clap_complete::{CompleteEnv, Shell, engine::ArgValueCompleter};
 use tracing_subscriber::EnvFilter;
 
 use agent_exec::jobstore::{AmbiguousJobId, InvalidJobState, JobNotFound};
 use agent_exec::schema::ErrorResponse;
 use agent_exec::skills::UnknownSourceScheme;
 use agent_exec::tag::InvalidTag;
+
+/// Shell variants supported by the `completions` subcommand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum CompletionShell {
+    Bash,
+    Zsh,
+    Fish,
+    #[value(name = "powershell")]
+    PowerShell,
+}
+
+impl From<CompletionShell> for Shell {
+    fn from(s: CompletionShell) -> Shell {
+        match s {
+            CompletionShell::Bash => Shell::Bash,
+            CompletionShell::Zsh => Shell::Zsh,
+            CompletionShell::Fish => Shell::Fish,
+            CompletionShell::PowerShell => Shell::PowerShell,
+        }
+    }
+}
 
 /// Clap value parser: validate a stored tag (used by `run` and `tag set`).
 fn parse_stored_tag(s: &str) -> Result<String, String> {
@@ -193,6 +214,7 @@ enum Command {
         wait_poll_ms: u64,
 
         /// Job ID of a previously created job.
+        #[arg(add = ArgValueCompleter::new(agent_exec::completions::complete_created_jobs))]
         job_id: String,
     },
 
@@ -310,6 +332,7 @@ enum Command {
     /// Get status of a job.
     Status {
         /// Job ID.
+        #[arg(add = ArgValueCompleter::new(agent_exec::completions::complete_all_jobs))]
         job_id: String,
     },
 
@@ -324,6 +347,7 @@ enum Command {
         max_bytes: u64,
 
         /// Job ID.
+        #[arg(add = ArgValueCompleter::new(agent_exec::completions::complete_all_jobs))]
         job_id: String,
     },
 
@@ -338,6 +362,7 @@ enum Command {
         timeout_ms: u64,
 
         /// Job ID.
+        #[arg(add = ArgValueCompleter::new(agent_exec::completions::complete_waitable_jobs))]
         job_id: String,
     },
 
@@ -348,6 +373,7 @@ enum Command {
         signal: String,
 
         /// Job ID.
+        #[arg(add = ArgValueCompleter::new(agent_exec::completions::complete_running_jobs))]
         job_id: String,
     },
 
@@ -363,7 +389,8 @@ enum Command {
         dry_run: bool,
 
         /// Job ID to delete. Mutually exclusive with --all.
-        #[arg(required_unless_present = "all", conflicts_with = "all")]
+        #[arg(required_unless_present = "all", conflicts_with = "all",
+              add = ArgValueCompleter::new(agent_exec::completions::complete_terminal_jobs))]
         job_id: Option<String>,
     },
 
@@ -430,11 +457,17 @@ enum Command {
         subcommand: NotifySubcommand,
     },
 
-    /// Generate shell completion scripts. Output is plain text, not JSON.
-    /// Pipe to your shell's completions directory or eval in your shell profile.
+    /// Generate shell completion scripts for bash, zsh, fish, or powershell.
+    ///
+    /// Source the generated script in your shell profile to enable tab-completion.
+    /// Example (bash):
+    ///   agent-exec completions bash >> ~/.bash_completion
+    /// Example (zsh):
+    ///   agent-exec completions zsh > ~/.zsh/completions/_agent-exec
     Completions {
-        /// Shell to generate completions for.
-        shell: Shell,
+        /// Target shell.
+        #[arg(value_enum)]
+        shell: CompletionShell,
     },
 
     /// [Internal] Supervise a child process — not for direct use.
@@ -515,6 +548,7 @@ enum TagSubcommand {
         root: Option<String>,
 
         /// Job ID.
+        #[arg(add = ArgValueCompleter::new(agent_exec::completions::complete_all_jobs))]
         job_id: String,
 
         /// Tag to assign (may be repeated; replaces all existing tags).
@@ -532,6 +566,7 @@ enum NotifySubcommand {
         root: Option<String>,
 
         /// Job ID.
+        #[arg(add = ArgValueCompleter::new(agent_exec::completions::complete_all_jobs))]
         job_id: String,
 
         /// Shell command string to execute on job completion.
@@ -562,6 +597,11 @@ enum NotifySubcommand {
 }
 
 fn main() {
+    // Handle dynamic completion requests (invoked by the shell with COMPLETE=<shell>).
+    // This must run before Cli::parse() so completion candidates are returned
+    // without any JSON output or tracing initialisation.
+    CompleteEnv::with_factory(Cli::command).complete();
+
     let cli = Cli::parse();
 
     // Set output format before any subcommand runs (including error paths).
@@ -819,7 +859,7 @@ fn run(cli: Cli) -> Result<()> {
         Command::Completions { shell } => {
             let mut cmd = Cli::command();
             let name = cmd.get_name().to_string();
-            clap_complete::generate(shell, &mut cmd, name, &mut std::io::stdout());
+            clap_complete::generate(Shell::from(shell), &mut cmd, name, &mut std::io::stdout());
         }
 
         Command::InstallSkills { source, global } => {

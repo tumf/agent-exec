@@ -5558,3 +5558,225 @@ fn delete_ambiguous_prefix_returns_error() {
         "retryable must be false: {v}"
     );
 }
+
+// ── Shell completions integration tests ──────────────────────────────────────
+
+/// Helper: run the binary with completion-specific args/env, returning raw stdout and exit code.
+fn run_completion(shell: &str, args: &[&str], root: Option<&str>) -> (String, i32) {
+    let bin = binary();
+    let mut cmd = Command::new(&bin);
+    cmd.args(args);
+    if let Some(r) = root {
+        cmd.env("AGENT_EXEC_ROOT", r);
+    }
+    let output = cmd.output().expect("run binary");
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let code = output.status.code().unwrap_or(-1);
+    let _ = shell; // for clarity in test names
+    (stdout, code)
+}
+
+/// Helper: invoke the binary in CompleteEnv mode to get dynamic job-ID candidates.
+///
+/// Simulates what the shell does when tab-completing a job ID argument.
+/// `word_index` is the 0-based index of the word being completed.
+/// Returns the list of candidate values printed to stdout.
+fn get_dynamic_candidates(
+    root: &str,
+    subcommand: &str,
+    word_index: usize,
+    partial: &str,
+) -> Vec<String> {
+    let bin = binary();
+    let mut cmd = Command::new(&bin);
+    // CompleteEnv args: <binary_path> -- agent-exec <subcommand> [partial...]
+    // The first arg after the binary is the "completer" path; then "--"; then the words.
+    cmd.arg(bin.to_str().unwrap());
+    cmd.arg("--");
+    cmd.arg("agent-exec");
+    cmd.arg(subcommand);
+    // Always pass the partial value (even empty string) so the engine sees a word
+    // at the expected index; without it, the engine reports "no completion generated".
+    cmd.arg(partial);
+    cmd.env("COMPLETE", "bash");
+    cmd.env("AGENT_EXEC_ROOT", root);
+    cmd.env("_CLAP_COMPLETE_INDEX", word_index.to_string());
+    let output = cmd.output().expect("run binary for dynamic completion");
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    stdout
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect()
+}
+
+#[test]
+fn test_completions_bash_outputs_nonempty_script() {
+    let (stdout, code) = run_completion("bash", &["completions", "bash"], None);
+    assert_eq!(code, 0, "completions bash must exit 0");
+    assert!(
+        !stdout.trim().is_empty(),
+        "completions bash must produce non-empty output"
+    );
+    // Must contain a bash function definition
+    assert!(
+        stdout.contains("_agent") || stdout.contains("agent"),
+        "bash script must reference agent-exec: {stdout}"
+    );
+}
+
+#[test]
+fn test_completions_zsh_outputs_nonempty_script() {
+    let (stdout, code) = run_completion("zsh", &["completions", "zsh"], None);
+    assert_eq!(code, 0);
+    assert!(!stdout.trim().is_empty());
+}
+
+#[test]
+fn test_completions_fish_outputs_nonempty_script() {
+    let (stdout, code) = run_completion("fish", &["completions", "fish"], None);
+    assert_eq!(code, 0);
+    assert!(!stdout.trim().is_empty());
+}
+
+#[test]
+fn test_completions_powershell_outputs_nonempty_script() {
+    let (stdout, code) = run_completion("powershell", &["completions", "powershell"], None);
+    assert_eq!(code, 0);
+    assert!(!stdout.trim().is_empty());
+}
+
+#[test]
+fn test_completions_invalid_shell_exits_with_code_2() {
+    let (_, code) = run_completion("invalid", &["completions", "invalidshell"], None);
+    assert_eq!(code, 2, "invalid shell must produce a usage error (exit 2)");
+}
+
+#[test]
+fn test_dynamic_completion_all_jobs_for_status() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+    // Create two jobs with different states
+    for (id, state) in &[
+        ("01AAAAAAAAAAAAAAAAAAAAAAAAA", "running"),
+        ("01BBBBBBBBBBBBBBBBBBBBBBBBB", "exited"),
+    ] {
+        std::fs::create_dir_all(tmp.path().join(id)).unwrap();
+        std::fs::write(
+            tmp.path().join(id).join("state.json"),
+            format!("{{\"state\":\"{state}\",\"job_id\":\"{id}\"}}"),
+        )
+        .unwrap();
+    }
+
+    // `status` should return all jobs (word index 2: agent-exec status <TAB>)
+    let candidates = get_dynamic_candidates(root, "status", 2, "");
+    let ids: Vec<_> = candidates.iter().filter(|c| c.starts_with("01")).collect();
+    assert!(
+        ids.iter().any(|s| s.contains("01AAA")),
+        "status should include running jobs: {candidates:?}"
+    );
+    assert!(
+        ids.iter().any(|s| s.contains("01BBB")),
+        "status should include exited jobs: {candidates:?}"
+    );
+}
+
+#[test]
+fn test_dynamic_completion_running_only_for_kill() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+    for (id, state) in &[
+        ("01AAAAAAAAAAAAAAAAAAAAAAAAA", "running"),
+        ("01BBBBBBBBBBBBBBBBBBBBBBBBB", "exited"),
+    ] {
+        std::fs::create_dir_all(tmp.path().join(id)).unwrap();
+        std::fs::write(
+            tmp.path().join(id).join("state.json"),
+            format!("{{\"state\":\"{state}\",\"job_id\":\"{id}\"}}"),
+        )
+        .unwrap();
+    }
+
+    // `kill` should return only running jobs (word index 2: agent-exec kill <TAB>)
+    let candidates = get_dynamic_candidates(root, "kill", 2, "");
+    let ids: Vec<_> = candidates.iter().filter(|c| c.starts_with("01")).collect();
+    assert!(
+        ids.iter().any(|s| s.contains("01AAA")),
+        "kill should include running job: {candidates:?}"
+    );
+    assert!(
+        !ids.iter().any(|s| s.contains("01BBB")),
+        "kill should exclude exited job: {candidates:?}"
+    );
+}
+
+#[test]
+fn test_dynamic_completion_empty_when_root_missing() {
+    let candidates = get_dynamic_candidates("/nonexistent/path", "status", 2, "");
+    // Should return flags/options but no job-ID candidates (starts with "01")
+    let job_ids: Vec<_> = candidates.iter().filter(|c| c.starts_with("01")).collect();
+    assert!(
+        job_ids.is_empty(),
+        "missing root should yield no job IDs: {candidates:?}"
+    );
+}
+
+/// Helper: invoke dynamic completion passing `--root <path>` as argv words
+/// (not via AGENT_EXEC_ROOT env var). This simulates fish and other shells
+/// that don't set COMP_LINE but pass the partial command as argv.
+///
+/// The argv after `--` looks like:
+///   `agent-exec --root <root> <subcommand> <partial>`
+/// so the job-ID word index is 4.
+fn get_dynamic_candidates_via_root_arg(root: &str, subcommand: &str, partial: &str) -> Vec<String> {
+    let bin = binary();
+    let mut cmd = Command::new(&bin);
+    // CompleteEnv argv: <completer_path> -- agent-exec --root <root> <subcommand> <partial>
+    cmd.arg(bin.to_str().unwrap());
+    cmd.arg("--");
+    cmd.arg("agent-exec");
+    cmd.arg("--root");
+    cmd.arg(root);
+    cmd.arg(subcommand);
+    cmd.arg(partial);
+    cmd.env("COMPLETE", "bash");
+    // word index 4: agent-exec(0) --root(1) <root>(2) <subcommand>(3) <partial>(4)
+    cmd.env("_CLAP_COMPLETE_INDEX", "4");
+    // Intentionally do NOT set AGENT_EXEC_ROOT so the test verifies argv-based resolution.
+    let output = cmd
+        .output()
+        .expect("run binary for dynamic completion via --root arg");
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    stdout
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect()
+}
+
+#[test]
+fn test_dynamic_completion_with_root_arg_returns_jobs_from_that_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+
+    // Create a job in the custom root.
+    let job_id = "01CUSTOMROOTJOBAAAAAAAAAAAAA";
+    std::fs::create_dir_all(tmp.path().join(job_id)).unwrap();
+    std::fs::write(
+        tmp.path().join(job_id).join("state.json"),
+        format!("{{\"state\":\"running\",\"job_id\":\"{job_id}\"}}"),
+    )
+    .unwrap();
+
+    // Trigger completion via --root argv (no AGENT_EXEC_ROOT env var).
+    let candidates = get_dynamic_candidates_via_root_arg(root, "status", "");
+    let ids: Vec<_> = candidates
+        .iter()
+        .filter(|c| c.starts_with("01CUSTOM"))
+        .collect();
+    assert!(
+        !ids.is_empty(),
+        "--root argv resolution: expected job {job_id} in candidates: {candidates:?}"
+    );
+}
