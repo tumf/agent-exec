@@ -5610,3 +5610,62 @@ fn test_dynamic_completion_empty_when_root_missing() {
         "missing root should yield no job IDs: {candidates:?}"
     );
 }
+
+/// Helper: invoke dynamic completion passing `--root <path>` as argv words
+/// (not via AGENT_EXEC_ROOT env var). This simulates fish and other shells
+/// that don't set COMP_LINE but pass the partial command as argv.
+///
+/// The argv after `--` looks like:
+///   `agent-exec --root <root> <subcommand> <partial>`
+/// so the job-ID word index is 4.
+fn get_dynamic_candidates_via_root_arg(root: &str, subcommand: &str, partial: &str) -> Vec<String> {
+    let bin = binary();
+    let mut cmd = Command::new(&bin);
+    // CompleteEnv argv: <completer_path> -- agent-exec --root <root> <subcommand> <partial>
+    cmd.arg(bin.to_str().unwrap());
+    cmd.arg("--");
+    cmd.arg("agent-exec");
+    cmd.arg("--root");
+    cmd.arg(root);
+    cmd.arg(subcommand);
+    cmd.arg(partial);
+    cmd.env("COMPLETE", "bash");
+    // word index 4: agent-exec(0) --root(1) <root>(2) <subcommand>(3) <partial>(4)
+    cmd.env("_CLAP_COMPLETE_INDEX", "4");
+    // Intentionally do NOT set AGENT_EXEC_ROOT so the test verifies argv-based resolution.
+    let output = cmd
+        .output()
+        .expect("run binary for dynamic completion via --root arg");
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    stdout
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect()
+}
+
+#[test]
+fn test_dynamic_completion_with_root_arg_returns_jobs_from_that_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+
+    // Create a job in the custom root.
+    let job_id = "01CUSTOMROOTJOBAAAAAAAAAAAAA";
+    std::fs::create_dir_all(tmp.path().join(job_id)).unwrap();
+    std::fs::write(
+        tmp.path().join(job_id).join("state.json"),
+        format!("{{\"state\":\"running\",\"job_id\":\"{job_id}\"}}"),
+    )
+    .unwrap();
+
+    // Trigger completion via --root argv (no AGENT_EXEC_ROOT env var).
+    let candidates = get_dynamic_candidates_via_root_arg(root, "status", "");
+    let ids: Vec<_> = candidates
+        .iter()
+        .filter(|c| c.starts_with("01CUSTOM"))
+        .collect();
+    assert!(
+        !ids.is_empty(),
+        "--root argv resolution: expected job {job_id} in candidates: {candidates:?}"
+    );
+}

@@ -77,17 +77,45 @@ pub fn list_job_candidates(
 /// Resolve the root directory to use during a completion invocation.
 ///
 /// Tries, in order:
-/// 1. `--root <value>` extracted from `COMP_LINE` (bash) or from the args
-///    vector passed to the completer environment (`_CLAP_COMPLETE_ARGS`).
-/// 2. `AGENT_EXEC_ROOT` environment variable (via `resolve_root(None)`).
-/// 3. XDG / platform default (via `resolve_root(None)`).
+/// 1. `--root <value>` extracted from `COMP_LINE` (bash/zsh).
+/// 2. `--root <value>` extracted from the process argv after the `--`
+///    separator (covers fish and other shells that pass words as argv).
+/// 3. `AGENT_EXEC_ROOT` environment variable (via `resolve_root(None)`).
+/// 4. XDG / platform default (via `resolve_root(None)`).
 pub fn resolve_root_for_completion() -> PathBuf {
     // Try to extract --root from the partial command line that the shell
     // provides in COMP_LINE (bash/zsh) during completion invocations.
     if let Some(root) = extract_root_from_comp_line() {
         return PathBuf::from(root);
     }
+    // Fallback: parse the argv for --root (covers fish and other shells that
+    // don't set COMP_LINE but pass completion words as process argv after `--`).
+    if let Some(root) = extract_root_from_argv() {
+        return PathBuf::from(root);
+    }
     crate::jobstore::resolve_root(None)
+}
+
+/// Parse `--root <value>` from the process argv (words after the `--` separator).
+///
+/// In CompleteEnv mode, `clap_complete` invokes the binary as:
+///   `<binary> <completer_path> -- <program_name> [args…]`
+/// This function looks for `--root` in the words that follow `--` so that
+/// shells (e.g. fish) that do not set `COMP_LINE` can still trigger root
+/// resolution from an explicit `--root` flag.
+fn extract_root_from_argv() -> Option<String> {
+    let args: Vec<String> = std::env::args().collect();
+    let sep_pos = args.iter().position(|a| a == "--")?;
+    let words = &args[sep_pos + 1..];
+    let pos = words
+        .iter()
+        .position(|t| t == "--root" || t.starts_with("--root="))?;
+
+    if let Some(val) = words[pos].strip_prefix("--root=") {
+        return Some(val.to_string());
+    }
+    // `--root <value>` form
+    words.get(pos + 1).map(|s| s.to_string())
 }
 
 /// Parse `--root <value>` from the `COMP_LINE` environment variable.
@@ -321,5 +349,26 @@ mod tests {
             std::env::remove_var("COMP_LINE");
         }
         assert_eq!(root, Some("/tmp/myjobs".to_string()));
+    }
+
+    #[test]
+    fn test_list_job_candidates_with_explicit_root_path() {
+        // Passing an explicit root path directly (not via env) should work.
+        let tmp = tempdir().unwrap();
+        make_job(tmp.path(), "01CUSTOM", "running");
+
+        let other_tmp = tempdir().unwrap();
+        make_job(other_tmp.path(), "01OTHER", "running");
+
+        // list_job_candidates with the explicit root must only return jobs
+        // from that root, not from any other location.
+        let candidates = list_job_candidates(tmp.path(), None);
+        let names: Vec<_> = candidates
+            .iter()
+            .map(|c| c.get_value().to_string_lossy().to_string())
+            .collect();
+        assert!(names.contains(&"01CUSTOM".to_string()));
+        assert!(!names.contains(&"01OTHER".to_string()));
+        assert_eq!(candidates.len(), 1);
     }
 }

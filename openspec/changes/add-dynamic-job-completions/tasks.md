@@ -16,3 +16,8 @@
 - Completion for `--tag` values (enumerate existing tags from job metadata)
 - Performance optimization: caching or indexing for large job stores (>1000 jobs)
 - Nushell / Elvish dynamic completion support
+
+## Acceptance #1 Failure Follow-up
+
+- [x] Fix `--root` dynamic completion resolution for completion modes that do not provide `COMP_LINE` (e.g. parse completion argv/env fallback) so candidates come from the explicit root path.
+- [x] Add an integration test that invokes dynamic completion with `--root <custom-path>` and verifies returned job-ID candidates come from that path.
