@@ -5227,6 +5227,98 @@ fn delete_all_dry_run_preserves_directories() {
     );
 }
 
+/// Run the binary with given args and return raw stdout + exit code (no JSON parsing).
+fn run_raw(args: &[&str]) -> (String, i32) {
+    let bin = binary();
+    let mut cmd = Command::new(&bin);
+    cmd.args(args);
+    let output = cmd.output().expect("run binary");
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let code = output.status.code().unwrap_or(-1);
+    (stdout, code)
+}
+
+#[test]
+fn completions_bash_outputs_nonempty_script() {
+    let (stdout, code) = run_raw(&["completions", "bash"]);
+    assert_eq!(code, 0, "exit code should be 0 for 'completions bash'");
+    assert!(
+        !stdout.trim().is_empty(),
+        "stdout should be non-empty for 'completions bash'"
+    );
+    // Bash completion scripts typically start with a function definition.
+    assert!(
+        stdout.contains("agent-exec") || stdout.contains("agent_exec"),
+        "bash completion script should reference agent-exec: {stdout}"
+    );
+}
+
+#[test]
+fn completions_zsh_outputs_nonempty_script() {
+    let (stdout, code) = run_raw(&["completions", "zsh"]);
+    assert_eq!(code, 0, "exit code should be 0 for 'completions zsh'");
+    assert!(
+        !stdout.trim().is_empty(),
+        "stdout should be non-empty for 'completions zsh'"
+    );
+}
+
+#[test]
+fn completions_fish_outputs_nonempty_script() {
+    let (stdout, code) = run_raw(&["completions", "fish"]);
+    assert_eq!(code, 0, "exit code should be 0 for 'completions fish'");
+    assert!(
+        !stdout.trim().is_empty(),
+        "stdout should be non-empty for 'completions fish'"
+    );
+}
+
+#[test]
+fn completions_powershell_outputs_nonempty_script() {
+    let (stdout, code) = run_raw(&["completions", "powershell"]);
+    assert_eq!(
+        code, 0,
+        "exit code should be 0 for 'completions powershell'"
+    );
+    assert!(
+        !stdout.trim().is_empty(),
+        "stdout should be non-empty for 'completions powershell'"
+    );
+}
+
+#[test]
+fn completions_invalid_shell_exits_with_code_2() {
+    let bin = binary();
+    let output = Command::new(&bin)
+        .args(["completions", "invalid"])
+        .output()
+        .expect("run binary");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "expected exit code 2 for 'completions invalid'"
+    );
+}
+
+#[test]
+fn list_state_invalid_value_exits_with_code_2() {
+    let bin = binary();
+    let output = Command::new(&bin)
+        .args(["list", "--all", "--state", "bogus"])
+        .output()
+        .expect("run binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "expected exit code 2 for invalid --state value, stdout: {stdout}"
+    );
+    assert!(
+        stdout.trim().is_empty(),
+        "stdout should be empty for invalid --state usage error: {stdout}"
+    );
+}
+
 #[test]
 fn version_flag_prints_version_and_exits_zero() {
     let bin = binary();
