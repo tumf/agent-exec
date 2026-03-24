@@ -27,6 +27,34 @@ fn parse_filter_pattern(s: &str) -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Custom value parser for `--signal`: exposes common signal names as completion
+/// candidates while still accepting any arbitrary signal string at runtime.
+#[derive(Clone, Debug)]
+struct SignalValueParser;
+
+impl clap::builder::TypedValueParser for SignalValueParser {
+    type Value = String;
+
+    fn parse_ref(
+        &self,
+        _cmd: &clap::Command,
+        _arg: Option<&clap::Arg>,
+        value: &std::ffi::OsStr,
+    ) -> Result<Self::Value, clap::error::Error> {
+        Ok(value.to_string_lossy().to_string())
+    }
+
+    fn possible_values(
+        &self,
+    ) -> Option<Box<dyn Iterator<Item = clap::builder::PossibleValue> + '_>> {
+        Some(Box::new(
+            ["TERM", "INT", "KILL", "HUP", "USR1", "USR2"]
+                .iter()
+                .map(|s| clap::builder::PossibleValue::new(*s)),
+        ))
+    }
+}
+
 #[derive(Debug, Parser)]
 #[command(name = "agent-exec")]
 #[command(version)]
@@ -316,7 +344,7 @@ enum Command {
     /// Send a signal to a job.
     Kill {
         /// Signal name to send (default: TERM).
-        #[arg(long, default_value = "TERM", value_parser = ["TERM", "INT", "KILL", "HUP", "USR1", "USR2"])]
+        #[arg(long, default_value = "TERM", value_parser = SignalValueParser)]
         signal: String,
 
         /// Job ID.

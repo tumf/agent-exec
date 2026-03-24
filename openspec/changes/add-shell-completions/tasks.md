@@ -17,3 +17,8 @@
 - Dynamic job-ID completion via custom completer (separate proposal)
 - Nushell / Elvish support
 - Automated completion installation (e.g. `completions install` subcommand)
+
+## Acceptance #1 Failure Follow-up
+
+- [x] Update `kill --signal` argument behavior so common signals (`TERM`, `INT`, `KILL`, `HUP`, `USR1`, `USR2`) are offered as completion candidates while arbitrary signal names are still accepted (e.g., `QUIT`) per spec — implemented `SignalValueParser` (custom `TypedValueParser`) that exposes possible values for completion without enforcing them.
+- [x] Add an integration test verifying a non-listed signal value (e.g., `QUIT`) is accepted by clap and reaches command execution (expected runtime error path, not usage error exit code 2) — `kill_signal_non_listed_value_accepted_by_clap` test added and passing.

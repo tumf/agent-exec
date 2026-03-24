@@ -326,6 +326,25 @@ fn kill_returns_json() {
     assert!(v.get("signal").is_some(), "signal missing");
 }
 
+#[test]
+fn kill_signal_non_listed_value_accepted_by_clap() {
+    // Verifies that a signal name not in the suggested list (e.g., QUIT) is
+    // accepted by clap (exit code != 2) and reaches the runtime error path
+    // (job not found), rather than being rejected as a usage error.
+    let bin = binary();
+    let output = std::process::Command::new(&bin)
+        .args(["kill", "--signal", "QUIT", "NONEXISTENT_JOB_ID_XYZ"])
+        .output()
+        .expect("run binary");
+    let code = output.status.code().unwrap_or(-1);
+    assert_ne!(
+        code, 2,
+        "exit code 2 means clap rejected 'QUIT' as a usage error; it should be accepted"
+    );
+    // Exit code should be non-zero (job not found runtime error) but not 2.
+    assert_ne!(code, 0, "expected non-zero exit code for unknown job id");
+}
+
 // ── full.log ───────────────────────────────────────────────────────────────────
 
 #[test]
