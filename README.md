@@ -390,6 +390,67 @@ The `action` field in each `jobs` entry is one of:
 - `"would_delete"` — would be removed in a real run (dry-run only)
 - `"skipped"` — preserved with an explanation in `reason`
 
+## delete
+
+Explicitly remove one or all finished job directories. Unlike `gc`, which uses
+age-based retention across the whole jobs root, `delete` is operator-driven:
+remove one known job immediately, or clear finished jobs belonging to the
+current working directory.
+
+```
+agent-exec delete <JOB_ID>
+agent-exec delete --all [--dry-run]
+```
+
+**State rules**
+
+- `delete <JOB_ID>` — removes jobs in state `created`, `exited`, `killed`, or
+  `failed`. Returns an error for `running` jobs (the job directory is preserved).
+- `delete --all` — removes only terminal jobs (`exited`, `killed`, `failed`)
+  whose persisted `meta.json.cwd` matches the caller's current working
+  directory. Jobs in `created` or `running` state are skipped and reported in
+  the response.
+
+**Examples**
+
+```bash
+# Remove a specific finished job.
+agent-exec delete 01JA1B2C3D4E5F6G7H8I9J0K1L
+
+# Preview which jobs would be removed from the current directory.
+agent-exec delete --dry-run --all
+
+# Remove all terminal jobs from the current directory.
+agent-exec delete --all
+
+# Operate on a specific jobs root.
+agent-exec --root /tmp/jobs delete --all
+```
+
+**JSON response fields**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `root` | string | Resolved jobs root path |
+| `dry_run` | bool | Whether this was a preview-only run |
+| `deleted` | number | Count of directories actually deleted (0 when `dry_run=true`) |
+| `skipped` | number | Count of in-scope directories that were not deleted |
+| `jobs` | array | Per-job details: `job_id`, `state`, `action`, `reason` |
+
+The `action` field in each `jobs` entry is one of:
+- `"deleted"` — directory was removed
+- `"would_delete"` — would be removed in a real run (dry-run only)
+- `"skipped"` — preserved with an explanation in `reason` (e.g. `"running"`, `"created"`)
+
+**Difference between `delete` and `gc`**
+
+| | `delete` | `gc` |
+|--|----------|------|
+| Scope | Single job or cwd-scoped finished jobs | Entire jobs root |
+| Trigger | Explicit operator action | Age-based retention policy |
+| Running jobs | Always rejected / skipped | Always skipped |
+| Dry-run | `--dry-run` flag | `--dry-run` flag |
+
 ## Configuration
 
 `agent-exec` reads an optional `config.toml` to configure the shell wrapper used for command-string execution.

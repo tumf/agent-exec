@@ -320,6 +320,22 @@ enum Command {
         job_id: String,
     },
 
+    /// Delete one or all finished jobs.
+    Delete {
+        /// Delete all finished jobs whose persisted cwd matches the caller's current directory.
+        /// Mutually exclusive with JOB_ID.
+        #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue)]
+        all: bool,
+
+        /// Report actions without performing any deletions.
+        #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue)]
+        dry_run: bool,
+
+        /// Job ID to delete. Mutually exclusive with --all.
+        #[arg(required_unless_present = "all", conflicts_with = "all")]
+        job_id: Option<String>,
+    },
+
     /// Garbage collect old terminal job directories.
     Gc {
         /// Retention duration: jobs older than this are deleted (e.g. 30d, 24h, 7d).
@@ -729,6 +745,19 @@ fn run(cli: Cli) -> Result<()> {
                 job_id: &job_id,
                 root: root.as_deref(),
                 signal: &signal,
+            })?;
+        }
+
+        Command::Delete {
+            all,
+            dry_run,
+            job_id,
+        } => {
+            agent_exec::delete::execute(agent_exec::delete::DeleteOpts {
+                root: root.as_deref(),
+                job_id: job_id.as_deref(),
+                all,
+                dry_run,
             })?;
         }
 

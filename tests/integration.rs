@@ -4970,3 +4970,211 @@ fn yaml_flag_after_subcommand_works() {
         });
     assert!(parsed.is_mapping(), "expected YAML mapping");
 }
+
+// ── delete ─────────────────────────────────────────────────────────────────────
+
+/// `delete <job_id>` removes a finished job and returns type="delete".
+#[test]
+fn delete_single_removes_finished_job() {
+    let h = TestHarness::new();
+
+    // Create a job and wait for it to finish.
+    let run_v = h.run(&["run", "--snapshot-after", "0", "echo", "delete_me"]);
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+    h.run(&["wait", &job_id]);
+
+    // Delete the job.
+    let v = h.run(&["delete", &job_id]);
+    assert_envelope(&v, "delete", true);
+    assert_eq!(v["deleted"].as_u64().unwrap_or(0), 1, "expected deleted=1: {v}");
+    assert_eq!(v["skipped"].as_u64().unwrap_or(1), 0, "expected skipped=0: {v}");
+    assert!(v["jobs"].is_array(), "jobs field missing: {v}");
+    let jobs = v["jobs"].as_array().unwrap();
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0]["job_id"].as_str().unwrap_or(""), job_id);
+    assert_eq!(jobs[0]["action"].as_str().unwrap_or(""), "deleted");
+
+    // Subsequent status must return job_not_found.
+    let status_v = h.run(&["status", &job_id]);
+    assert!(!status_v["ok"].as_bool().unwrap_or(true), "expected ok=false after delete: {status_v}");
+    assert_eq!(status_v["error"]["code"].as_str().unwrap_or(""), "job_not_found");
+}
+
+/// `delete <job_id>` rejects a running job with error.code="invalid_state".
+#[test]
+fn delete_running_job_returns_invalid_state() {
+    let h = TestHarness::new();
+
+    // Start a long-running job.
+    let run_v = h.run(&["run", "--snapshot-after", "0", "sleep", "30"]);
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+    assert_eq!(run_v["state"].as_str().unwrap_or(""), "running");
+
+    // Attempt to delete it.
+    let v = h.run(&["delete", &job_id]);
+    assert!(!v["ok"].as_bool().unwrap_or(true), "expected ok=false for running job: {v}");
+    assert_eq!(v["error"]["code"].as_str().unwrap_or(""), "invalid_state");
+
+    // The job directory must still exist (verify via status).
+    let status_v = h.run(&["status", &job_id]);
+    assert!(status_v["ok"].as_bool().unwrap_or(false), "job directory must still exist: {status_v}");
+
+    // Clean up.
+    h.run(&["kill", &job_id]);
+}
+
+/// `delete <job_id>` on a non-existent job returns job_not_found.
+#[test]
+fn delete_nonexistent_job_returns_job_not_found() {
+    let h = TestHarness::new();
+    let v = h.run(&["delete", "NONEXISTENT_JOB_ID_XYZ"]);
+    assert!(!v["ok"].as_bool().unwrap_or(true), "expected ok=false: {v}");
+    assert_eq!(v["error"]["code"].as_str().unwrap_or(""), "job_not_found");
+}
+
+/// `delete --dry-run <job_id>` reports the deletion but does NOT remove the directory.
+#[test]
+fn delete_dry_run_single_preserves_directory() {
+    let h = TestHarness::new();
+
+    let run_v = h.run(&["run", "--snapshot-after", "0", "echo", "dry_run_single"]);
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+    h.run(&["wait", &job_id]);
+
+    let v = h.run(&["delete", "--dry-run", &job_id]);
+    assert_envelope(&v, "delete", true);
+    assert_eq!(v["dry_run"].as_bool().unwrap_or(false), true);
+    assert_eq!(v["deleted"].as_u64().unwrap_or(1), 0, "dry-run must not count deleted: {v}");
+    let jobs = v["jobs"].as_array().unwrap();
+    assert_eq!(jobs[0]["action"].as_str().unwrap_or(""), "would_delete");
+
+    // Job must still be accessible.
+    let status_v = h.run(&["status", &job_id]);
+    assert!(status_v["ok"].as_bool().unwrap_or(false), "job must still exist after dry-run: {status_v}");
+}
+
+/// `delete --all` deletes only terminal jobs in the caller's cwd; jobs from other
+/// cwds are left untouched.
+#[test]
+fn delete_all_scopes_to_current_cwd() {
+    let h = TestHarness::new();
+    let dir_a = tempfile::tempdir().unwrap();
+    let dir_b = tempfile::tempdir().unwrap();
+
+    // Create finished job A in dir_a.
+    let (va, _) = run_cmd_with_root_and_cwd(
+        &["run", "--snapshot-after", "0", "echo", "job_a"],
+        Some(h.root()),
+        Some(dir_a.path()),
+    );
+    let job_a = va["job_id"].as_str().unwrap().to_string();
+
+    // Create finished job B in dir_b.
+    let (vb, _) = run_cmd_with_root_and_cwd(
+        &["run", "--snapshot-after", "0", "echo", "job_b"],
+        Some(h.root()),
+        Some(dir_b.path()),
+    );
+    let job_b = vb["job_id"].as_str().unwrap().to_string();
+
+    // Wait for both to finish.
+    h.run(&["wait", &job_a]);
+    h.run(&["wait", &job_b]);
+
+    // Run `delete --all` from dir_a — only job A should be deleted.
+    let (del_v, _) = run_cmd_with_root_and_cwd(
+        &["delete", "--all"],
+        Some(h.root()),
+        Some(dir_a.path()),
+    );
+    assert_envelope(&del_v, "delete", true);
+
+    // Job A must be gone.
+    let status_a = h.run(&["status", &job_a]);
+    assert_eq!(
+        status_a["error"]["code"].as_str().unwrap_or(""),
+        "job_not_found",
+        "job A must be deleted: {status_a}"
+    );
+
+    // Job B must still exist.
+    let status_b = h.run(&["status", &job_b]);
+    assert!(status_b["ok"].as_bool().unwrap_or(false), "job B must survive: {status_b}");
+}
+
+/// `delete --all` does NOT delete running or created jobs.
+#[test]
+fn delete_all_skips_running_and_created_jobs() {
+    let h = TestHarness::new();
+    let dir = tempfile::tempdir().unwrap();
+
+    // Start a long-running job.
+    let (run_v, _) = run_cmd_with_root_and_cwd(
+        &["run", "--snapshot-after", "0", "sleep", "30"],
+        Some(h.root()),
+        Some(dir.path()),
+    );
+    let running_job_id = run_v["job_id"].as_str().unwrap().to_string();
+    assert_eq!(run_v["state"].as_str().unwrap_or(""), "running");
+
+    // Run delete --all from the same directory.
+    let (del_v, _) = run_cmd_with_root_and_cwd(
+        &["delete", "--all"],
+        Some(h.root()),
+        Some(dir.path()),
+    );
+    assert_envelope(&del_v, "delete", true);
+    assert_eq!(del_v["deleted"].as_u64().unwrap_or(1), 0, "should delete nothing: {del_v}");
+
+    // Running job must still be alive.
+    let status_v = h.run(&["status", &running_job_id]);
+    assert!(status_v["ok"].as_bool().unwrap_or(false), "running job must survive: {status_v}");
+
+    // Verify it appears in the skipped list.
+    let jobs = del_v["jobs"].as_array().unwrap();
+    let skipped = jobs.iter().filter(|j| j["action"].as_str().unwrap_or("") == "skipped").count();
+    assert!(skipped >= 1, "expected at least one skipped entry: {del_v}");
+
+    // Clean up.
+    h.run(&["kill", &running_job_id]);
+}
+
+/// `delete --dry-run --all` reports candidates without removing any directories.
+#[test]
+fn delete_all_dry_run_preserves_directories() {
+    let h = TestHarness::new();
+    let dir = tempfile::tempdir().unwrap();
+
+    // Finish a job in `dir`.
+    let (run_v, _) = run_cmd_with_root_and_cwd(
+        &["run", "--snapshot-after", "0", "echo", "dry_all"],
+        Some(h.root()),
+        Some(dir.path()),
+    );
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+    h.run(&["wait", &job_id]);
+
+    // Dry-run delete --all.
+    let (del_v, _) = run_cmd_with_root_and_cwd(
+        &["delete", "--dry-run", "--all"],
+        Some(h.root()),
+        Some(dir.path()),
+    );
+    assert_envelope(&del_v, "delete", true);
+    assert_eq!(del_v["dry_run"].as_bool().unwrap_or(false), true);
+    assert_eq!(del_v["deleted"].as_u64().unwrap_or(1), 0, "dry-run must not delete: {del_v}");
+
+    let jobs = del_v["jobs"].as_array().unwrap();
+    let would_delete: Vec<_> = jobs
+        .iter()
+        .filter(|j| j["action"].as_str().unwrap_or("") == "would_delete")
+        .collect();
+    assert!(!would_delete.is_empty(), "expected at least one would_delete entry: {del_v}");
+
+    // Job directory must still exist.
+    let status_v = h.run(&["status", &job_id]);
+    assert!(
+        status_v["ok"].as_bool().unwrap_or(false),
+        "job must still exist after dry-run: {status_v}"
+    );
+}
