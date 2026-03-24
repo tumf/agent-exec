@@ -90,7 +90,7 @@ pub fn set(opts: NotifySetOpts) -> Result<()> {
     let response = Response::new(
         "notify.set",
         NotifySetData {
-            job_id: opts.job_id.to_string(),
+            job_id: job_dir.job_id.clone(),
             notification,
         },
     );
