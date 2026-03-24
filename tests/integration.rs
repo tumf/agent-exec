@@ -4888,10 +4888,9 @@ fn run_yaml(args: &[&str], root: &str) -> serde_json::Value {
     };
     assert!(!raw.trim().is_empty(), "stdout is empty (stderr: {stderr})");
     // Parse YAML into serde_json::Value via serde_yaml.
-    let yaml_val: serde_yaml::Value =
-        serde_yaml::from_str(&raw).unwrap_or_else(|e| {
-            panic!("stdout is not valid YAML: {e}\nstdout: {raw}\nstderr: {stderr}")
-        });
+    let yaml_val: serde_yaml::Value = serde_yaml::from_str(&raw).unwrap_or_else(|e| {
+        panic!("stdout is not valid YAML: {e}\nstdout: {raw}\nstderr: {stderr}")
+    });
     // Convert to JSON value for reuse of assert_envelope helper.
     serde_json::to_value(&yaml_val).expect("yaml->json conversion")
 }
@@ -4899,13 +4898,16 @@ fn run_yaml(args: &[&str], root: &str) -> serde_json::Value {
 #[test]
 fn yaml_flag_run_returns_yaml() {
     let h = TestHarness::new();
-    let raw = run_yaml_raw(&["run", "--snapshot-after", "0", "echo", "yaml_test"], h.root());
+    let raw = run_yaml_raw(
+        &["run", "--snapshot-after", "0", "echo", "yaml_test"],
+        h.root(),
+    );
     // Must be parseable YAML (not JSON object on one line).
     assert!(!raw.trim().is_empty(), "stdout empty");
     // A JSON single-line response would start with '{'; YAML mapping starts with key or '---'.
     // Either way it must not be a single-line JSON blob.
-    let parsed: serde_yaml::Value = serde_yaml::from_str(&raw)
-        .unwrap_or_else(|e| panic!("not valid YAML: {e}\nstdout: {raw}"));
+    let parsed: serde_yaml::Value =
+        serde_yaml::from_str(&raw).unwrap_or_else(|e| panic!("not valid YAML: {e}\nstdout: {raw}"));
     assert!(parsed.is_mapping(), "expected YAML mapping");
 }
 
@@ -4932,10 +4934,7 @@ fn yaml_flag_error_response() {
     let h = TestHarness::new();
     let v = run_yaml(&["status", "NONEXISTENT_JOB_ID_YAML"], h.root());
     assert_envelope(&v, "error", false);
-    assert_eq!(
-        v["error"]["code"].as_str().unwrap_or(""),
-        "job_not_found"
-    );
+    assert_eq!(v["error"]["code"].as_str().unwrap_or(""), "job_not_found");
 }
 
 #[test]
@@ -4943,7 +4942,10 @@ fn yaml_flag_schema_returns_yaml() {
     let h = TestHarness::new();
     let v = run_yaml(&["schema"], h.root());
     assert_envelope(&v, "schema", true);
-    assert!(v["schema"].is_object() || v["schema"].is_string(), "schema field missing or wrong type: {v}");
+    assert!(
+        v["schema"].is_object() || v["schema"].is_string(),
+        "schema field missing or wrong type: {v}"
+    );
 }
 
 #[test]
@@ -4960,14 +4962,19 @@ fn yaml_flag_after_subcommand_works() {
     let h = TestHarness::new();
     let bin = binary();
     let mut cmd = Command::new(&bin);
-    cmd.args(["run", "--yaml", "--snapshot-after", "0", "echo", "global_test"]);
+    cmd.args([
+        "run",
+        "--yaml",
+        "--snapshot-after",
+        "0",
+        "echo",
+        "global_test",
+    ]);
     cmd.env("AGENT_EXEC_ROOT", h.root());
     let output = cmd.output().expect("run binary");
     let raw = String::from_utf8_lossy(&output.stdout);
     let parsed: serde_yaml::Value =
-        serde_yaml::from_str(&raw).unwrap_or_else(|e| {
-            panic!("not valid YAML: {e}\nstdout: {raw}")
-        });
+        serde_yaml::from_str(&raw).unwrap_or_else(|e| panic!("not valid YAML: {e}\nstdout: {raw}"));
     assert!(parsed.is_mapping(), "expected YAML mapping");
 }
 
@@ -4986,8 +4993,16 @@ fn delete_single_removes_finished_job() {
     // Delete the job.
     let v = h.run(&["delete", &job_id]);
     assert_envelope(&v, "delete", true);
-    assert_eq!(v["deleted"].as_u64().unwrap_or(0), 1, "expected deleted=1: {v}");
-    assert_eq!(v["skipped"].as_u64().unwrap_or(1), 0, "expected skipped=0: {v}");
+    assert_eq!(
+        v["deleted"].as_u64().unwrap_or(0),
+        1,
+        "expected deleted=1: {v}"
+    );
+    assert_eq!(
+        v["skipped"].as_u64().unwrap_or(1),
+        0,
+        "expected skipped=0: {v}"
+    );
     assert!(v["jobs"].is_array(), "jobs field missing: {v}");
     let jobs = v["jobs"].as_array().unwrap();
     assert_eq!(jobs.len(), 1);
@@ -4996,8 +5011,14 @@ fn delete_single_removes_finished_job() {
 
     // Subsequent status must return job_not_found.
     let status_v = h.run(&["status", &job_id]);
-    assert!(!status_v["ok"].as_bool().unwrap_or(true), "expected ok=false after delete: {status_v}");
-    assert_eq!(status_v["error"]["code"].as_str().unwrap_or(""), "job_not_found");
+    assert!(
+        !status_v["ok"].as_bool().unwrap_or(true),
+        "expected ok=false after delete: {status_v}"
+    );
+    assert_eq!(
+        status_v["error"]["code"].as_str().unwrap_or(""),
+        "job_not_found"
+    );
 }
 
 /// `delete <job_id>` rejects a running job with error.code="invalid_state".
@@ -5012,12 +5033,18 @@ fn delete_running_job_returns_invalid_state() {
 
     // Attempt to delete it.
     let v = h.run(&["delete", &job_id]);
-    assert!(!v["ok"].as_bool().unwrap_or(true), "expected ok=false for running job: {v}");
+    assert!(
+        !v["ok"].as_bool().unwrap_or(true),
+        "expected ok=false for running job: {v}"
+    );
     assert_eq!(v["error"]["code"].as_str().unwrap_or(""), "invalid_state");
 
     // The job directory must still exist (verify via status).
     let status_v = h.run(&["status", &job_id]);
-    assert!(status_v["ok"].as_bool().unwrap_or(false), "job directory must still exist: {status_v}");
+    assert!(
+        status_v["ok"].as_bool().unwrap_or(false),
+        "job directory must still exist: {status_v}"
+    );
 
     // Clean up.
     h.run(&["kill", &job_id]);
@@ -5043,14 +5070,21 @@ fn delete_dry_run_single_preserves_directory() {
 
     let v = h.run(&["delete", "--dry-run", &job_id]);
     assert_envelope(&v, "delete", true);
-    assert_eq!(v["dry_run"].as_bool().unwrap_or(false), true);
-    assert_eq!(v["deleted"].as_u64().unwrap_or(1), 0, "dry-run must not count deleted: {v}");
+    assert!(v["dry_run"].as_bool().unwrap_or(false));
+    assert_eq!(
+        v["deleted"].as_u64().unwrap_or(1),
+        0,
+        "dry-run must not count deleted: {v}"
+    );
     let jobs = v["jobs"].as_array().unwrap();
     assert_eq!(jobs[0]["action"].as_str().unwrap_or(""), "would_delete");
 
     // Job must still be accessible.
     let status_v = h.run(&["status", &job_id]);
-    assert!(status_v["ok"].as_bool().unwrap_or(false), "job must still exist after dry-run: {status_v}");
+    assert!(
+        status_v["ok"].as_bool().unwrap_or(false),
+        "job must still exist after dry-run: {status_v}"
+    );
 }
 
 /// `delete --all` deletes only terminal jobs in the caller's cwd; jobs from other
@@ -5082,11 +5116,8 @@ fn delete_all_scopes_to_current_cwd() {
     h.run(&["wait", &job_b]);
 
     // Run `delete --all` from dir_a — only job A should be deleted.
-    let (del_v, _) = run_cmd_with_root_and_cwd(
-        &["delete", "--all"],
-        Some(h.root()),
-        Some(dir_a.path()),
-    );
+    let (del_v, _) =
+        run_cmd_with_root_and_cwd(&["delete", "--all"], Some(h.root()), Some(dir_a.path()));
     assert_envelope(&del_v, "delete", true);
 
     // Job A must be gone.
@@ -5099,7 +5130,10 @@ fn delete_all_scopes_to_current_cwd() {
 
     // Job B must still exist.
     let status_b = h.run(&["status", &job_b]);
-    assert!(status_b["ok"].as_bool().unwrap_or(false), "job B must survive: {status_b}");
+    assert!(
+        status_b["ok"].as_bool().unwrap_or(false),
+        "job B must survive: {status_b}"
+    );
 }
 
 /// `delete --all` does NOT delete running or created jobs.
@@ -5118,21 +5152,28 @@ fn delete_all_skips_running_and_created_jobs() {
     assert_eq!(run_v["state"].as_str().unwrap_or(""), "running");
 
     // Run delete --all from the same directory.
-    let (del_v, _) = run_cmd_with_root_and_cwd(
-        &["delete", "--all"],
-        Some(h.root()),
-        Some(dir.path()),
-    );
+    let (del_v, _) =
+        run_cmd_with_root_and_cwd(&["delete", "--all"], Some(h.root()), Some(dir.path()));
     assert_envelope(&del_v, "delete", true);
-    assert_eq!(del_v["deleted"].as_u64().unwrap_or(1), 0, "should delete nothing: {del_v}");
+    assert_eq!(
+        del_v["deleted"].as_u64().unwrap_or(1),
+        0,
+        "should delete nothing: {del_v}"
+    );
 
     // Running job must still be alive.
     let status_v = h.run(&["status", &running_job_id]);
-    assert!(status_v["ok"].as_bool().unwrap_or(false), "running job must survive: {status_v}");
+    assert!(
+        status_v["ok"].as_bool().unwrap_or(false),
+        "running job must survive: {status_v}"
+    );
 
     // Verify it appears in the skipped list.
     let jobs = del_v["jobs"].as_array().unwrap();
-    let skipped = jobs.iter().filter(|j| j["action"].as_str().unwrap_or("") == "skipped").count();
+    let skipped = jobs
+        .iter()
+        .filter(|j| j["action"].as_str().unwrap_or("") == "skipped")
+        .count();
     assert!(skipped >= 1, "expected at least one skipped entry: {del_v}");
 
     // Clean up.
@@ -5161,15 +5202,22 @@ fn delete_all_dry_run_preserves_directories() {
         Some(dir.path()),
     );
     assert_envelope(&del_v, "delete", true);
-    assert_eq!(del_v["dry_run"].as_bool().unwrap_or(false), true);
-    assert_eq!(del_v["deleted"].as_u64().unwrap_or(1), 0, "dry-run must not delete: {del_v}");
+    assert!(del_v["dry_run"].as_bool().unwrap_or(false));
+    assert_eq!(
+        del_v["deleted"].as_u64().unwrap_or(1),
+        0,
+        "dry-run must not delete: {del_v}"
+    );
 
     let jobs = del_v["jobs"].as_array().unwrap();
     let would_delete: Vec<_> = jobs
         .iter()
         .filter(|j| j["action"].as_str().unwrap_or("") == "would_delete")
         .collect();
-    assert!(!would_delete.is_empty(), "expected at least one would_delete entry: {del_v}");
+    assert!(
+        !would_delete.is_empty(),
+        "expected at least one would_delete entry: {del_v}"
+    );
 
     // Job directory must still exist.
     let status_v = h.run(&["status", &job_id]);
@@ -5177,4 +5225,27 @@ fn delete_all_dry_run_preserves_directories() {
         status_v["ok"].as_bool().unwrap_or(false),
         "job must still exist after dry-run: {status_v}"
     );
+}
+
+#[test]
+fn version_flag_prints_version_and_exits_zero() {
+    let bin = binary();
+    let pkg_version = env!("CARGO_PKG_VERSION");
+
+    for flag in &["--version", "-V"] {
+        let output = std::process::Command::new(&bin)
+            .arg(flag)
+            .output()
+            .unwrap_or_else(|e| panic!("failed to run binary with {flag}: {e}"));
+        assert!(
+            output.status.success(),
+            "exit code is non-zero for {flag}: {:?}",
+            output.status
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("agent-exec") && stdout.contains(pkg_version),
+            "stdout does not match 'agent-exec <version>' for {flag}: {stdout}"
+        );
+    }
 }
