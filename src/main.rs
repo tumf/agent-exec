@@ -27,6 +27,7 @@ fn parse_filter_pattern(s: &str) -> Result<String, String> {
 
 #[derive(Debug, Parser)]
 #[command(name = "agent-exec")]
+#[command(version)]
 #[command(about = "Non-interactive agent job runner", long_about = None)]
 struct Cli {
     /// Increase log verbosity (-v, -vv); logs go to stderr.
