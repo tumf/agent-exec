@@ -3,3 +3,4 @@ skills/dist/
 **/*.rs.bk
 .leann
 .tldr
+/.serena/project.yml
