@@ -326,6 +326,25 @@ fn kill_returns_json() {
     assert!(v.get("signal").is_some(), "signal missing");
 }
 
+#[test]
+fn kill_signal_non_listed_value_accepted_by_clap() {
+    // Verifies that a signal name not in the suggested list (e.g., QUIT) is
+    // accepted by clap (exit code != 2) and reaches the runtime error path
+    // (job not found), rather than being rejected as a usage error.
+    let bin = binary();
+    let output = std::process::Command::new(&bin)
+        .args(["kill", "--signal", "QUIT", "NONEXISTENT_JOB_ID_XYZ"])
+        .output()
+        .expect("run binary");
+    let code = output.status.code().unwrap_or(-1);
+    assert_ne!(
+        code, 2,
+        "exit code 2 means clap rejected 'QUIT' as a usage error; it should be accepted"
+    );
+    // Exit code should be non-zero (job not found runtime error) but not 2.
+    assert_ne!(code, 0, "expected non-zero exit code for unknown job id");
+}
+
 // ── full.log ───────────────────────────────────────────────────────────────────
 
 #[test]
@@ -5224,6 +5243,98 @@ fn delete_all_dry_run_preserves_directories() {
     assert!(
         status_v["ok"].as_bool().unwrap_or(false),
         "job must still exist after dry-run: {status_v}"
+    );
+}
+
+/// Run the binary with given args and return raw stdout + exit code (no JSON parsing).
+fn run_raw(args: &[&str]) -> (String, i32) {
+    let bin = binary();
+    let mut cmd = Command::new(&bin);
+    cmd.args(args);
+    let output = cmd.output().expect("run binary");
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let code = output.status.code().unwrap_or(-1);
+    (stdout, code)
+}
+
+#[test]
+fn completions_bash_outputs_nonempty_script() {
+    let (stdout, code) = run_raw(&["completions", "bash"]);
+    assert_eq!(code, 0, "exit code should be 0 for 'completions bash'");
+    assert!(
+        !stdout.trim().is_empty(),
+        "stdout should be non-empty for 'completions bash'"
+    );
+    // Bash completion scripts typically start with a function definition.
+    assert!(
+        stdout.contains("agent-exec") || stdout.contains("agent_exec"),
+        "bash completion script should reference agent-exec: {stdout}"
+    );
+}
+
+#[test]
+fn completions_zsh_outputs_nonempty_script() {
+    let (stdout, code) = run_raw(&["completions", "zsh"]);
+    assert_eq!(code, 0, "exit code should be 0 for 'completions zsh'");
+    assert!(
+        !stdout.trim().is_empty(),
+        "stdout should be non-empty for 'completions zsh'"
+    );
+}
+
+#[test]
+fn completions_fish_outputs_nonempty_script() {
+    let (stdout, code) = run_raw(&["completions", "fish"]);
+    assert_eq!(code, 0, "exit code should be 0 for 'completions fish'");
+    assert!(
+        !stdout.trim().is_empty(),
+        "stdout should be non-empty for 'completions fish'"
+    );
+}
+
+#[test]
+fn completions_powershell_outputs_nonempty_script() {
+    let (stdout, code) = run_raw(&["completions", "powershell"]);
+    assert_eq!(
+        code, 0,
+        "exit code should be 0 for 'completions powershell'"
+    );
+    assert!(
+        !stdout.trim().is_empty(),
+        "stdout should be non-empty for 'completions powershell'"
+    );
+}
+
+#[test]
+fn completions_invalid_shell_exits_with_code_2() {
+    let bin = binary();
+    let output = Command::new(&bin)
+        .args(["completions", "invalid"])
+        .output()
+        .expect("run binary");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "expected exit code 2 for 'completions invalid'"
+    );
+}
+
+#[test]
+fn list_state_invalid_value_exits_with_code_2() {
+    let bin = binary();
+    let output = Command::new(&bin)
+        .args(["list", "--all", "--state", "bogus"])
+        .output()
+        .expect("run binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "expected exit code 2 for invalid --state value, stdout: {stdout}"
+    );
+    assert!(
+        stdout.trim().is_empty(),
+        "stdout should be empty for invalid --state usage error: {stdout}"
     );
 }
 

@@ -3,7 +3,9 @@
 //! All stdout is JSON only. Tracing logs go to stderr.
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::builder::ValueHint;
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::Shell;
 use tracing_subscriber::EnvFilter;
 
 use agent_exec::jobstore::{AmbiguousJobId, InvalidJobState, JobNotFound};
@@ -23,6 +25,34 @@ fn parse_filter_pattern(s: &str) -> Result<String, String> {
     agent_exec::tag::validate_filter_pattern(s)
         .map(|()| s.to_string())
         .map_err(|e| e.to_string())
+}
+
+/// Custom value parser for `--signal`: exposes common signal names as completion
+/// candidates while still accepting any arbitrary signal string at runtime.
+#[derive(Clone, Debug)]
+struct SignalValueParser;
+
+impl clap::builder::TypedValueParser for SignalValueParser {
+    type Value = String;
+
+    fn parse_ref(
+        &self,
+        _cmd: &clap::Command,
+        _arg: Option<&clap::Arg>,
+        value: &std::ffi::OsStr,
+    ) -> Result<Self::Value, clap::error::Error> {
+        Ok(value.to_string_lossy().to_string())
+    }
+
+    fn possible_values(
+        &self,
+    ) -> Option<Box<dyn Iterator<Item = clap::builder::PossibleValue> + '_>> {
+        Some(Box::new(
+            ["TERM", "INT", "KILL", "HUP", "USR1", "USR2"]
+                .iter()
+                .map(|s| clap::builder::PossibleValue::new(*s)),
+        ))
+    }
 }
 
 #[derive(Debug, Parser)]
@@ -64,7 +94,7 @@ enum Command {
         kill_after: u64,
 
         /// Working directory for the command.
-        #[arg(long)]
+        #[arg(long, value_hint = ValueHint::DirPath)]
         cwd: Option<String>,
 
         /// Set environment variable KEY=VALUE (persisted as durable config; may be repeated).
@@ -72,7 +102,7 @@ enum Command {
         env_vars: Vec<String>,
 
         /// Load environment variables from a file (persisted as path reference; may be repeated).
-        #[arg(long = "env-file", value_name = "FILE")]
+        #[arg(long = "env-file", value_name = "FILE", value_hint = ValueHint::FilePath)]
         env_files: Vec<String>,
 
         /// Do not inherit the current process environment at start time.
@@ -96,11 +126,11 @@ enum Command {
         notify_command: Option<String>,
 
         /// File path that receives one NDJSON `job.finished` event per completed job.
-        #[arg(long, value_name = "PATH")]
+        #[arg(long, value_name = "PATH", value_hint = ValueHint::FilePath)]
         notify_file: Option<String>,
 
         /// Path to a config.toml file to load (overrides XDG default).
-        #[arg(long, value_name = "PATH")]
+        #[arg(long, value_name = "PATH", value_hint = ValueHint::FilePath)]
         config: Option<String>,
 
         /// Shell wrapper program and flags (e.g. "bash -lc"). Overrides config and built-in default.
@@ -128,11 +158,11 @@ enum Command {
         output_command: Option<String>,
 
         /// File path that receives one NDJSON event per output match.
-        #[arg(long, value_name = "PATH")]
+        #[arg(long, value_name = "PATH", value_hint = ValueHint::FilePath)]
         output_file: Option<String>,
 
         /// Command and arguments to run when `start` is called.
-        #[arg(required = true, trailing_var_arg = true)]
+        #[arg(required = true, trailing_var_arg = true, value_hint = ValueHint::CommandWithArguments)]
         command: Vec<String>,
     },
 
@@ -189,7 +219,7 @@ enum Command {
         kill_after: u64,
 
         /// Working directory for the command.
-        #[arg(long)]
+        #[arg(long, value_hint = ValueHint::DirPath)]
         cwd: Option<String>,
 
         /// Set environment variable KEY=VALUE (may be repeated).
@@ -197,7 +227,7 @@ enum Command {
         env_vars: Vec<String>,
 
         /// Load environment variables from a file (may be repeated, applied in order).
-        #[arg(long = "env-file", value_name = "FILE")]
+        #[arg(long = "env-file", value_name = "FILE", value_hint = ValueHint::FilePath)]
         env_files: Vec<String>,
 
         /// Do not inherit the current process environment.
@@ -217,7 +247,7 @@ enum Command {
         tags: Vec<String>,
 
         /// Override full.log path.
-        #[arg(long)]
+        #[arg(long, value_hint = ValueHint::FilePath)]
         log: Option<String>,
 
         /// Interval (ms) at which state.json.updated_at is refreshed; 0 = disabled.
@@ -240,7 +270,7 @@ enum Command {
         notify_command: Option<String>,
 
         /// File path that receives one NDJSON `job.finished` event per completed job.
-        #[arg(long, value_name = "PATH")]
+        #[arg(long, value_name = "PATH", value_hint = ValueHint::FilePath)]
         notify_file: Option<String>,
 
         /// Pattern to match against output lines (enables output-match notifications).
@@ -260,11 +290,11 @@ enum Command {
         output_command: Option<String>,
 
         /// File path that receives one NDJSON event per output match.
-        #[arg(long = "output-file", value_name = "PATH")]
+        #[arg(long = "output-file", value_name = "PATH", value_hint = ValueHint::FilePath)]
         output_file: Option<String>,
 
         /// Path to a config.toml file to load (overrides XDG default).
-        #[arg(long, value_name = "PATH")]
+        #[arg(long, value_name = "PATH", value_hint = ValueHint::FilePath)]
         config: Option<String>,
 
         /// Shell wrapper program and flags used to execute command strings
@@ -273,7 +303,7 @@ enum Command {
         shell_wrapper: Option<String>,
 
         /// Command and arguments to run.
-        #[arg(required = true, trailing_var_arg = true)]
+        #[arg(required = true, trailing_var_arg = true, value_hint = ValueHint::CommandWithArguments)]
         command: Vec<String>,
     },
 
@@ -313,8 +343,8 @@ enum Command {
 
     /// Send a signal to a job.
     Kill {
-        /// Signal: TERM | INT | KILL (default: TERM).
-        #[arg(long, default_value = "TERM")]
+        /// Signal name to send (default: TERM).
+        #[arg(long, default_value = "TERM", value_parser = SignalValueParser)]
         signal: String,
 
         /// Job ID.
@@ -398,6 +428,13 @@ enum Command {
     Notify {
         #[command(subcommand)]
         subcommand: NotifySubcommand,
+    },
+
+    /// Generate shell completion scripts. Output is plain text, not JSON.
+    /// Pipe to your shell's completions directory or eval in your shell profile.
+    Completions {
+        /// Shell to generate completions for.
+        shell: Shell,
     },
 
     /// [Internal] Supervise a child process — not for direct use.
@@ -777,6 +814,12 @@ fn run(cli: Cli) -> Result<()> {
 
         Command::Schema => {
             agent_exec::schema_cmd::execute(agent_exec::schema_cmd::SchemaOpts)?;
+        }
+
+        Command::Completions { shell } => {
+            let mut cmd = Cli::command();
+            let name = cmd.get_name().to_string();
+            clap_complete::generate(shell, &mut cmd, name, &mut std::io::stdout());
         }
 
         Command::InstallSkills { source, global } => {
