@@ -5,6 +5,7 @@
 /// wait, kill, list, schema, and install-skills.
 pub mod config;
 pub mod create;
+pub mod delete;
 pub mod gc;
 pub mod install_skills;
 pub mod jobstore;

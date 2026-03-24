@@ -298,6 +298,33 @@ pub struct GcData {
     pub jobs: Vec<GcJobResult>,
 }
 
+/// Per-job result entry in a `delete` response.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DeleteJobResult {
+    pub job_id: String,
+    /// Job state as reported from state.json: created | running | exited | killed | failed | unknown
+    pub state: String,
+    /// What delete did: "deleted" | "would_delete" | "skipped"
+    pub action: String,
+    /// Human-readable explanation for the action.
+    pub reason: String,
+}
+
+/// Response for the `delete` command.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DeleteData {
+    /// Resolved root directory path.
+    pub root: String,
+    /// Whether this was a dry-run (no deletions performed).
+    pub dry_run: bool,
+    /// Number of job directories actually deleted (0 when dry_run=true).
+    pub deleted: u64,
+    /// Number of job directories skipped.
+    pub skipped: u64,
+    /// Per-job details.
+    pub jobs: Vec<DeleteJobResult>,
+}
+
 // ---------- install-skills response payload ----------
 
 /// Summary of a single installed skill, included in `install_skills` responses.
