@@ -5249,3 +5249,119 @@ fn version_flag_prints_version_and_exits_zero() {
         );
     }
 }
+
+// ── prefix-based job ID lookup ─────────────────────────────────────────────────
+
+/// Helper: run a command and return (json, exit_code).
+fn run_cmd_raw(args: &[&str], root: Option<&str>) -> (serde_json::Value, i32) {
+    let bin = binary();
+    let mut cmd = std::process::Command::new(&bin);
+    cmd.args(args);
+    if let Some(r) = root {
+        cmd.env("AGENT_EXEC_ROOT", r);
+    }
+    let output = cmd.output().expect("run binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let exit_code = output.status.code().unwrap_or(-1);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("stdout is not valid JSON: {e}\nstdout: {stdout}"));
+    (v, exit_code)
+}
+
+#[test]
+fn prefix_lookup_resolves() {
+    let h = TestHarness::new();
+
+    // Start a job and get its full ID.
+    let run_v = h.run(&["run", "--snapshot-after", "0", "echo", "prefix_test"]);
+    let full_id = run_v["job_id"]
+        .as_str()
+        .expect("job_id missing")
+        .to_string();
+
+    // Use a unique prefix (first 10 chars) to query status.
+    let prefix = &full_id[..10];
+    let v = h.run(&["status", prefix]);
+    assert_envelope(&v, "status", true);
+    // The response must contain the full resolved ID, not the prefix.
+    assert_eq!(
+        v["job_id"].as_str().unwrap_or(""),
+        full_id,
+        "job_id in response must be the resolved full ID"
+    );
+}
+
+#[test]
+fn ambiguous_prefix_returns_error() {
+    // We need two jobs whose IDs share a common prefix. Since ULIDs are time-based
+    // and tests run quickly, both jobs will typically share the same timestamp prefix.
+    // We run two jobs back-to-back and try a short prefix shared by both.
+    let h = TestHarness::new();
+
+    let run_v1 = h.run(&["run", "--snapshot-after", "0", "echo", "job1"]);
+    let id1 = run_v1["job_id"]
+        .as_str()
+        .expect("job_id missing")
+        .to_string();
+
+    let run_v2 = h.run(&["run", "--snapshot-after", "0", "echo", "job2"]);
+    let id2 = run_v2["job_id"]
+        .as_str()
+        .expect("job_id missing")
+        .to_string();
+
+    // Find a common prefix length (ULIDs share leading characters from the same epoch second).
+    let shared_len = id1
+        .chars()
+        .zip(id2.chars())
+        .take_while(|(a, b)| a == b)
+        .count();
+
+    if shared_len == 0 {
+        // Very unlikely in practice; skip if IDs don't share any prefix.
+        return;
+    }
+
+    let prefix = &id1[..shared_len];
+    let (v, exit_code) = run_cmd_raw(&["status", prefix], Some(h.root()));
+    assert_eq!(exit_code, 1, "ambiguous prefix must exit 1: {v}");
+    assert!(!v["ok"].as_bool().unwrap_or(true), "ok must be false: {v}");
+    assert_eq!(v["type"].as_str().unwrap_or(""), "error");
+    assert_eq!(
+        v["error"]["code"].as_str().unwrap_or(""),
+        "ambiguous_job_id",
+        "expected error.code=ambiguous_job_id: {v}"
+    );
+    assert!(
+        !v["error"]["retryable"].as_bool().unwrap_or(true),
+        "retryable must be false: {v}"
+    );
+}
+
+#[test]
+fn prefix_lookup_cross_command() {
+    let h = TestHarness::new();
+
+    // Start a job and get its full ID.
+    let run_v = h.run(&["run", "--snapshot-after", "0", "sleep", "60"]);
+    let full_id = run_v["job_id"]
+        .as_str()
+        .expect("job_id missing")
+        .to_string();
+    let prefix = &full_id[..10];
+
+    // tail accepts prefix.
+    let tail_v = h.run(&["tail", prefix]);
+    assert_envelope(&tail_v, "tail", true);
+    assert_eq!(tail_v["job_id"].as_str().unwrap_or(""), full_id);
+
+    // wait accepts prefix (with very short timeout so test doesn't hang).
+    let (wait_v, _) = run_cmd_raw(&["wait", "--timeout-ms", "100", prefix], Some(h.root()));
+    // ok may be false if job is still running, but job_id must be the full ID.
+    assert_eq!(wait_v["job_id"].as_str().unwrap_or(""), full_id);
+
+    // kill accepts prefix.
+    let kill_v = h.run(&["kill", prefix]);
+    assert_envelope(&kill_v, "kill", true);
+    assert_eq!(kill_v["job_id"].as_str().unwrap_or(""), full_id);
+}

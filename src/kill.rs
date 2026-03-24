@@ -61,7 +61,7 @@ pub fn execute(opts: KillOpts) -> Result<()> {
         let response = Response::new(
             "kill",
             KillData {
-                job_id: opts.job_id.to_string(),
+                job_id: job_dir.job_id.clone(),
                 signal: signal_upper,
             },
         );
@@ -77,13 +77,13 @@ pub fn execute(opts: KillOpts) -> Result<()> {
         #[cfg(not(windows))]
         send_signal(pid, &signal_upper)?;
 
-        info!(job_id = %opts.job_id, pid, signal = %signal_upper, "signal sent");
+        info!(job_id = %job_dir.job_id, pid, signal = %signal_upper, "signal sent");
 
         // Mark state as killed.
         let now = crate::run::now_rfc3339_pub();
         let new_state = JobState {
             job: JobStateJob {
-                id: opts.job_id.to_string(),
+                id: job_dir.job_id.clone(),
                 status: JobStatus::Killed,
                 started_at: state.started_at().map(|s| s.to_string()),
             },
@@ -103,7 +103,7 @@ pub fn execute(opts: KillOpts) -> Result<()> {
     let response = Response::new(
         "kill",
         KillData {
-            job_id: opts.job_id.to_string(),
+            job_id: job_dir.job_id.clone(),
             signal: signal_upper,
         },
     );

@@ -25,6 +25,32 @@ impl std::fmt::Display for JobNotFound {
 
 impl std::error::Error for JobNotFound {}
 
+/// Sentinel error type when a job ID prefix matches multiple job directories.
+/// Used by callers to emit `error.code = "ambiguous_job_id"` instead of `internal_error`.
+#[derive(Debug)]
+pub struct AmbiguousJobId {
+    pub prefix: String,
+    pub candidates: Vec<String>,
+}
+
+impl std::fmt::Display for AmbiguousJobId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ambiguous job ID prefix '{}': matches ", self.prefix)?;
+        if self.candidates.len() <= 5 {
+            write!(f, "{}", self.candidates.join(", "))
+        } else {
+            write!(
+                f,
+                "{}, ... and {} more",
+                self.candidates[..5].join(", "),
+                self.candidates.len() - 5
+            )
+        }
+    }
+}
+
+impl std::error::Error for AmbiguousJobId {}
+
 /// Sentinel error type for invalid job state transitions.
 /// Used by callers to emit `error.code = "invalid_state"` instead of `internal_error`.
 #[derive(Debug)]
@@ -90,25 +116,64 @@ pub struct TailMetrics {
 }
 
 /// Handle to a specific job's directory.
+#[derive(Debug)]
 pub struct JobDir {
     pub path: PathBuf,
     pub job_id: String,
 }
 
 impl JobDir {
-    /// Open an existing job directory by ID.
+    /// Open an existing job directory by ID or unambiguous prefix.
     ///
-    /// Returns `Err` wrapping `JobNotFound` when the directory does not exist,
-    /// so callers can emit `error.code = "job_not_found"` rather than `internal_error`.
+    /// Resolution order:
+    /// 1. Exact match: if `root/<job_id>` exists, return it immediately (no scan).
+    /// 2. Prefix scan: scan `root/` for directories whose name starts with `job_id`.
+    ///    - 0 matches → `Err(JobNotFound)`
+    ///    - 1 match   → resolve to that job
+    ///    - 2+ matches → `Err(AmbiguousJobId)`
     pub fn open(root: &std::path::Path, job_id: &str) -> Result<Self> {
+        // Exact-match fast path: no directory scan needed.
         let path = root.join(job_id);
-        if !path.exists() {
-            return Err(anyhow::Error::new(JobNotFound(job_id.to_string())));
+        if path.is_dir() {
+            return Ok(JobDir {
+                path,
+                job_id: job_id.to_string(),
+            });
         }
-        Ok(JobDir {
-            path,
-            job_id: job_id.to_string(),
-        })
+
+        // Prefix scan: collect all directories whose name starts with `job_id`.
+        let mut candidates: Vec<String> = std::fs::read_dir(root)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name.starts_with(job_id) && entry.path().is_dir() {
+                    Some(name)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        match candidates.len() {
+            0 => Err(anyhow::Error::new(JobNotFound(job_id.to_string()))),
+            1 => {
+                let resolved = candidates.remove(0);
+                let path = root.join(&resolved);
+                Ok(JobDir {
+                    path,
+                    job_id: resolved,
+                })
+            }
+            _ => {
+                candidates.sort();
+                Err(anyhow::Error::new(AmbiguousJobId {
+                    prefix: job_id.to_string(),
+                    candidates,
+                }))
+            }
+        }
     }
 
     /// Create a new job directory and write `meta.json` atomically.
@@ -636,5 +701,92 @@ mod tests {
             persisted.windows_job_name, None,
             "non-Windows: persisted state.json must not contain windows_job_name"
         );
+    }
+
+    // ---------- Prefix-based job ID resolution tests ----------
+
+    #[test]
+    fn job_dir_open_exact_match() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let job_id = "01JQXK3M8E5PQRSTVWYZ12ABCD";
+        let meta = make_meta(job_id, root);
+        JobDir::create(root, job_id, &meta).unwrap();
+
+        let result = JobDir::open(root, job_id).unwrap();
+        assert_eq!(result.job_id, job_id);
+    }
+
+    #[test]
+    fn job_dir_open_unique_prefix_resolves() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let job_id = "01JQXK3M8E5PQRSTVWYZ12ABCD";
+        let meta = make_meta(job_id, root);
+        JobDir::create(root, job_id, &meta).unwrap();
+
+        // Use a unique prefix
+        let result = JobDir::open(root, "01JQXK3M").unwrap();
+        assert_eq!(result.job_id, job_id);
+    }
+
+    #[test]
+    fn job_dir_open_not_found_returns_job_not_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        let err = JobDir::open(root, "ZZZZZ").unwrap_err();
+        assert!(
+            err.downcast_ref::<JobNotFound>().is_some(),
+            "expected JobNotFound, got: {err}"
+        );
+    }
+
+    #[test]
+    fn job_dir_open_ambiguous_prefix_returns_ambiguous() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let id_a = "01JQXK3M8EAAA00000000000AA";
+        let id_b = "01JQXK3M8EBBB00000000000BB";
+        let meta_a = make_meta(id_a, root);
+        let meta_b = make_meta(id_b, root);
+        JobDir::create(root, id_a, &meta_a).unwrap();
+        JobDir::create(root, id_b, &meta_b).unwrap();
+
+        let err = JobDir::open(root, "01JQXK3M8E").unwrap_err();
+        let ambiguous = err
+            .downcast_ref::<AmbiguousJobId>()
+            .expect("expected AmbiguousJobId");
+        assert_eq!(ambiguous.prefix, "01JQXK3M8E");
+        assert!(ambiguous.candidates.contains(&id_a.to_string()));
+        assert!(ambiguous.candidates.contains(&id_b.to_string()));
+    }
+
+    #[test]
+    fn ambiguous_job_id_display_up_to_5_candidates() {
+        let err = AmbiguousJobId {
+            prefix: "01J".to_string(),
+            candidates: vec![
+                "01JAAA".to_string(),
+                "01JBBB".to_string(),
+                "01JCCC".to_string(),
+            ],
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("01J"), "must include prefix: {msg}");
+        assert!(msg.contains("01JAAA"), "must list candidates: {msg}");
+    }
+
+    #[test]
+    fn ambiguous_job_id_display_truncates_beyond_5() {
+        let candidates: Vec<String> = (1..=8)
+            .map(|i| format!("01JCANDIDATE{i:02}0000000000"))
+            .collect();
+        let err = AmbiguousJobId {
+            prefix: "01J".to_string(),
+            candidates,
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("... and 3 more"), "must truncate: {msg}");
     }
 }

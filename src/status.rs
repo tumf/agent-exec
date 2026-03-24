@@ -26,7 +26,7 @@ pub fn execute(opts: StatusOpts) -> Result<()> {
     let response = Response::new(
         "status",
         StatusData {
-            job_id: opts.job_id.to_string(),
+            job_id: job_dir.job_id.clone(),
             state: state.status().as_str().to_string(),
             exit_code: state.exit_code(),
             created_at: meta.created_at,

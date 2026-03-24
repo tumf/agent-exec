@@ -51,7 +51,7 @@ pub fn execute(opts: WaitOpts) -> Result<()> {
             let response = Response::new(
                 "wait",
                 WaitData {
-                    job_id: opts.job_id.to_string(),
+                    job_id: job_dir.job_id.clone(),
                     state: state.status().as_str().to_string(),
                     exit_code: state.exit_code(),
                 },
@@ -67,7 +67,7 @@ pub fn execute(opts: WaitOpts) -> Result<()> {
             let response = Response::new(
                 "wait",
                 WaitData {
-                    job_id: opts.job_id.to_string(),
+                    job_id: job_dir.job_id.clone(),
                     state: state.status().as_str().to_string(),
                     exit_code: None,
                 },
