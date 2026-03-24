@@ -12,3 +12,8 @@
 
 - Add a short-ID display column to `list` output for quick visual reference.
 - Consider minimum prefix length policy if the job store grows very large.
+
+## Acceptance #1 Failure Follow-up
+
+- [x] Update `delete <JOB_ID>` to resolve unambiguous prefixes via `JobDir::open` instead of direct `root.join(job_id)` lookup.
+- [x] Add integration coverage for `delete` prefix behavior (unique prefix succeeds with resolved full ID; ambiguous prefix returns `error.code = "ambiguous_job_id"`).

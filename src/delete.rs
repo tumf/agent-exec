@@ -11,7 +11,7 @@
 use anyhow::{Result, anyhow};
 use tracing::debug;
 
-use crate::jobstore::{InvalidJobState, JobNotFound, resolve_root};
+use crate::jobstore::{InvalidJobState, JobDir, resolve_root};
 use crate::run::resolve_effective_cwd;
 use crate::schema::{DeleteData, DeleteJobResult, JobStatus, Response};
 
@@ -39,20 +39,23 @@ pub fn execute(opts: DeleteOpts) -> Result<()> {
     }
 }
 
-/// Delete a single explicit job by ID.
+/// Delete a single explicit job by ID or unambiguous prefix.
 ///
 /// Rejects running jobs with `InvalidJobState`.  Returns `JobNotFound` when
-/// the directory does not exist.
+/// the directory does not exist, and `AmbiguousJobId` when the prefix matches
+/// multiple jobs.
 fn delete_single(
     root: &std::path::Path,
     root_str: &str,
     job_id: &str,
     dry_run: bool,
 ) -> Result<()> {
-    let job_path = root.join(job_id);
-    if !job_path.exists() {
-        return Err(anyhow::Error::new(JobNotFound(job_id.to_string())));
-    }
+    // Use JobDir::open for prefix-based resolution (exact match fast path included).
+    // Returns AmbiguousJobId if the prefix matches multiple jobs.
+    let job_dir = JobDir::open(root, job_id)?;
+    let job_path = job_dir.path;
+    // Use the resolved canonical ID in all output (never the user-supplied prefix).
+    let resolved_id = job_dir.job_id;
 
     // Read state to determine whether the job is running.
     let state_path = job_path.join("state.json");
@@ -99,7 +102,7 @@ fn delete_single(
             deleted: if action == "deleted" { 1 } else { 0 },
             skipped: 0,
             jobs: vec![DeleteJobResult {
-                job_id: job_id.to_string(),
+                job_id: resolved_id,
                 state: state_str,
                 action: action.to_string(),
                 reason: "explicit_delete".to_string(),

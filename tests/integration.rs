@@ -5365,3 +5365,85 @@ fn prefix_lookup_cross_command() {
     assert_envelope(&kill_v, "kill", true);
     assert_eq!(kill_v["job_id"].as_str().unwrap_or(""), full_id);
 }
+
+#[test]
+fn delete_prefix_resolves_unique_match() {
+    let h = TestHarness::new();
+
+    // Create a finished job.
+    let run_v = h.run(&["run", "--snapshot-after", "0", "echo", "delete_prefix_test"]);
+    let full_id = run_v["job_id"]
+        .as_str()
+        .expect("job_id missing")
+        .to_string();
+    h.run(&["wait", &full_id]);
+
+    // Delete using a prefix (10 chars is plenty to be unique in a fresh harness).
+    let prefix = &full_id[..10];
+    let (v, exit_code) = run_cmd_raw(&["delete", prefix], Some(h.root()));
+    assert_eq!(exit_code, 0, "delete with prefix must succeed: {v}");
+    assert_envelope(&v, "delete", true);
+    assert_eq!(
+        v["deleted"].as_u64().unwrap_or(0),
+        1,
+        "expected deleted=1: {v}"
+    );
+    // Response job_id must be the resolved canonical ID, not the prefix.
+    let jobs = v["jobs"].as_array().expect("jobs must be array");
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(
+        jobs[0]["job_id"].as_str().unwrap_or(""),
+        full_id,
+        "job_id in response must be the resolved full ID"
+    );
+
+    // Directory must be gone.
+    let (status_v, _) = run_cmd_raw(&["status", &full_id], Some(h.root()));
+    assert_eq!(
+        status_v["error"]["code"].as_str().unwrap_or(""),
+        "job_not_found",
+        "job must not exist after delete: {status_v}"
+    );
+}
+
+#[test]
+fn delete_ambiguous_prefix_returns_error() {
+    // We need two finished jobs whose IDs share a common prefix.  Since ULIDs
+    // are time-based they share the same timestamp bytes when created in rapid
+    // succession in the same test process.
+    let h = TestHarness::new();
+
+    let run1 = h.run(&["run", "--snapshot-after", "0", "echo", "del_amb_1"]);
+    let id1 = run1["job_id"].as_str().expect("job_id").to_string();
+    let run2 = h.run(&["run", "--snapshot-after", "0", "echo", "del_amb_2"]);
+    let id2 = run2["job_id"].as_str().expect("job_id").to_string();
+    h.run(&["wait", &id1]);
+    h.run(&["wait", &id2]);
+
+    // Find the longest common prefix.
+    let shared_len = id1
+        .chars()
+        .zip(id2.chars())
+        .take_while(|(a, b)| a == b)
+        .count();
+
+    if shared_len == 0 {
+        // Extremely unlikely; skip rather than fail the test.
+        return;
+    }
+
+    let prefix = &id1[..shared_len];
+    let (v, exit_code) = run_cmd_raw(&["delete", prefix], Some(h.root()));
+    assert_eq!(exit_code, 1, "ambiguous delete prefix must exit 1: {v}");
+    assert!(!v["ok"].as_bool().unwrap_or(true), "ok must be false: {v}");
+    assert_eq!(v["type"].as_str().unwrap_or(""), "error");
+    assert_eq!(
+        v["error"]["code"].as_str().unwrap_or(""),
+        "ambiguous_job_id",
+        "error code must be ambiguous_job_id: {v}"
+    );
+    assert!(
+        !v["error"]["retryable"].as_bool().unwrap_or(true),
+        "retryable must be false: {v}"
+    );
+}
