@@ -8,7 +8,7 @@ use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 use tracing_subscriber::EnvFilter;
 
-use agent_exec::jobstore::{InvalidJobState, JobNotFound};
+use agent_exec::jobstore::{AmbiguousJobId, InvalidJobState, JobNotFound};
 use agent_exec::schema::ErrorResponse;
 use agent_exec::skills::UnknownSourceScheme;
 use agent_exec::tag::InvalidTag;
@@ -590,7 +590,9 @@ fn main() {
         // "invalid_tag" is not retryable: the tag value is malformed.
         // "internal_error" is not retryable by default; a transient I/O error
         // would need its own code+retryable=true if we ever surface it.
-        if e.downcast_ref::<JobNotFound>().is_some() {
+        if e.downcast_ref::<AmbiguousJobId>().is_some() {
+            ErrorResponse::new("ambiguous_job_id", format!("{e:#}"), false).print();
+        } else if e.downcast_ref::<JobNotFound>().is_some() {
             ErrorResponse::new("job_not_found", format!("{e:#}"), false).print();
         } else if e.downcast_ref::<UnknownSourceScheme>().is_some() {
             ErrorResponse::new("unknown_source_scheme", format!("{e:#}"), false).print();

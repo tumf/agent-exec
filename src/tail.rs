@@ -42,7 +42,7 @@ pub fn execute(opts: TailOpts) -> Result<()> {
     let response = Response::new(
         "tail",
         TailData {
-            job_id: opts.job_id.to_string(),
+            job_id: job_dir.job_id.clone(),
             stdout_tail: stdout.tail,
             stderr_tail: stderr.tail,
             truncated: stdout.truncated || stderr.truncated,

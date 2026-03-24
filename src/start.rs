@@ -72,7 +72,7 @@ pub fn execute(opts: StartOpts) -> Result<()> {
     let (supervisor_pid, started_at) = spawn_supervisor_process(
         &job_dir,
         SpawnSupervisorParams {
-            job_id: opts.job_id.to_string(),
+            job_id: job_dir.job_id.clone(),
             root: root.clone(),
             full_log_path: full_log_path.clone(),
             timeout_ms: meta.timeout_ms,
@@ -122,7 +122,7 @@ pub fn execute(opts: StartOpts) -> Result<()> {
     Response::new(
         "start",
         RunData {
-            job_id: opts.job_id.to_string(),
+            job_id: job_dir.job_id.clone(),
             state: final_state,
             tags: meta.tags.clone(),
             env_vars: masked_env_vars,
