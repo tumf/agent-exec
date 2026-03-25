@@ -5,7 +5,7 @@
 use anyhow::{Context, Result};
 use clap::builder::ValueHint;
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
-use clap_complete::{CompleteEnv, Shell, engine::ArgValueCompleter};
+use clap_complete::{engine::ArgValueCompleter, CompleteEnv, Shell};
 use tracing_subscriber::EnvFilter;
 
 use agent_exec::jobstore::{AmbiguousJobId, InvalidJobState, JobNotFound};
@@ -470,6 +470,18 @@ enum Command {
         shell: CompletionShell,
     },
 
+    /// Start an HTTP server exposing job operations as REST endpoints.
+    Serve {
+        /// Bind address (host:port). Defaults to 127.0.0.1:18080 (localhost only).
+        /// Use 0.0.0.0:18080 to expose on all interfaces (requires network access control).
+        #[arg(long, default_value = "127.0.0.1:18080")]
+        bind: String,
+
+        /// Override port only (alternative to --bind when only the port should differ).
+        #[arg(long, conflicts_with = "bind")]
+        port: Option<u16>,
+    },
+
     /// [Internal] Supervise a child process — not for direct use.
     #[command(name = "_supervise", hide = true)]
     Supervise {
@@ -849,6 +861,18 @@ fn run(cli: Cli) -> Result<()> {
                 root: root.as_deref(),
                 older_than: older_than.as_deref(),
                 dry_run,
+            })?;
+        }
+
+        Command::Serve { bind, port } => {
+            let effective_bind = if let Some(p) = port {
+                format!("127.0.0.1:{p}")
+            } else {
+                bind
+            };
+            agent_exec::serve::execute(agent_exec::serve::ServeOpts {
+                bind: effective_bind,
+                root: root.clone(),
             })?;
         }
 

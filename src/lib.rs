@@ -16,6 +16,7 @@ pub mod notify;
 pub mod run;
 pub mod schema;
 pub mod schema_cmd;
+pub mod serve;
 pub mod skills;
 pub mod start;
 pub mod status;

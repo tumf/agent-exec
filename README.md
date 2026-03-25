@@ -451,6 +451,66 @@ The `action` field in each `jobs` entry is one of:
 | Running jobs | Always rejected / skipped | Always skipped |
 | Dry-run | `--dry-run` flag | `--dry-run` flag |
 
+## serve — HTTP API server
+
+`agent-exec serve` starts a REST API server that exposes job operations over HTTP.
+This allows Flowise, curl, or any HTTP client to launch and monitor jobs without
+needing direct access to the CLI.
+
+```bash
+agent-exec serve [--bind HOST:PORT] [--port PORT]
+```
+
+**Default bind address**: `127.0.0.1:18080` (localhost only, not exposed externally).
+
+### Network security note
+
+The server performs **no authentication**. Access is controlled by the bind address:
+- `127.0.0.1` (default): only reachable from the same host — safe for local use.
+- `0.0.0.0`: reachable from all network interfaces — **requires a firewall or reverse proxy** to restrict access.
+
+### Endpoints
+
+| Method | Path            | CLI equivalent | Description                                      |
+|--------|-----------------|----------------|--------------------------------------------------|
+| GET    | /health         | —              | Health check. Returns `{"ok":true}`              |
+| POST   | /exec           | `run`          | Launch a job; returns `job_id`                   |
+| GET    | /status/{id}    | `status`       | Job status                                       |
+| GET    | /tail/{id}      | `tail`         | stdout/stderr log tail                           |
+| GET    | /wait/{id}      | `wait`         | Block until job reaches a terminal state         |
+| POST   | /kill/{id}      | `kill`         | Send SIGTERM to the job                          |
+
+All responses include `schema_version`, `ok`, and `type` fields matching the CLI schema.
+
+### POST /exec request body
+
+```json
+{
+  "command": ["bash", "-c", "echo hello"],
+  "cwd": "/tmp",
+  "env": {"FOO": "bar"},
+  "timeout_ms": 30000,
+  "wait": false
+}
+```
+
+Only `command` is required. Returns the same `RunData` as the `run` CLI command.
+
+### Flowise / Docker example
+
+From a Flowise container, use `host.docker.internal` to reach the agent-exec server
+running on the host:
+
+```
+POST http://host.docker.internal:18080/exec
+{"command": ["my-agent-script"]}
+```
+
+Then poll `GET http://host.docker.internal:18080/wait/{job_id}` until the job finishes.
+
+To allow container access, start the server with `--bind 0.0.0.0:18080` and ensure
+your firewall does **not** expose port 18080 to the public internet.
+
 ## Configuration
 
 `agent-exec` reads an optional `config.toml` to configure the shell wrapper used for command-string execution.
