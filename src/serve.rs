@@ -3,8 +3,8 @@
 //! Starts an HTTP server that exposes job operations as REST endpoints.
 //! Endpoints mirror the existing CLI subcommands.
 //!
-//! Default bind address: `127.0.0.1:18080` (localhost only).
-//! Use `--bind 0.0.0.0:18080` to expose externally (requires network access control).
+//! Default bind address: `127.0.0.1:19263` (localhost only).
+//! Use `--bind 0.0.0.0:19263` to expose externally (requires network access control).
 
 use anyhow::Result;
 use axum::{

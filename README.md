@@ -461,7 +461,7 @@ needing direct access to the CLI.
 agent-exec serve [--bind HOST:PORT] [--port PORT]
 ```
 
-**Default bind address**: `127.0.0.1:18080` (localhost only, not exposed externally).
+**Default bind address**: `127.0.0.1:19263` (localhost only, not exposed externally).
 
 ### Network security note
 
@@ -502,14 +502,14 @@ From a Flowise container, use `host.docker.internal` to reach the agent-exec ser
 running on the host:
 
 ```
-POST http://host.docker.internal:18080/exec
+POST http://host.docker.internal:19263/exec
 {"command": ["my-agent-script"]}
 ```
 
-Then poll `GET http://host.docker.internal:18080/wait/{job_id}` until the job finishes.
+Then poll `GET http://host.docker.internal:19263/wait/{job_id}` until the job finishes.
 
-To allow container access, start the server with `--bind 0.0.0.0:18080` and ensure
-your firewall does **not** expose port 18080 to the public internet.
+To allow container access, start the server with `--bind 0.0.0.0:19263` and ensure
+your firewall does **not** expose port 19263 to the public internet.
 
 ## Configuration
 

@@ -472,9 +472,9 @@ enum Command {
 
     /// Start an HTTP server exposing job operations as REST endpoints.
     Serve {
-        /// Bind address (host:port). Defaults to 127.0.0.1:18080 (localhost only).
-        /// Use 0.0.0.0:18080 to expose on all interfaces (requires network access control).
-        #[arg(long, default_value = "127.0.0.1:18080")]
+        /// Bind address (host:port). Defaults to 127.0.0.1:19263 (localhost only).
+        /// Use 0.0.0.0:19263 to expose on all interfaces (requires network access control).
+        #[arg(long, default_value = "127.0.0.1:19263")]
         bind: String,
 
         /// Override port only (alternative to --bind when only the port should differ).
