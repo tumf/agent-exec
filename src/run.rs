@@ -64,6 +64,11 @@ pub struct RunOpts<'a> {
     pub wait: bool,
     /// Poll interval in milliseconds when `wait` is true.
     pub wait_poll_ms: u64,
+    /// Maximum wait duration in milliseconds when `wait` is true.
+    /// Ignored when `wait_forever` is true.
+    pub wait_until_ms: u64,
+    /// If true, wait indefinitely when `wait` is true.
+    pub wait_forever: bool,
     /// Shell command string for command notification sink; executed via platform shell.
     /// None = no command sink.
     pub notify_command: Option<String>,
@@ -104,6 +109,8 @@ impl<'a> Default for RunOpts<'a> {
             progress_every_ms: 0,
             wait: false,
             wait_poll_ms: 200,
+            wait_until_ms: 30_000,
+            wait_forever: false,
             notify_command: None,
             notify_file: None,
             output_pattern: None,
@@ -271,6 +278,8 @@ pub struct SnapshotWaitOpts {
     pub max_bytes: u64,
     pub wait: bool,
     pub wait_poll_ms: u64,
+    pub wait_until_ms: u64,
+    pub wait_forever: bool,
 }
 
 /// Run the snapshot/wait phase and return (final_state_str, exit_code, finished_at,
@@ -319,18 +328,34 @@ pub fn run_snapshot_wait(
     };
 
     let (final_state, exit_code_opt, finished_at_opt, final_snapshot_opt) = if opts.wait {
-        debug!("--wait: polling for terminal state");
+        debug!(
+            wait_until_ms = opts.wait_until_ms,
+            wait_forever = opts.wait_forever,
+            "--wait: polling for terminal or deadline"
+        );
         let poll = std::time::Duration::from_millis(opts.wait_poll_ms.max(1));
+        let wait_deadline = if opts.wait_forever {
+            None
+        } else {
+            Some(wait_start + std::time::Duration::from_millis(opts.wait_until_ms))
+        };
+
         loop {
             std::thread::sleep(poll);
-            if let Ok(st) = job_dir.read_state()
-                && !st.status().is_non_terminal()
-            {
-                let snap = build_snapshot(job_dir, opts.tail_lines, opts.max_bytes);
-                let ec = st.exit_code();
-                let fa = st.finished_at.clone();
-                let state_str = st.status().as_str().to_string();
-                break (state_str, ec, fa, Some(snap));
+            if let Ok(st) = job_dir.read_state() {
+                if !st.status().is_non_terminal() {
+                    let snap = build_snapshot(job_dir, opts.tail_lines, opts.max_bytes);
+                    let ec = st.exit_code();
+                    let fa = st.finished_at.clone();
+                    let state_str = st.status().as_str().to_string();
+                    break (state_str, ec, fa, Some(snap));
+                }
+
+                if let Some(deadline) = wait_deadline
+                    && std::time::Instant::now() >= deadline
+                {
+                    break (st.status().as_str().to_string(), None, None, None);
+                }
             }
         }
     } else {
@@ -476,6 +501,8 @@ pub fn execute(opts: RunOpts) -> Result<()> {
                 max_bytes: opts.max_bytes,
                 wait: opts.wait,
                 wait_poll_ms: opts.wait_poll_ms,
+                wait_until_ms: opts.wait_until_ms,
+                wait_forever: opts.wait_forever,
             },
         );
 

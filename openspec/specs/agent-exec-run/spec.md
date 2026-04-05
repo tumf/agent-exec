@@ -170,18 +170,48 @@ Then `run` と `tail` の `*_observed_bytes` と `*_included_bytes` は同一の
 
 ### Requirement: run の同期待機オプション
 
-`run` は `--wait` が指定された場合、ジョブが終端状態 (`exited|killed|failed`) になるまで待機しなければならない（MUST）。`--wait` 指定時、`snapshot-after` の待機上限 (10,000ms) を適用してはならない（MUST）。
-`--wait` 指定時の `run` JSON は `exit_code`（存在する場合）と `finished_at` を含めなければならない（MUST）。
-`--wait` 指定時の `run` JSON は終了時点のログ末尾を示す `final_snapshot` を含めなければならない（MUST）。`final_snapshot` の構造と制約は既存の `snapshot` と同一でなければならない（MUST）。
-`--wait` 指定時の `waited_ms` は終端状態までの待機時間を示さなければならない（MUST）。
+`run` は `--wait` が指定された場合、既定では最大 30,000ms までジョブの状態変化を待機しなければならない（MUST）。待機上限は `--until <ms>` によって上書きできなければならない（MUST）。`--forever` が指定された場合は終端状態 (`exited|killed|failed`) になるまで無制限に待機しなければならない（MUST）。
 
-#### Scenario: --wait で終了まで待機する
+`--until` と `--forever` は `--wait` と組み合わせる観測用オプションであり、同時指定してはならない（MUST）。`--wait` なしで `--until` / `--forever` を受け付けてはならない（MUST）。
 
-Given `agent-exec run --wait -- sh -c "echo hi"` を実行する
+待機期限到達時の `run` JSON はジョブを継続実行したまま、その時点の非終端 `state` (`created|running`) を返さなければならない（MUST）。この場合 `final_snapshot` / `finished_at` / `exit_code` は含めてはならない（MUST）。終端到達時のみ `final_snapshot` と `finished_at`（および存在する場合の `exit_code`）を返さなければならない（MUST）。
+
+`--wait` 指定時の `waited_ms` は、終端到達または待機期限到達までの待機時間を示さなければならない（MUST）。`--wait` 指定時は `snapshot-after` の待機上限 (10,000ms) を適用してはならない（MUST）。
+
+#### Scenario: --wait 既定期限で未完了ジョブを返す
+
+Given `agent-exec run --wait --snapshot-after 0 -- sleep 60` を実行する
+When 約 30 秒後に `run` の JSON が返る
+Then `state` は `running` または `created` である
+And `final_snapshot` と `finished_at` は含まれない
+
+#### Scenario: --wait --until で待機上限を短縮する
+
+Given `agent-exec run --wait --until 100 --snapshot-after 0 -- sleep 60` を実行する
+When `run` の JSON が返る
+Then 返却時間は既定 30 秒より短い
+And `state` は `running` または `created` である
+
+#### Scenario: --wait --forever で終了まで待機する
+
+Given `agent-exec run --wait --forever -- sh -c "echo hi"` を実行する
 When `run` の JSON が返る
 Then `state` は `exited` である
 And `final_snapshot.stdout_tail` に `hi` が含まれる
 And `finished_at` が含まれる
+
+#### Scenario: --until と --forever の排他
+
+Given `agent-exec run --wait --until 100 --forever -- echo hi` を実行する
+When CLI 引数を検証する
+Then usage error で失敗する
+
+#### Scenario: --wait なしの --until / --forever は拒否される
+
+Given `agent-exec run --until 100 -- echo hi` を実行する
+When CLI 引数を検証する
+Then usage error で失敗する
+And `agent-exec run --forever -- echo hi` も usage error で失敗する
 
 ### Requirement: Unix shell-wrapper exec handoff for argv-mode launches
 
@@ -200,3 +230,86 @@ Given a Unix-like platform with the default shell wrapper
 When `agent-exec run -- 'echo hello && echo world'` is executed
 Then the job runs as a shell command string through the resolved wrapper
 And shell syntax remains available to that command string
+
+
+### Requirement: run の同期待機オプション
+
+`run` は `--wait` が指定された場合、既定では最大 30,000ms までジョブの状態変化を待機しなければならない（MUST）。待機上限は `--until <ms>` によって上書きできなければならない（MUST）。`--forever` が指定された場合は終端状態 (`exited|killed|failed`) になるまで無制限に待機しなければならない（MUST）。
+
+`--until` と `--forever` は `--wait` と組み合わせる観測用 option であり、`--timeout` が表すジョブ実行時間の timeout とは別概念として扱わなければならない（MUST）。`--until` と `--forever` は単独使用を許可してはならず（MUST NOT）、互いに同時指定も許可してはならない（MUST NOT）。
+
+`--wait` 指定時、`run` は待機上限に達しただけではジョブを終了させてはならない（MUST NOT）。終端状態まで到達した場合の `run` JSON は `exit_code`（存在する場合）と `finished_at` と `final_snapshot` を含めなければならない（MUST）。待機上限に達してもジョブが非終端状態の場合、`run` JSON は非終端の `state` を返し、`exit_code` / `finished_at` / `final_snapshot` を含めてはならない（MUST NOT）。`waited_ms` は実際に待機した時間を示さなければならない（MUST）。
+
+#### Scenario: --wait uses the default 30 second deadline
+
+Given `agent-exec run --wait -- sh -c "sleep 1; echo hi"` is executed
+When the command finishes within the default wait deadline
+Then the response state is `exited`
+And `final_snapshot.stdout_tail` contains `hi`
+And `finished_at` is present
+
+#### Scenario: --wait --until returns while the job keeps running
+
+Given `agent-exec run --wait --until 100 -- sh -c "sleep 2; echo hi"` is executed
+When the wait deadline is reached before the job exits
+Then the response state is `created` or `running`
+And `finished_at` is absent
+And `final_snapshot` is absent
+And the job continues running after the `run` command returns
+
+#### Scenario: --wait --forever preserves unbounded waiting
+
+Given `agent-exec run --wait --forever -- sh -c "sleep 1; echo hi"` is executed
+When the job eventually exits
+Then the response state is `exited`
+And `final_snapshot.stdout_tail` contains `hi`
+
+#### Scenario: wait-deadline flags require --wait
+
+Given a user executes `agent-exec run --until 100 -- sh -c "echo hi"`
+When clap validates arguments
+Then the command fails with usage error
+
+And given a user executes `agent-exec run --forever -- sh -c "echo hi"`
+When clap validates arguments
+Then the command fails with usage error
+
+#### Scenario: --until and --forever are mutually exclusive
+
+Given a user executes `agent-exec run --wait --until 100 --forever -- sh -c "echo hi"`
+When clap validates arguments
+Then the command fails with usage error
+
+### Requirement: wait サブコマンドの待機期限オプション
+
+`wait` サブコマンドは既定では最大 30,000ms までジョブの終端状態を待機しなければならない（MUST）。待機上限は `--until <ms>` によって上書きできなければならない（MUST）。`--forever` が指定された場合は終端状態になるまで無制限に待機しなければならない（MUST）。`--until` と `--forever` は互いに同時指定を許可してはならない（MUST NOT）。
+
+待機上限に達してもジョブは終了させてはならない（MUST NOT）。終端状態まで到達した場合は `state` と `exit_code` を返さなければならない（MUST）。待機上限に達してもジョブが非終端状態の場合は非終端の `state` を返し、`exit_code` を含めてはならない（MUST NOT）。
+
+既存の `--timeout-ms` オプションは `--until` に置換する（MUST）。
+
+#### Scenario: wait uses the default 30 second deadline
+
+Given a running job created by `agent-exec run -- sh -c "sleep 1; echo done"`
+When `agent-exec wait <job_id>` is executed
+Then the wait returns within approximately 30 seconds
+And if the job finished within the deadline, the response state is terminal
+
+#### Scenario: wait --until returns while the job keeps running
+
+Given a running job created by `agent-exec run -- sh -c "sleep 10"`
+When `agent-exec wait --until 100 <job_id>` is executed
+Then the response state is `created` or `running`
+And `exit_code` is absent
+
+#### Scenario: wait --forever preserves unbounded waiting
+
+Given a running job created by `agent-exec run -- sh -c "sleep 1; echo done"`
+When `agent-exec wait --forever <job_id>` is executed
+Then the response state is terminal after the job exits
+
+#### Scenario: wait --until and --forever are mutually exclusive
+
+Given a user executes `agent-exec wait --until 100 --forever <job_id>`
+When clap validates arguments
+Then the command fails with usage error

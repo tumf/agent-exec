@@ -284,6 +284,8 @@ fn run_exec_inner(
                 max_bytes: 65536,
                 wait: do_wait,
                 wait_poll_ms: 200,
+                wait_until_ms: 0,
+                wait_forever: true,
             },
         );
 

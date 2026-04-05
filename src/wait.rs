@@ -16,8 +16,11 @@ pub struct WaitOpts<'a> {
     pub root: Option<&'a str>,
     /// Poll interval in milliseconds.
     pub poll_ms: u64,
-    /// Total timeout in milliseconds; 0 = wait indefinitely.
-    pub timeout_ms: u64,
+    /// Total timeout in milliseconds (default 30000).
+    /// Ignored when `forever` is true.
+    pub until: u64,
+    /// Wait indefinitely when true.
+    pub forever: bool,
 }
 
 impl<'a> Default for WaitOpts<'a> {
@@ -26,7 +29,8 @@ impl<'a> Default for WaitOpts<'a> {
             job_id: "",
             root: None,
             poll_ms: 200,
-            timeout_ms: 0,
+            until: 30_000,
+            forever: false,
         }
     }
 }
@@ -37,10 +41,10 @@ pub fn execute(opts: WaitOpts) -> Result<()> {
     let job_dir = JobDir::open(&root, opts.job_id)?;
 
     let poll = std::time::Duration::from_millis(opts.poll_ms);
-    let deadline = if opts.timeout_ms > 0 {
-        Some(std::time::Instant::now() + std::time::Duration::from_millis(opts.timeout_ms))
-    } else {
+    let deadline = if opts.forever {
         None
+    } else {
+        Some(std::time::Instant::now() + std::time::Duration::from_millis(opts.until))
     };
 
     loop {

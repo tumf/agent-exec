@@ -307,6 +307,55 @@ fn wait_returns_json_after_job_finishes() {
     assert!(v.get("state").is_some(), "state missing");
 }
 
+#[test]
+fn wait_default_until_returns_non_terminal_for_long_running_job() {
+    let h = TestHarness::new();
+    let run_v = h.run(&["run", "--snapshot-after", "0", "sleep", "60"]);
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+
+    let started = std::time::Instant::now();
+    let v = h.run(&["wait", &job_id]);
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+
+    assert_envelope(&v, "wait", true);
+    assert!(
+        elapsed_ms >= 29_000,
+        "default wait should be ~30s; got {elapsed_ms}ms"
+    );
+    let state = v["state"].as_str().unwrap_or("");
+    assert!(
+        state == "running" || state == "created",
+        "wait default deadline should return non-terminal state; got: {state}"
+    );
+    assert!(
+        v.get("exit_code").is_none() || v["exit_code"].is_null(),
+        "exit_code should be absent/null for non-terminal timeout: {v}"
+    );
+
+    let _ = h.run(&["kill", "--signal", "KILL", &job_id]);
+}
+
+#[test]
+fn wait_forever_waits_until_terminal() {
+    let h = TestHarness::new();
+    let run_v = h.run(&["run", "--snapshot-after", "0", "sh", "-c", "sleep 0.1"]);
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+
+    let v = h.run(&["wait", "--forever", &job_id]);
+    assert_envelope(&v, "wait", true);
+    let state = v["state"].as_str().unwrap_or("");
+    assert!(state == "exited" || state == "killed" || state == "failed");
+}
+
+#[test]
+fn wait_rejects_until_and_forever_together() {
+    let h = TestHarness::new();
+    assert_usage_error(
+        &["wait", "--until", "100", "--forever", "JOBID"],
+        Some(h.root()),
+    );
+}
+
 // ── kill ───────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -1627,6 +1676,105 @@ fn run_wait_skips_snapshot_after_clamp() {
         v.get("final_snapshot").is_some(),
         "final_snapshot must be present in run --wait response; got: {v}"
     );
+}
+
+#[test]
+fn run_wait_default_until_returns_non_terminal_for_long_running_job() {
+    let h = TestHarness::new();
+    let started = std::time::Instant::now();
+    let v = h.run(&["run", "--snapshot-after", "0", "--wait", "sleep", "60"]);
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+
+    assert_envelope(&v, "run", true);
+    assert!(
+        elapsed_ms >= 29_000,
+        "default run --wait should be ~30s; got {elapsed_ms}ms"
+    );
+    let state = v["state"].as_str().unwrap_or("");
+    assert!(
+        state == "running" || state == "created",
+        "run --wait default deadline should return non-terminal state; got: {state}"
+    );
+    assert!(
+        v.get("final_snapshot").is_none(),
+        "final_snapshot should be absent on deadline timeout; got: {v}"
+    );
+}
+
+#[test]
+fn run_wait_until_overrides_default_deadline() {
+    let h = TestHarness::new();
+    let started = std::time::Instant::now();
+    let v = h.run(&[
+        "run",
+        "--snapshot-after",
+        "0",
+        "--wait",
+        "--until",
+        "100",
+        "sleep",
+        "60",
+    ]);
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+
+    assert_envelope(&v, "run", true);
+    assert!(
+        elapsed_ms < 5_000,
+        "run --wait --until 100 should return quickly"
+    );
+    let state = v["state"].as_str().unwrap_or("");
+    assert!(state == "running" || state == "created");
+}
+
+#[test]
+fn run_wait_forever_waits_until_terminal() {
+    let h = TestHarness::new();
+    let v = h.run(&[
+        "run",
+        "--snapshot-after",
+        "0",
+        "--wait",
+        "--forever",
+        "sh",
+        "-c",
+        "sleep 0.1",
+    ]);
+    assert_envelope(&v, "run", true);
+    let state = v["state"].as_str().unwrap_or("");
+    assert!(state == "exited" || state == "killed" || state == "failed");
+    assert!(v.get("final_snapshot").is_some());
+}
+
+#[test]
+fn run_wait_rejects_until_and_forever_together() {
+    let h = TestHarness::new();
+    assert_usage_error(
+        &[
+            "run",
+            "--wait",
+            "--until",
+            "100",
+            "--forever",
+            "echo",
+            "invalid",
+        ],
+        Some(h.root()),
+    );
+}
+
+#[test]
+fn run_rejects_until_without_wait() {
+    let h = TestHarness::new();
+    assert_usage_error(
+        &["run", "--until", "100", "echo", "invalid"],
+        Some(h.root()),
+    );
+}
+
+#[test]
+fn run_rejects_forever_without_wait() {
+    let h = TestHarness::new();
+    assert_usage_error(&["run", "--forever", "echo", "invalid"], Some(h.root()));
 }
 
 /// run without --wait does not return finished_at or final_snapshot.
