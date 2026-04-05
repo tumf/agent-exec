@@ -122,8 +122,7 @@ fn extract_root_from_argv() -> Option<String> {
 ///
 /// `COMP_LINE` is set by bash/zsh to the full command line being completed.
 /// Returns `None` if the variable is absent, malformed, or `--root` is not found.
-fn extract_root_from_comp_line() -> Option<String> {
-    let comp_line = std::env::var("COMP_LINE").ok()?;
+fn extract_root_from_line(comp_line: &str) -> Option<String> {
     let tokens: Vec<&str> = comp_line.split_whitespace().collect();
     let pos = tokens
         .iter()
@@ -134,8 +133,14 @@ fn extract_root_from_comp_line() -> Option<String> {
     {
         return Some(val.to_string());
     }
+
     // `--root <value>` form
     tokens.get(pos + 1).map(|s| s.to_string())
+}
+
+fn extract_root_from_comp_line() -> Option<String> {
+    let comp_line = std::env::var("COMP_LINE").ok()?;
+    extract_root_from_line(&comp_line)
 }
 
 // ── public completer functions ─────────────────────────────────────────────────
@@ -327,27 +332,13 @@ mod tests {
 
     #[test]
     fn test_extract_root_from_comp_line() {
-        // SAFETY: single-threaded test.
-        unsafe {
-            std::env::set_var("COMP_LINE", "agent-exec --root /tmp/myjobs status ");
-        }
-        let root = extract_root_from_comp_line();
-        unsafe {
-            std::env::remove_var("COMP_LINE");
-        }
+        let root = extract_root_from_line("agent-exec --root /tmp/myjobs status ");
         assert_eq!(root, Some("/tmp/myjobs".to_string()));
     }
 
     #[test]
     fn test_extract_root_from_comp_line_equals_form() {
-        // SAFETY: single-threaded test.
-        unsafe {
-            std::env::set_var("COMP_LINE", "agent-exec --root=/tmp/myjobs status ");
-        }
-        let root = extract_root_from_comp_line();
-        unsafe {
-            std::env::remove_var("COMP_LINE");
-        }
+        let root = extract_root_from_line("agent-exec --root=/tmp/myjobs status ");
         assert_eq!(root, Some("/tmp/myjobs".to_string()));
     }
 
