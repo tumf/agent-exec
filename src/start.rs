@@ -111,6 +111,8 @@ pub fn execute(opts: StartOpts) -> Result<()> {
                 max_bytes: opts.max_bytes,
                 wait: opts.wait,
                 wait_poll_ms: opts.wait_poll_ms,
+                wait_until_ms: 0,
+                wait_forever: true,
             },
         );
 

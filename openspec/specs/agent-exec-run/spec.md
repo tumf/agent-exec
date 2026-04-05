@@ -170,18 +170,48 @@ Then `run` と `tail` の `*_observed_bytes` と `*_included_bytes` は同一の
 
 ### Requirement: run の同期待機オプション
 
-`run` は `--wait` が指定された場合、ジョブが終端状態 (`exited|killed|failed`) になるまで待機しなければならない（MUST）。`--wait` 指定時、`snapshot-after` の待機上限 (10,000ms) を適用してはならない（MUST）。
-`--wait` 指定時の `run` JSON は `exit_code`（存在する場合）と `finished_at` を含めなければならない（MUST）。
-`--wait` 指定時の `run` JSON は終了時点のログ末尾を示す `final_snapshot` を含めなければならない（MUST）。`final_snapshot` の構造と制約は既存の `snapshot` と同一でなければならない（MUST）。
-`--wait` 指定時の `waited_ms` は終端状態までの待機時間を示さなければならない（MUST）。
+`run` は `--wait` が指定された場合、既定では最大 30,000ms までジョブの状態変化を待機しなければならない（MUST）。待機上限は `--until <ms>` によって上書きできなければならない（MUST）。`--forever` が指定された場合は終端状態 (`exited|killed|failed`) になるまで無制限に待機しなければならない（MUST）。
 
-#### Scenario: --wait で終了まで待機する
+`--until` と `--forever` は `--wait` と組み合わせる観測用オプションであり、同時指定してはならない（MUST）。`--wait` なしで `--until` / `--forever` を受け付けてはならない（MUST）。
 
-Given `agent-exec run --wait -- sh -c "echo hi"` を実行する
+待機期限到達時の `run` JSON はジョブを継続実行したまま、その時点の非終端 `state` (`created|running`) を返さなければならない（MUST）。この場合 `final_snapshot` / `finished_at` / `exit_code` は含めてはならない（MUST）。終端到達時のみ `final_snapshot` と `finished_at`（および存在する場合の `exit_code`）を返さなければならない（MUST）。
+
+`--wait` 指定時の `waited_ms` は、終端到達または待機期限到達までの待機時間を示さなければならない（MUST）。`--wait` 指定時は `snapshot-after` の待機上限 (10,000ms) を適用してはならない（MUST）。
+
+#### Scenario: --wait 既定期限で未完了ジョブを返す
+
+Given `agent-exec run --wait --snapshot-after 0 -- sleep 60` を実行する
+When 約 30 秒後に `run` の JSON が返る
+Then `state` は `running` または `created` である
+And `final_snapshot` と `finished_at` は含まれない
+
+#### Scenario: --wait --until で待機上限を短縮する
+
+Given `agent-exec run --wait --until 100 --snapshot-after 0 -- sleep 60` を実行する
+When `run` の JSON が返る
+Then 返却時間は既定 30 秒より短い
+And `state` は `running` または `created` である
+
+#### Scenario: --wait --forever で終了まで待機する
+
+Given `agent-exec run --wait --forever -- sh -c "echo hi"` を実行する
 When `run` の JSON が返る
 Then `state` は `exited` である
 And `final_snapshot.stdout_tail` に `hi` が含まれる
 And `finished_at` が含まれる
+
+#### Scenario: --until と --forever の排他
+
+Given `agent-exec run --wait --until 100 --forever -- echo hi` を実行する
+When CLI 引数を検証する
+Then usage error で失敗する
+
+#### Scenario: --wait なしの --until / --forever は拒否される
+
+Given `agent-exec run --until 100 -- echo hi` を実行する
+When CLI 引数を検証する
+Then usage error で失敗する
+And `agent-exec run --forever -- echo hi` も usage error で失敗する
 
 ### Requirement: Unix shell-wrapper exec handoff for argv-mode launches
 
