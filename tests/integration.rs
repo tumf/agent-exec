@@ -511,8 +511,8 @@ fn wait_returns_json_after_job_finishes() {
     let run_v = h.run(&["run", "--snapshot-after", "0", "echo", "done"]);
     let job_id = run_v["job_id"].as_str().unwrap().to_string();
 
-    // Wait with timeout=5s; echo finishes fast.
-    let v = h.run(&["wait", "--timeout-ms", "5000", &job_id]);
+    // Wait with --until=5s; echo finishes fast.
+    let v = h.run(&["wait", "--until", "5000", &job_id]);
     assert_envelope(&v, "wait", true);
     assert_eq!(v["job_id"].as_str().unwrap_or(""), job_id);
     assert!(v.get("state").is_some(), "state missing");
@@ -1566,7 +1566,7 @@ fn list_filters_by_state_running() {
         .expect("job_id missing")
         .to_string();
     // Wait to ensure the echo job has completed.
-    h.run(&["wait", "--timeout-ms", "5000", &short_job_id]);
+    h.run(&["wait", "--until", "5000", &short_job_id]);
 
     // list --state running must contain the long job, not the short one.
     let v = h.run(&["list", "--state", "running"]);
@@ -5879,7 +5879,7 @@ fn prefix_lookup_cross_command() {
     assert_envelope(&tail_v, "tail", true);
     assert_eq!(tail_v["job_id"].as_str().unwrap_or(""), full_id);
 
-    // wait accepts prefix (with very short timeout so test doesn't hang).
+    // wait accepts prefix and keeps legacy --timeout-ms compatibility.
     let (wait_v, _) = run_cmd_raw(&["wait", "--timeout-ms", "100", prefix], Some(h.root()));
     // ok may be false if job is still running, but job_id must be the full ID.
     assert_eq!(wait_v["job_id"].as_str().unwrap_or(""), full_id);
