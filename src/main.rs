@@ -5,7 +5,7 @@
 use anyhow::{Context, Result};
 use clap::builder::ValueHint;
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
-use clap_complete::{CompleteEnv, Shell, engine::ArgValueCompleter};
+use clap_complete::{engine::ArgValueCompleter, CompleteEnv, Shell};
 use tracing_subscriber::EnvFilter;
 
 use agent_exec::jobstore::{AmbiguousJobId, InvalidJobState, JobNotFound};
@@ -371,7 +371,10 @@ enum Command {
         #[arg(long, default_value = "200")]
         poll_ms: u64,
 
-        /// Maximum wait duration in milliseconds (default: 30000).
+        /// Maximum client-side wait deadline in milliseconds (default: 30000).
+        /// This controls how long `wait` polls and does not stop the underlying job;
+        /// use `run --timeout` to enforce process runtime limits.
+        /// Legacy alias: `--timeout-ms` (deprecated terminology).
         #[arg(long, aliases = ["timeout-ms"], conflicts_with = "forever")]
         until: Option<u64>,
 
