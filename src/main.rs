@@ -371,7 +371,10 @@ enum Command {
         #[arg(long, default_value = "200")]
         poll_ms: u64,
 
-        /// Maximum wait duration in milliseconds (default: 30000).
+        /// Maximum client-side wait deadline in milliseconds (default: 30000).
+        /// This controls how long `wait` polls and does not stop the underlying job;
+        /// use `run --timeout` to enforce process runtime limits.
+        /// Legacy alias: `--timeout-ms` (deprecated terminology).
         #[arg(long, aliases = ["timeout-ms"], conflicts_with = "forever")]
         until: Option<u64>,
 
