@@ -7,6 +7,7 @@
 //!   included in the JSON response.
 
 use anyhow::{Context, Result};
+use std::io::IsTerminal;
 use std::path::Path;
 use std::process::Command;
 use tracing::{debug, info, warn};
@@ -53,6 +54,8 @@ pub struct RunOpts<'a> {
     pub inherit_env: bool,
     /// Keys to mask in JSON output (values replaced with "***").
     pub mask: Vec<String>,
+    /// Optional stdin source definition persisted in meta and materialized into stdin.bin.
+    pub stdin: Option<StdinSource>,
     /// User-defined tags for this job (deduplicated preserving first-seen order).
     pub tags: Vec<String>,
     /// Override full.log path; None = use job dir.
@@ -104,6 +107,7 @@ impl<'a> Default for RunOpts<'a> {
             env_files: vec![],
             inherit_env: true,
             mask: vec![],
+            stdin: None,
             tags: vec![],
             log: None,
             progress_every_ms: 0,
@@ -129,6 +133,13 @@ const MAX_SNAPSHOT_AFTER_MS: u64 = 10_000;
 /// Parameters for spawning a supervisor process.
 ///
 /// Shared by `run::execute` and `start::execute`.
+#[derive(Debug, Clone)]
+pub enum StdinSource {
+    CallerStdin,
+    Inline(String),
+    File(String),
+}
+
 pub struct SpawnSupervisorParams {
     pub job_id: String,
     pub root: std::path::PathBuf,
@@ -140,11 +151,112 @@ pub struct SpawnSupervisorParams {
     pub env_vars: Vec<String>,
     pub env_files: Vec<String>,
     pub inherit_env: bool,
+    pub stdin_file: Option<String>,
     pub progress_every_ms: u64,
     pub notify_command: Option<String>,
     pub notify_file: Option<String>,
     pub shell_wrapper: Vec<String>,
     pub command: Vec<String>,
+}
+
+pub fn resolve_stdin_source(
+    stdin: Option<String>,
+    stdin_file: Option<String>,
+) -> Option<StdinSource> {
+    if let Some(value) = stdin {
+        if value == "-" {
+            Some(StdinSource::CallerStdin)
+        } else {
+            Some(StdinSource::Inline(value))
+        }
+    } else {
+        stdin_file.map(StdinSource::File)
+    }
+}
+
+pub fn validate_stdin_source(stdin: Option<&StdinSource>) -> Result<()> {
+    if matches!(stdin, Some(StdinSource::CallerStdin)) {
+        let stdin = std::io::stdin();
+        if stdin.is_terminal() {
+            return Err(anyhow::anyhow!(StdinRequired(
+                "stdin_required: --stdin - requires non-interactive stdin (pipe/heredoc/redirect)"
+                    .to_string(),
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn materialize_stdin(job_dir: &JobDir, stdin: Option<&StdinSource>) -> Result<Option<String>> {
+    let Some(source) = stdin else {
+        return Ok(None);
+    };
+
+    let target_name = "stdin.bin".to_string();
+    let target_path = job_dir.path.join(&target_name);
+    let mut target = std::fs::File::create(&target_path)
+        .with_context(|| format!("create materialized stdin {}", target_path.display()))?;
+
+    match source {
+        StdinSource::CallerStdin => {
+            let mut stdin = std::io::stdin();
+            std::io::copy(&mut stdin, &mut target)
+                .context("materialize caller stdin to stdin.bin")?;
+        }
+        StdinSource::Inline(value) => {
+            use std::io::Write;
+            target
+                .write_all(value.as_bytes())
+                .context("write inline stdin to stdin.bin")?;
+        }
+        StdinSource::File(path) => {
+            let mut input = std::fs::File::open(path)
+                .with_context(|| format!("open --stdin-file source {}", path))?;
+            std::io::copy(&mut input, &mut target)
+                .with_context(|| format!("copy --stdin-file source {} to stdin.bin", path))?;
+        }
+    }
+
+    Ok(Some(target_name))
+}
+
+fn resolve_stdin_path(job_dir: &JobDir, stdin_file: Option<&str>) -> Option<std::path::PathBuf> {
+    stdin_file.map(|p| {
+        let path = std::path::Path::new(p);
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            job_dir.path.join(path)
+        }
+    })
+}
+
+#[derive(Debug)]
+pub struct StdinRequired(pub String);
+
+impl std::fmt::Display for StdinRequired {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for StdinRequired {}
+
+pub fn open_child_stdin(job_dir: &JobDir, stdin_file: Option<&str>) -> Result<std::process::Stdio> {
+    if let Some(path) = resolve_stdin_path(job_dir, stdin_file) {
+        let file = std::fs::File::open(&path)
+            .with_context(|| format!("open materialized stdin {}", path.display()))?;
+        Ok(std::process::Stdio::from(file))
+    } else {
+        Ok(std::process::Stdio::null())
+    }
+}
+
+pub fn materialize_stdin_for_job(
+    job_dir: &JobDir,
+    stdin: Option<&StdinSource>,
+) -> Result<Option<String>> {
+    materialize_stdin(job_dir, stdin)
 }
 
 /// Spawn the supervisor process and write the initial running state to `state.json`.
@@ -189,6 +301,9 @@ pub fn spawn_supervisor_process(
     }
     if !params.inherit_env {
         supervisor_cmd.arg("--no-inherit-env");
+    }
+    if let Some(ref stdin_file) = params.stdin_file {
+        supervisor_cmd.arg("--stdin-file").arg(stdin_file);
     }
     if params.progress_every_ms > 0 {
         supervisor_cmd
@@ -449,10 +564,19 @@ pub fn execute(opts: RunOpts) -> Result<()> {
         kill_after_ms: opts.kill_after_ms,
         progress_every_ms: opts.progress_every_ms,
         shell_wrapper: Some(opts.shell_wrapper.clone()),
+        stdin_file: None,
         tags: tags.clone(),
     };
 
+    validate_stdin_source(opts.stdin.as_ref())?;
+
     let job_dir = JobDir::create(&root, &job_id, &meta)?;
+    let stdin_file = materialize_stdin_for_job(&job_dir, opts.stdin.as_ref())?;
+    if stdin_file.is_some() {
+        let mut meta_with_stdin = meta.clone();
+        meta_with_stdin.stdin_file = stdin_file.clone();
+        job_dir.write_meta_atomic(&meta_with_stdin)?;
+    }
     info!(job_id = %job_id, "created job directory");
 
     // Determine the full.log path (may be overridden by --log).
@@ -480,6 +604,7 @@ pub fn execute(opts: RunOpts) -> Result<()> {
             env_vars: opts.env_vars.clone(),
             env_files: opts.env_files.clone(),
             inherit_env: opts.inherit_env,
+            stdin_file: stdin_file.clone(),
             progress_every_ms: opts.progress_every_ms,
             notify_command: opts.notify_command.clone(),
             notify_file: opts.notify_file.clone(),
@@ -570,6 +695,8 @@ pub struct SuperviseOpts<'a> {
     pub env_files: Vec<String>,
     /// Whether to inherit the current process environment.
     pub inherit_env: bool,
+    /// Materialized stdin file path (relative to job dir) to feed child stdin.
+    pub stdin_file: Option<String>,
     /// Interval (ms) for state.json updated_at refresh; 0 = disabled.
     pub progress_every_ms: u64,
     /// Shell command string for command notification sink; executed via platform shell.
@@ -1036,8 +1163,9 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
     }
 
     // Spawn the child with piped stdout/stderr so we can tee to logs.
+    let child_stdin = open_child_stdin(&job_dir, opts.stdin_file.as_deref())?;
     let mut child = child_cmd
-        .stdin(std::process::Stdio::null())
+        .stdin(child_stdin)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()

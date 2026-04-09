@@ -580,6 +580,9 @@ pub struct JobMeta {
     /// Resolved shell wrapper argv (e.g. ["sh", "-lc"]). None = resolved from config at start time.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub shell_wrapper: Option<Vec<String>>,
+    /// Relative path (from job directory) to materialized stdin content.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub stdin_file: Option<String>,
 }
 
 fn default_inherit_env() -> bool {

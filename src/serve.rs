@@ -246,6 +246,7 @@ fn run_exec_inner(
         kill_after_ms: 0,
         progress_every_ms: 0,
         shell_wrapper: Some(shell_wrapper.clone()),
+        stdin_file: None,
         tags: vec![],
     };
 
@@ -264,6 +265,7 @@ fn run_exec_inner(
             env_vars: env_vars.clone(),
             env_files: vec![],
             inherit_env: true,
+            stdin_file: None,
             progress_every_ms: 0,
             notify_command: None,
             notify_file: None,

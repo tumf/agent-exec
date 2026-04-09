@@ -138,6 +138,14 @@ enum Command {
         #[arg(long = "mask", value_name = "KEY")]
         mask: Vec<String>,
 
+        /// Provide stdin content directly. Use `--stdin -` to read from caller stdin.
+        #[arg(long, value_name = "VALUE", conflicts_with = "stdin_file")]
+        stdin: Option<String>,
+
+        /// Read stdin content from file and materialize it into the job directory.
+        #[arg(long, value_name = "PATH", value_hint = ValueHint::FilePath, conflicts_with = "stdin")]
+        stdin_file: Option<String>,
+
         /// Interval (ms) at which state.json.updated_at is refreshed; 0 = disabled.
         #[arg(long, default_value = "0")]
         progress_every: u64,
@@ -263,6 +271,14 @@ enum Command {
         /// Mask secret values in JSON output (key name only, may be repeated).
         #[arg(long = "mask", value_name = "KEY")]
         mask: Vec<String>,
+
+        /// Provide stdin content directly. Use `--stdin -` to read from caller stdin.
+        #[arg(long, value_name = "VALUE", conflicts_with = "stdin_file")]
+        stdin: Option<String>,
+
+        /// Read stdin content from file and materialize it into the job directory.
+        #[arg(long, value_name = "PATH", value_hint = ValueHint::FilePath, conflicts_with = "stdin")]
+        stdin_file: Option<String>,
 
         /// Assign a tag to this job (may be repeated; duplicates are deduplicated).
         #[arg(long = "tag", value_name = "TAG", value_parser = parse_stored_tag)]
@@ -550,6 +566,10 @@ enum Command {
         #[arg(long, default_value = "0")]
         progress_every: u64,
 
+        /// Materialized stdin file path relative to the job directory (internal use).
+        #[arg(long, value_name = "PATH", hide = true)]
+        stdin_file: Option<String>,
+
         /// Shell command string to run on job completion; executed via the configured shell
         /// wrapper. Event JSON is sent to stdin.
         /// Also sets AGENT_EXEC_EVENT_PATH, AGENT_EXEC_JOB_ID, and AGENT_EXEC_EVENT_TYPE.
@@ -675,6 +695,8 @@ fn main() {
             ErrorResponse::new("invalid_tag", format!("{e:#}"), false).print();
         } else if e.downcast_ref::<InvalidJobState>().is_some() {
             ErrorResponse::new("invalid_state", format!("{e:#}"), false).print();
+        } else if e.downcast_ref::<agent_exec::run::StdinRequired>().is_some() {
+            ErrorResponse::new("stdin_required", format!("{e:#}"), false).print();
         } else {
             ErrorResponse::new("internal_error", format!("{e:#}"), false).print();
         }
@@ -695,6 +717,8 @@ fn run(cli: Cli) -> Result<()> {
             no_inherit_env,
             inherit_env: _inherit_env,
             mask,
+            stdin,
+            stdin_file,
             progress_every,
             notify_command,
             notify_file,
@@ -713,6 +737,7 @@ fn run(cli: Cli) -> Result<()> {
                 shell_wrapper.as_deref(),
                 config.as_deref(),
             )?;
+            let resolved_stdin = agent_exec::run::resolve_stdin_source(stdin, stdin_file);
             agent_exec::create::execute(agent_exec::create::CreateOpts {
                 command,
                 root: root.as_deref(),
@@ -723,6 +748,7 @@ fn run(cli: Cli) -> Result<()> {
                 env_files,
                 inherit_env: should_inherit,
                 mask,
+                stdin: resolved_stdin,
                 progress_every_ms: progress_every,
                 notify_command,
                 notify_file,
@@ -782,6 +808,8 @@ fn run(cli: Cli) -> Result<()> {
             output_stream,
             output_command,
             output_file,
+            stdin,
+            stdin_file,
             config,
             shell_wrapper,
             command,
@@ -795,6 +823,7 @@ fn run(cli: Cli) -> Result<()> {
                 shell_wrapper.as_deref(),
                 config.as_deref(),
             )?;
+            let resolved_stdin = agent_exec::run::resolve_stdin_source(stdin, stdin_file);
             agent_exec::run::execute(agent_exec::run::RunOpts {
                 command,
                 root: root.as_deref(),
@@ -808,6 +837,7 @@ fn run(cli: Cli) -> Result<()> {
                 env_files,
                 inherit_env: should_inherit,
                 mask,
+                stdin: resolved_stdin,
                 tags,
                 log: log.as_deref(),
                 progress_every_ms: progress_every,
@@ -986,6 +1016,7 @@ fn run(cli: Cli) -> Result<()> {
             no_inherit_env,
             inherit_env: _inherit_env,
             progress_every,
+            stdin_file,
             notify_command,
             notify_file,
             shell_wrapper,
@@ -1012,6 +1043,7 @@ fn run(cli: Cli) -> Result<()> {
                 env_vars,
                 env_files,
                 inherit_env: should_inherit,
+                stdin_file,
                 progress_every_ms: progress_every,
                 notify_command,
                 notify_file,

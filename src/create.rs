@@ -9,7 +9,10 @@ use tracing::info;
 use ulid::Ulid;
 
 use crate::jobstore::{JobDir, resolve_root};
-use crate::run::{mask_env_vars, pre_create_log_files, resolve_effective_cwd};
+use crate::run::{
+    mask_env_vars, materialize_stdin_for_job, pre_create_log_files, resolve_effective_cwd,
+    validate_stdin_source,
+};
 use crate::schema::{CreateData, JobMeta, JobMetaJob, Response};
 use crate::tag::dedup_tags;
 
@@ -41,6 +44,8 @@ pub struct CreateOpts<'a> {
     pub inherit_env: bool,
     /// Keys to mask in JSON output (values replaced with "***").
     pub mask: Vec<String>,
+    /// Optional stdin source definition persisted and materialized for start.
+    pub stdin: Option<crate::run::StdinSource>,
     /// Interval (ms) for state.json updated_at refresh; 0 = disabled.
     pub progress_every_ms: u64,
     /// Shell command string for command notification sink.
@@ -111,6 +116,9 @@ pub fn execute(opts: CreateOpts) -> Result<()> {
     // Validate and deduplicate tags (preserving first-seen order).
     let tags = dedup_tags(opts.tags)?;
 
+    let stdin_source = opts.stdin.clone();
+    validate_stdin_source(stdin_source.as_ref())?;
+
     let meta = JobMeta {
         job: JobMetaJob { id: job_id.clone() },
         schema_version: crate::schema::SCHEMA_VERSION.to_string(),
@@ -134,9 +142,16 @@ pub fn execute(opts: CreateOpts) -> Result<()> {
         kill_after_ms: opts.kill_after_ms,
         progress_every_ms: opts.progress_every_ms,
         shell_wrapper: Some(opts.shell_wrapper.clone()),
+        stdin_file: None,
     };
 
     let job_dir = JobDir::create(&root, &job_id, &meta)?;
+    let stdin_file = materialize_stdin_for_job(&job_dir, stdin_source.as_ref())?;
+    if stdin_file.is_some() {
+        let mut meta_with_stdin = meta.clone();
+        meta_with_stdin.stdin_file = stdin_file;
+        job_dir.write_meta_atomic(&meta_with_stdin)?;
+    }
     info!(job_id = %job_id, "created job directory (created state)");
 
     // Pre-create empty log files.
