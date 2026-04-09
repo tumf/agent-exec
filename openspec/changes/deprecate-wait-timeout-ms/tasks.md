@@ -8,3 +8,8 @@
 ## Future Work
 
 - Remove the legacy `--timeout-ms` alias entirely in a future breaking-release proposal once downstream callers have migrated.
+
+## Acceptance #1 Failure Follow-up
+
+- [x] Run `cargo fmt --all` so `src/main.rs` import ordering and `tests/integration.rs` indentation match rustfmt output.
+- [x] Re-run `prek run -a` and `cargo fmt --all -- --check` to confirm the repository passes both the pre-commit-equivalent hook set and the standalone format gate.

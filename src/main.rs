@@ -5,7 +5,7 @@
 use anyhow::{Context, Result};
 use clap::builder::ValueHint;
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
-use clap_complete::{engine::ArgValueCompleter, CompleteEnv, Shell};
+use clap_complete::{CompleteEnv, Shell, engine::ArgValueCompleter};
 use tracing_subscriber::EnvFilter;
 
 use agent_exec::jobstore::{AmbiguousJobId, InvalidJobState, JobNotFound};
