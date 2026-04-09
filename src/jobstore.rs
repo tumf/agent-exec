@@ -500,6 +500,7 @@ mod tests {
             kill_after_ms: 0,
             progress_every_ms: 0,
             shell_wrapper: None,
+            stdin_file: None,
         }
     }
 
@@ -653,6 +654,7 @@ mod tests {
             kill_after_ms: 0,
             progress_every_ms: 0,
             shell_wrapper: None,
+            stdin_file: None,
         };
         job_dir.write_meta_atomic(&updated_meta).unwrap();
 

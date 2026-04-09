@@ -81,6 +81,7 @@ pub fn execute(opts: StartOpts) -> Result<()> {
             env_vars: meta.env_vars_runtime.clone(),
             env_files: meta.env_files.clone(),
             inherit_env: meta.inherit_env,
+            stdin_file: meta.stdin_file.clone(),
             progress_every_ms: meta.progress_every_ms,
             notify_command: meta
                 .notification

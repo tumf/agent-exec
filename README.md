@@ -148,9 +148,14 @@ agent-exec create [OPTIONS] -- <COMMAND>...
 ```
 
 Persists the job definition. Accepts the same definition-time options as `run`
-(command, `--cwd`, `--env`, `--env-file`, `--mask`, `--timeout`, `--kill-after`,
-`--progress-every`, `--notify-command`, `--notify-file`, `--shell-wrapper`).
+(command, `--cwd`, `--env`, `--env-file`, `--mask`, `--stdin`, `--stdin-file`,
+`--timeout`, `--kill-after`, `--progress-every`, `--notify-command`,
+`--notify-file`, `--shell-wrapper`).
 Does **not** accept snapshot/wait options (`--snapshot-after`, `--wait`).
+
+`--stdin` / `--stdin-file` are materialized into `<job-dir>/stdin.bin` during
+`create`. Later `start` reuses the persisted `meta.json.stdin_file` value and
+does not require additional stdin flags.
 
 Returns `type="create"`, `state="created"`, `job_id`, `stdout_log_path`,
 and `stderr_log_path`.
@@ -192,6 +197,8 @@ Key options:
 | `--cwd <dir>` | inherited | Working directory |
 | `--env KEY=VALUE` | — | Set environment variable (repeatable) |
 | `--mask KEY` | — | Redact secret values from JSON output (repeatable) |
+| `--stdin <VALUE>` | — | Provide job stdin content directly. Use `--stdin -` for pipe/heredoc/redirect input. |
+| `--stdin-file <PATH>` | — | Copy file contents into job-local `stdin.bin` and use it as child stdin. |
 | `--tag <TAG>` | — | Assign a user-defined tag to the job (repeatable; duplicates deduplicated) |
 | `--wait` | false | Block until the job reaches a terminal state |
 | `--wait-poll-ms <ms>` | 200 | Poll interval used with `--wait` |
@@ -199,6 +206,27 @@ Key options:
 | `--notify-file <PATH>` | — | Append a `job.finished` event as NDJSON |
 | `--config <PATH>` | XDG default | Load shell wrapper config from a specific `config.toml` |
 | `--shell-wrapper <PROG FLAGS>` | platform default | Override shell wrapper for this invocation (e.g. `"bash -lc"`) |
+
+`--stdin` and `--stdin-file` are mutually exclusive. When `--stdin -` is used,
+`agent-exec` requires non-interactive stdin; if caller stdin is a tty it fails
+fast with `error.code = "stdin_required"`.
+
+```bash
+# Pipe stdin into the job
+printf 'abc' | agent-exec run --stdin - -- cat
+
+# Heredoc stdin
+agent-exec run --stdin - -- cat <<'EOF'
+line1
+line2
+EOF
+
+# Inline stdin (no implicit newline added)
+agent-exec run --stdin "abc" -- cat
+
+# File-backed stdin (materialized to <job-dir>/stdin.bin)
+agent-exec run --stdin-file ./input.txt -- cat
+```
 
 ### `status` — get job state
 

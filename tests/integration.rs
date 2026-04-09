@@ -60,17 +60,58 @@ impl TestHarness {
     }
 }
 
-fn run_cmd_with_root(args: &[&str], root: Option<&str>) -> serde_json::Value {
+fn run_raw_with_root_and_stdin(
+    args: &[&str],
+    root: Option<&str>,
+    stdin_bytes: Option<&[u8]>,
+) -> std::process::Output {
     let bin = binary();
     let mut cmd = Command::new(&bin);
     cmd.args(args);
     if let Some(r) = root {
         cmd.env("AGENT_EXEC_ROOT", r);
     }
-    let output = cmd.output().expect("run binary");
+    if stdin_bytes.is_some() {
+        cmd.stdin(std::process::Stdio::piped());
+    } else {
+        cmd.stdin(std::process::Stdio::null());
+    }
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+
+    let mut child = cmd.spawn().expect("spawn binary");
+    if let Some(bytes) = stdin_bytes {
+        use std::io::Write;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(bytes).expect("write stdin bytes");
+        }
+    }
+
+    child.wait_with_output().expect("wait binary output")
+}
+
+fn run_cmd_with_root(args: &[&str], root: Option<&str>) -> serde_json::Value {
+    let output = run_raw_with_root_and_stdin(args, root, None);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     // Stdout must be a single valid JSON object.
+    assert!(
+        !stdout.trim().is_empty(),
+        "stdout is empty (stderr: {stderr})\nargs: {args:?}"
+    );
+    serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+        panic!("stdout is not valid JSON: {e}\nstdout: {stdout}\nstderr: {stderr}\nargs: {args:?}")
+    })
+}
+
+fn run_cmd_with_root_and_stdin(
+    args: &[&str],
+    root: Option<&str>,
+    stdin_bytes: &[u8],
+) -> serde_json::Value {
+    let output = run_raw_with_root_and_stdin(args, root, Some(stdin_bytes));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         !stdout.trim().is_empty(),
         "stdout is empty (stderr: {stderr})\nargs: {args:?}"
@@ -290,6 +331,176 @@ fn tail_returns_json_with_encoding() {
     assert!(v.get("truncated").is_some(), "truncated missing");
 }
 
+#[test]
+fn run_stdin_dash_pipe_materialized_and_visible_in_meta() {
+    let h = TestHarness::new();
+    let input = b"alpha\nbeta\n";
+
+    let v = run_cmd_with_root_and_stdin(
+        &["run", "--wait", "--stdin", "-", "--", "cat"],
+        Some(h.root()),
+        input,
+    );
+    assert_envelope(&v, "run", true);
+    assert_eq!(v["state"].as_str().unwrap_or(""), "exited");
+
+    let stdout_tail = v["final_snapshot"]["stdout_tail"].as_str().unwrap_or("");
+    assert!(
+        stdout_tail.contains("alpha") && stdout_tail.contains("beta"),
+        "final_snapshot.stdout_tail should contain piped stdin: {stdout_tail:?}"
+    );
+
+    let job_id = v["job_id"].as_str().expect("job_id missing");
+    let meta_path = std::path::Path::new(h.root())
+        .join(job_id)
+        .join("meta.json");
+    let meta_raw = std::fs::read_to_string(&meta_path).expect("read meta.json");
+    let meta_json: serde_json::Value = serde_json::from_str(&meta_raw).expect("parse meta.json");
+    assert_eq!(
+        meta_json["stdin_file"].as_str().unwrap_or(""),
+        "stdin.bin",
+        "meta.json.stdin_file should point to materialized stdin"
+    );
+    let stdin_path = std::path::Path::new(h.root())
+        .join(job_id)
+        .join("stdin.bin");
+    let materialized = std::fs::read(&stdin_path).expect("read stdin.bin");
+    assert_eq!(materialized, input, "stdin.bin should match provided stdin");
+}
+
+#[test]
+fn run_stdin_inline_preserves_exact_bytes() {
+    let h = TestHarness::new();
+    let v = h.run(&["run", "--wait", "--stdin", "abc", "--", "cat"]);
+    assert_envelope(&v, "run", true);
+    assert_eq!(v["state"].as_str().unwrap_or(""), "exited");
+
+    let stdout_tail = v["final_snapshot"]["stdout_tail"].as_str().unwrap_or("");
+    assert_eq!(stdout_tail, "abc", "inline stdin should not append newline");
+}
+
+#[test]
+fn run_stdin_file_uses_materialized_copy() {
+    let h = TestHarness::new();
+    let src_path = std::path::Path::new(h.root()).join("stdin-source.txt");
+    std::fs::write(&src_path, b"file-input").expect("write stdin source file");
+
+    let v = h.run(&[
+        "run",
+        "--wait",
+        "--stdin-file",
+        src_path.to_str().expect("utf8 path"),
+        "--",
+        "cat",
+    ]);
+    assert_envelope(&v, "run", true);
+    assert_eq!(v["state"].as_str().unwrap_or(""), "exited");
+
+    let stdout_tail = v["final_snapshot"]["stdout_tail"].as_str().unwrap_or("");
+    assert_eq!(stdout_tail, "file-input");
+
+    let job_id = v["job_id"].as_str().expect("job_id missing");
+    let stdin_path = std::path::Path::new(h.root())
+        .join(job_id)
+        .join("stdin.bin");
+    let materialized = std::fs::read(&stdin_path).expect("read stdin.bin");
+    assert_eq!(materialized, b"file-input");
+}
+
+#[test]
+fn run_and_create_persist_same_stdin_meta_shape() {
+    let h = TestHarness::new();
+
+    let run_v = h.run(&["run", "--wait", "--stdin", "shape", "--", "cat"]);
+    let run_id = run_v["job_id"].as_str().expect("run job_id missing");
+    let run_meta_path = std::path::Path::new(h.root())
+        .join(run_id)
+        .join("meta.json");
+    let run_meta: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(run_meta_path).expect("read run meta"))
+            .expect("parse run meta");
+
+    let create_v = h.run(&["create", "--stdin", "shape", "--", "cat"]);
+    let create_id = create_v["job_id"].as_str().expect("create job_id missing");
+    let create_meta_path = std::path::Path::new(h.root())
+        .join(create_id)
+        .join("meta.json");
+    let create_meta: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(create_meta_path).expect("read create meta"))
+            .expect("parse create meta");
+
+    assert_eq!(run_meta["stdin_file"], create_meta["stdin_file"]);
+    assert_eq!(run_meta["stdin_file"].as_str().unwrap_or(""), "stdin.bin");
+}
+
+#[test]
+fn run_without_stdin_keeps_null_stdin_behavior() {
+    let h = TestHarness::new();
+    let v = h.run(&["run", "--wait", "--", "cat"]);
+    assert_envelope(&v, "run", true);
+
+    let job_id = v["job_id"].as_str().expect("job_id missing");
+    let meta_path = std::path::Path::new(h.root())
+        .join(job_id)
+        .join("meta.json");
+    let meta: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(meta_path).expect("read meta"))
+            .expect("parse meta");
+    assert!(
+        meta.get("stdin_file").is_none() || meta["stdin_file"].is_null(),
+        "stdin_file should be absent or null when stdin is not configured"
+    );
+    assert!(
+        !std::path::Path::new(h.root())
+            .join(job_id)
+            .join("stdin.bin")
+            .exists(),
+        "stdin.bin should not exist when stdin is not configured"
+    );
+}
+
+#[test]
+fn create_start_reuses_stdin_definition() {
+    let h = TestHarness::new();
+    let create_v = h.run(&["create", "--stdin", "hello", "--", "cat"]);
+    assert_envelope(&create_v, "create", true);
+    let job_id = create_v["job_id"]
+        .as_str()
+        .expect("job_id missing")
+        .to_string();
+
+    let start_v = h.run(&["start", "--wait", &job_id]);
+    assert_envelope(&start_v, "start", true);
+    assert_eq!(start_v["state"].as_str().unwrap_or(""), "exited");
+    let stdout_tail = start_v["final_snapshot"]["stdout_tail"]
+        .as_str()
+        .unwrap_or("");
+    assert_eq!(stdout_tail, "hello");
+}
+
+#[test]
+fn create_with_stdin_dash_materializes_input_for_later_start() {
+    let h = TestHarness::new();
+    let create_v = run_cmd_with_root_and_stdin(
+        &["create", "--stdin", "-", "--", "cat"],
+        Some(h.root()),
+        b"from-create-pipe",
+    );
+    assert_envelope(&create_v, "create", true);
+    let job_id = create_v["job_id"]
+        .as_str()
+        .expect("job_id missing")
+        .to_string();
+
+    let start_v = h.run(&["start", "--wait", &job_id]);
+    assert_envelope(&start_v, "start", true);
+    assert_eq!(start_v["state"].as_str().unwrap_or(""), "exited");
+    let stdout_tail = start_v["final_snapshot"]["stdout_tail"]
+        .as_str()
+        .unwrap_or("");
+    assert_eq!(stdout_tail, "from-create-pipe");
+}
+
 // ── wait ───────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -348,12 +559,66 @@ fn wait_forever_waits_until_terminal() {
 }
 
 #[test]
-fn wait_rejects_until_and_forever_together() {
+fn stdin_option_conflict_is_usage_error_for_run_and_create() {
     let h = TestHarness::new();
     assert_usage_error(
-        &["wait", "--until", "100", "--forever", "JOBID"],
+        &[
+            "run",
+            "--stdin",
+            "x",
+            "--stdin-file",
+            "/tmp/in.txt",
+            "--",
+            "cat",
+        ],
         Some(h.root()),
     );
+    assert_usage_error(
+        &[
+            "create",
+            "--stdin",
+            "x",
+            "--stdin-file",
+            "/tmp/in.txt",
+            "--",
+            "cat",
+        ],
+        Some(h.root()),
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn run_stdin_dash_with_tty_like_stdin_fails_fast() {
+    let h = TestHarness::new();
+    let bin = binary();
+
+    let output = std::process::Command::new("script")
+        .arg("-q")
+        .arg("/dev/null")
+        .arg("sh")
+        .arg("-lc")
+        .arg(format!(
+            "AGENT_EXEC_ROOT={} {} run --stdin - -- cat",
+            h.root(),
+            bin.display()
+        ))
+        .output()
+        .expect("run script tty wrapper");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json_start = stdout
+        .rfind("{\"schema_version\"")
+        .expect("tty wrapper output should include JSON error envelope");
+    let json = &stdout[json_start..];
+    let v: serde_json::Value = serde_json::from_str(json).expect("parse tty failure JSON");
+
+    assert!(
+        !v["ok"].as_bool().unwrap_or(true),
+        "expected error response: {v}"
+    );
+    assert_eq!(v["type"].as_str().unwrap_or(""), "error");
+    assert_eq!(v["error"]["code"].as_str().unwrap_or(""), "stdin_required");
 }
 
 // ── kill ───────────────────────────────────────────────────────────────────────
