@@ -509,8 +509,7 @@ All responses include `schema_version`, `ok`, and `type` fields matching the CLI
   "command": ["bash", "-c", "echo hello"],
   "cwd": "/tmp",
   "env": {"FOO": "bar"},
-  "timeout_ms": 30000,
-  "wait": false
+  "timeout_ms": 30000
 }
 ```
 
@@ -600,19 +599,17 @@ Choose the sink based on the next consumer:
 Example:
 
 ```bash
-agent-exec run \
-  --wait \
-  --notify-file /tmp/agent-exec-events.ndjson \
-  -- echo hello
+JOB=$(agent-exec run --notify-file /tmp/agent-exec-events.ndjson -- echo hello | jq -r .job_id)
+agent-exec wait "$JOB"
+agent-exec tail "$JOB"
 ```
 
 Command sink example:
 
 ```bash
-agent-exec run \
-  --wait \
-  --notify-command 'cat > /tmp/agent-exec-event.json' \
-  -- echo hello
+JOB=$(agent-exec run --notify-command 'cat > /tmp/agent-exec-event.json' -- echo hello | jq -r .job_id)
+agent-exec wait "$JOB"
+agent-exec tail "$JOB"
 ```
 
 ### OpenClaw examples

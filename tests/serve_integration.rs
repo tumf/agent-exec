@@ -175,14 +175,16 @@ fn test_status_returns_state() {
 #[test]
 fn test_tail_returns_stdout() {
     let srv = ServeProcess::start();
-    // Use wait=true so the job finishes before we tail.
-    let (_, exec_json) = post_json(
-        &srv.url("/exec"),
-        r#"{"command":["echo","tailtest"],"wait":true}"#,
-    );
+    let (_, exec_json) = post_json(&srv.url("/exec"), r#"{"command":["echo","tailtest"]}"#);
     let job_id = exec_json["job_id"]
         .as_str()
         .expect("job_id in exec response");
+
+    let (wait_status, wait_json) = get_json(&srv.url(&format!("/wait/{job_id}")));
+    assert_eq!(
+        wait_status, 200,
+        "GET /wait failed before /tail: {wait_json}"
+    );
 
     let (status, json) = get_json(&srv.url(&format!("/tail/{job_id}")));
     assert_eq!(status, 200, "GET /tail failed: {json}");
@@ -257,6 +259,19 @@ fn test_exec_missing_command_returns_400() {
         status, 400,
         "expected 400 for missing command field: {json}"
     );
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["error"]["code"], "invalid_request");
+    assert_common_fields(&json);
+}
+
+#[test]
+fn test_exec_rejects_wait_field() {
+    let srv = ServeProcess::start();
+    let (status, json) = post_json(
+        &srv.url("/exec"),
+        r#"{"command":["echo","hi"],"wait":true}"#,
+    );
+    assert_eq!(status, 400, "expected 400 for unknown wait field: {json}");
     assert_eq!(json["ok"], false);
     assert_eq!(json["error"]["code"], "invalid_request");
     assert_common_fields(&json);

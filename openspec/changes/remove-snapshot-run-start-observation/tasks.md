@@ -10,3 +10,8 @@
 ## Future Work
 
 - 必要なら `wait` / `tail` をまとめて呼ぶ高レベル convenience サブコマンドを別提案で検討する
+
+## Acceptance #1 Failure Follow-up
+
+- [x] `README.md` の Job Finished Events 例から削除済み `run --wait` を除去し、通知設定は `run` 後に `wait` / `tail` で観測する導線へ更新する
+- [x] `src/serve.rs` の `POST /exec` から launch-only `run` と矛盾する `wait` 同期待機経路を削除または別 API へ分離し、`tests/serve_integration.rs` と serve 関連ドキュメント/仕様を整合させる

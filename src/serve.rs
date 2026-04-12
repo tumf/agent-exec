@@ -114,12 +114,12 @@ async fn health_handler() -> impl IntoResponse {
 // ---- POST /exec ----
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ExecRequest {
     command: Option<Vec<String>>,
     cwd: Option<String>,
     env: Option<HashMap<String, String>>,
     timeout_ms: Option<u64>,
-    wait: Option<bool>,
 }
 
 async fn exec_handler(State(state): State<Arc<AppState>>, request: Request) -> AxumResponse {
@@ -174,7 +174,6 @@ async fn exec_handler(State(state): State<Arc<AppState>>, request: Request) -> A
         .collect();
     let cwd = req.cwd;
     let timeout_ms = req.timeout_ms.unwrap_or(0);
-    let do_wait = req.wait.unwrap_or(false);
 
     let result = tokio::task::spawn_blocking(move || {
         run_exec_inner(
@@ -183,7 +182,6 @@ async fn exec_handler(State(state): State<Arc<AppState>>, request: Request) -> A
             cwd.as_deref(),
             env_vars,
             timeout_ms,
-            do_wait,
         )
     })
     .await;
@@ -206,7 +204,6 @@ fn run_exec_inner(
     cwd: Option<&str>,
     env_vars: Vec<String>,
     timeout_ms: u64,
-    do_wait: bool,
 ) -> Result<serde_json::Value> {
     use crate::run::{
         SpawnSupervisorParams, now_rfc3339_pub, pre_create_log_files, resolve_effective_cwd,
@@ -277,17 +274,7 @@ fn run_exec_inner(
     let stdout_log_path = job_dir.stdout_path().display().to_string();
     let stderr_log_path = job_dir.stderr_path().display().to_string();
 
-    let final_state = if do_wait {
-        loop {
-            let state = job_dir.read_state()?;
-            if !state.status().is_non_terminal() {
-                break state.status().as_str().to_string();
-            }
-            std::thread::sleep(std::time::Duration::from_millis(200));
-        }
-    } else {
-        JobStatus::Running.as_str().to_string()
-    };
+    let final_state = JobStatus::Running.as_str().to_string();
 
     let elapsed_ms = elapsed_start.elapsed().as_millis() as u64;
 
