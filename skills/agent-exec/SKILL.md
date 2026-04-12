@@ -41,16 +41,28 @@ agent-exec run [OPTIONS] -- <COMMAND> [ARGS...]
 
 Use these options most often:
 
-- `--snapshot-after <ms>`: delay the initial response briefly to include a snapshot
-- `--timeout <ms>` / `--kill-after <ms>`: enforce termination deadlines
-- `--cwd <dir>`: run from a specific directory
+- `--snapshot-after <ms>`: delay the initial response briefly to include a snapshot (default: `10000`)
+- `--tail-lines <N>` / `--max-bytes <N>`: size the returned snapshot tails (defaults: `50`, `65536`)
+- `--timeout <ms>` / `--kill-after <ms>`: enforce termination deadlines (defaults: `0`, `0`)
+- `--cwd <dir>`: run from a specific directory (default: the caller's current working directory)
 - `--env KEY=VALUE` / `--env-file <file>`: set environment variables
-- `--no-inherit-env`: avoid inheriting the current process environment
-- `--wait` / `--wait-poll-ms <ms>`: return only after the job reaches a terminal state
-- `--notify-command <COMMAND>`: run a shell command on completion via the configured shell wrapper (default: `sh -lc` on Unix, `cmd /C` on Windows); event JSON is sent to stdin
+- `--no-inherit-env`: avoid inheriting the current process environment (default behavior is to inherit it)
+- `--wait` / `--wait-poll-ms <ms>`: return only after the job reaches a terminal state (defaults: `false`, `200`)
+- `--until <ms>` / `--forever`: bound or remove the client-side wait deadline when `--wait` is used (default: `30000`; without `--wait`, `run` does not use this deadline)
+- `--notify-command <COMMAND>`: run a shell command on completion via the configured shell wrapper (default wrapper: `sh -lc` on Unix, `cmd /C` on Windows); event JSON is sent to stdin
 - `--notify-file <PATH>`: append one NDJSON `job.finished` event per completed job
 - `--config <PATH>`: load shell wrapper settings from a specific `config.toml`
 - `--shell-wrapper <PROG FLAGS>`: override the shell wrapper for this invocation (e.g. `"bash -lc"`); applies to both command-string execution and `--notify-command`
+
+Default behavior for `run`:
+
+- without `--wait`, returns after a short snapshot wait instead of waiting for completion: `--snapshot-after 10000`
+- includes up to `50` tail lines and `65536` bytes per stream in snapshots
+- does not enforce a runtime limit unless `--timeout` is set
+- runs in the caller's current working directory unless `--cwd` is set
+- inherits the caller's environment unless `--no-inherit-env` is set
+- does not wait for terminal state unless `--wait` is set
+- with `--wait`, does not use `--snapshot-after`; instead it polls every `200ms` and stops waiting after `30000ms` unless `--until` or `--forever` changes that
 
 Pass a plain shell command string to `--notify-command`. The command sink also receives:
 
@@ -69,9 +81,9 @@ Choose the sink based on who needs the event next:
 Use these commands after `run`:
 
 - `agent-exec status <JOB_ID>`: read current state (`running`, `exited`, `killed`, `failed`)
-- `agent-exec tail [--tail-lines N] [--max-bytes N] <JOB_ID>`: read stdout/stderr tails
-- `agent-exec wait [--until N] [--poll-ms N] [--forever] <JOB_ID>`: block until terminal state
-- `agent-exec kill [--signal TERM|INT|KILL] <JOB_ID>`: request termination
+- `agent-exec tail [--tail-lines N] [--max-bytes N] <JOB_ID>`: read stdout/stderr tails (defaults: `50`, `65536`)
+- `agent-exec wait [--until N] [--poll-ms N] [--forever] <JOB_ID>`: block until terminal state (defaults: `--poll-ms 200`, `--until 30000` unless `--forever` is set)
+- `agent-exec kill [--signal TERM|INT|KILL] <JOB_ID>`: request termination (default signal: `TERM`)
 - `agent-exec notify set <JOB_ID> --command <COMMAND>`: attach or replace the completion callback after the job has already started
 
 Use `wait` when the caller needs a terminal outcome before proceeding. Use `status` when the job should continue running while the caller does other work.
