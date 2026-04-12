@@ -217,9 +217,9 @@ enum Command {
         #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue)]
         wait: bool,
 
-        /// Poll interval in milliseconds while waiting for a terminal state.
-        #[arg(long, default_value = "200")]
-        wait_poll_ms: u64,
+        /// Poll interval in seconds while waiting for a terminal state.
+        #[arg(long = "wait-poll", default_value = "1")]
+        wait_poll_seconds: u64,
 
         /// Job ID of a previously created job.
         #[arg(add = ArgValueCompleter::new(agent_exec::completions::complete_created_jobs))]
@@ -297,11 +297,11 @@ enum Command {
         #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue)]
         wait: bool,
 
-        /// Poll interval in milliseconds while waiting for a terminal state.
-        #[arg(long, default_value = "200")]
-        wait_poll_ms: u64,
+        /// Poll interval in seconds while waiting for a terminal state.
+        #[arg(long = "wait-poll", default_value = "1")]
+        wait_poll_seconds: u64,
 
-        /// Maximum wait duration in milliseconds when used with --wait (default: 30000).
+        /// Maximum wait duration in seconds when used with --wait (default: 30).
         #[arg(long, requires = "wait", conflicts_with = "forever")]
         until: Option<u64>,
 
@@ -383,11 +383,11 @@ enum Command {
 
     /// Wait for a job to finish.
     Wait {
-        /// Poll interval in milliseconds.
-        #[arg(long, default_value = "200")]
-        poll_ms: u64,
+        /// Poll interval in seconds.
+        #[arg(long = "poll", default_value = "1")]
+        poll_seconds: u64,
 
-        /// Maximum client-side wait deadline in milliseconds (default: 30000).
+        /// Maximum client-side wait deadline in seconds (default: 30).
         /// This controls how long `wait` polls and does not stop the underlying job;
         /// use `run --timeout` to enforce process runtime limits.
         #[arg(long, conflicts_with = "forever")]
@@ -770,7 +770,7 @@ fn run(cli: Cli) -> Result<()> {
             tail_lines,
             max_bytes,
             wait,
-            wait_poll_ms,
+            wait_poll_seconds,
             job_id,
         } => {
             agent_exec::start::execute(agent_exec::start::StartOpts {
@@ -780,7 +780,7 @@ fn run(cli: Cli) -> Result<()> {
                 tail_lines,
                 max_bytes,
                 wait,
-                wait_poll_ms,
+                wait_poll_ms: wait_poll_seconds.saturating_mul(1000),
             })?;
         }
 
@@ -800,7 +800,7 @@ fn run(cli: Cli) -> Result<()> {
             log,
             progress_every,
             wait,
-            wait_poll_ms,
+            wait_poll_seconds,
             until,
             forever,
             notify_command,
@@ -844,8 +844,8 @@ fn run(cli: Cli) -> Result<()> {
                 log: log.as_deref(),
                 progress_every_ms: progress_every,
                 wait,
-                wait_poll_ms,
-                wait_until_ms: until.unwrap_or(30_000),
+                wait_poll_seconds,
+                wait_until_seconds: until.unwrap_or(30),
                 wait_forever: forever,
                 notify_command,
                 notify_file,
@@ -879,7 +879,7 @@ fn run(cli: Cli) -> Result<()> {
         }
 
         Command::Wait {
-            poll_ms,
+            poll_seconds,
             until,
             forever,
             job_id,
@@ -887,8 +887,8 @@ fn run(cli: Cli) -> Result<()> {
             agent_exec::wait::execute(agent_exec::wait::WaitOpts {
                 job_id: &job_id,
                 root: root.as_deref(),
-                poll_ms,
-                until: until.unwrap_or(30_000),
+                poll_seconds,
+                until_seconds: until.unwrap_or(30),
                 forever,
             })?;
         }

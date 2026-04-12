@@ -170,7 +170,7 @@ Then `run` と `tail` の `*_observed_bytes` と `*_included_bytes` は同一の
 
 ### Requirement: run の同期待機オプション
 
-`run` は `--wait` が指定された場合、既定では最大 30,000ms までジョブの状態変化を待機しなければならない（MUST）。待機上限は `--until <ms>` によって上書きできなければならない（MUST）。`--forever` が指定された場合は終端状態 (`exited|killed|failed`) になるまで無制限に待機しなければならない（MUST）。
+`run` は `--wait` が指定された場合、既定では最大 30 秒までジョブの状態変化を待機しなければならない（MUST）。待機上限は `--until <seconds>` によって上書きできなければならない（MUST）。`--forever` が指定された場合は終端状態 (`exited|killed|failed`) になるまで無制限に待機しなければならない（MUST）。
 
 `--until` と `--forever` は `--wait` と組み合わせる観測用オプションであり、同時指定してはならない（MUST）。`--wait` なしで `--until` / `--forever` を受け付けてはならない（MUST）。
 
@@ -187,7 +187,7 @@ And `final_snapshot` と `finished_at` は含まれない
 
 #### Scenario: --wait --until で待機上限を短縮する
 
-Given `agent-exec run --wait --until 100 --snapshot-after 0 -- sleep 60` を実行する
+Given `agent-exec run --wait --until 1 --snapshot-after 0 -- sleep 60` を実行する
 When `run` の JSON が返る
 Then 返却時間は既定 30 秒より短い
 And `state` は `running` または `created` である
@@ -202,13 +202,13 @@ And `finished_at` が含まれる
 
 #### Scenario: --until と --forever の排他
 
-Given `agent-exec run --wait --until 100 --forever -- echo hi` を実行する
+Given `agent-exec run --wait --until 1 --forever -- echo hi` を実行する
 When CLI 引数を検証する
 Then usage error で失敗する
 
 #### Scenario: --wait なしの --until / --forever は拒否される
 
-Given `agent-exec run --until 100 -- echo hi` を実行する
+Given `agent-exec run --until 1 -- echo hi` を実行する
 When CLI 引数を検証する
 Then usage error で失敗する
 And `agent-exec run --forever -- echo hi` も usage error で失敗する
@@ -234,7 +234,7 @@ And shell syntax remains available to that command string
 
 ### Requirement: run の同期待機オプション
 
-`run` は `--wait` が指定された場合、既定では最大 30,000ms までジョブの状態変化を待機しなければならない（MUST）。待機上限は `--until <ms>` によって上書きできなければならない（MUST）。`--forever` が指定された場合は終端状態 (`exited|killed|failed`) になるまで無制限に待機しなければならない（MUST）。
+`run` は `--wait` が指定された場合、既定では最大 30 秒までジョブの状態変化を待機しなければならない（MUST）。待機上限は `--until <seconds>` によって上書きできなければならない（MUST）。`--forever` が指定された場合は終端状態 (`exited|killed|failed`) になるまで無制限に待機しなければならない（MUST）。
 
 `--until` と `--forever` は `--wait` と組み合わせる観測用 option であり、`--timeout` が表すジョブ実行時間の timeout とは別概念として扱わなければならない（MUST）。`--until` と `--forever` は単独使用を許可してはならず（MUST NOT）、互いに同時指定も許可してはならない（MUST NOT）。
 

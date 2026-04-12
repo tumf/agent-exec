@@ -7,10 +7,10 @@
 use anyhow::Result;
 use tracing::info;
 
-use crate::jobstore::{InvalidJobState, JobDir, resolve_root};
+use crate::jobstore::{resolve_root, InvalidJobState, JobDir};
 use crate::run::{
-    SnapshotWaitOpts, SpawnSupervisorParams, mask_env_vars, run_snapshot_wait,
-    spawn_supervisor_process,
+    mask_env_vars, run_snapshot_wait, spawn_supervisor_process, SnapshotWaitOpts,
+    SpawnSupervisorParams,
 };
 use crate::schema::{JobStatus, Response, RunData};
 
@@ -111,8 +111,8 @@ pub fn execute(opts: StartOpts) -> Result<()> {
                 tail_lines: opts.tail_lines,
                 max_bytes: opts.max_bytes,
                 wait: opts.wait,
-                wait_poll_ms: opts.wait_poll_ms,
-                wait_until_ms: 0,
+                wait_poll_seconds: (opts.wait_poll_ms / 1000).max(1),
+                wait_until_seconds: 0,
                 wait_forever: true,
             },
         );

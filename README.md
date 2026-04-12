@@ -175,7 +175,7 @@ observation-time options only:
 | `--tail-lines <N>` | 50 | Lines in snapshot |
 | `--max-bytes <N>` | 65536 | Max bytes in snapshot |
 | `--wait` | false | Block until terminal state |
-| `--wait-poll-ms <ms>` | 200 | Poll interval with `--wait` |
+| `--wait-poll <seconds>` | 1 | Poll interval with `--wait` |
 
 Returns `type="start"` with the same payload shape as `run`. Only jobs in
 `created` state can be started; any other state returns `error.code="invalid_state"`.
@@ -201,7 +201,7 @@ Key options:
 | `--stdin-file <PATH>` | — | Copy file contents into job-local `stdin.bin` and use it as child stdin. |
 | `--tag <TAG>` | — | Assign a user-defined tag to the job (repeatable; duplicates deduplicated) |
 | `--wait` | false | Block until the job reaches a terminal state |
-| `--wait-poll-ms <ms>` | 200 | Poll interval used with `--wait` |
+| `--wait-poll <seconds>` | 1 | Poll interval used with `--wait` |
 | `--notify-command <COMMAND>` | — | Run a shell command when the job finishes; event JSON is sent on stdin |
 | `--notify-file <PATH>` | — | Append a `job.finished` event as NDJSON |
 | `--config <PATH>` | XDG default | Load shell wrapper config from a specific `config.toml` |
@@ -247,7 +247,7 @@ Returns the last N lines of stdout and stderr.
 ### `wait` — block until done
 
 ```bash
-agent-exec wait [--until N] [--poll-ms N] [--forever] <JOB_ID>
+agent-exec wait [--until SECONDS] [--poll SECONDS] [--forever] <JOB_ID>
 ```
 
 Polls until the job reaches a terminal state or the wait deadline elapses.

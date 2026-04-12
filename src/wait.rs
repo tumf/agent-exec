@@ -14,11 +14,11 @@ use crate::schema::{Response, WaitData};
 pub struct WaitOpts<'a> {
     pub job_id: &'a str,
     pub root: Option<&'a str>,
-    /// Poll interval in milliseconds.
-    pub poll_ms: u64,
-    /// Total timeout in milliseconds (default 30000).
+    /// Poll interval in seconds.
+    pub poll_seconds: u64,
+    /// Total timeout in seconds (default 30).
     /// Ignored when `forever` is true.
-    pub until: u64,
+    pub until_seconds: u64,
     /// Wait indefinitely when true.
     pub forever: bool,
 }
@@ -28,8 +28,8 @@ impl<'a> Default for WaitOpts<'a> {
         WaitOpts {
             job_id: "",
             root: None,
-            poll_ms: 200,
-            until: 30_000,
+            poll_seconds: 1,
+            until_seconds: 30,
             forever: false,
         }
     }
@@ -40,11 +40,11 @@ pub fn execute(opts: WaitOpts) -> Result<()> {
     let root = resolve_root(opts.root);
     let job_dir = JobDir::open(&root, opts.job_id)?;
 
-    let poll = std::time::Duration::from_millis(opts.poll_ms);
+    let poll = std::time::Duration::from_secs(opts.poll_seconds.max(1));
     let deadline = if opts.forever {
         None
     } else {
-        Some(std::time::Instant::now() + std::time::Duration::from_millis(opts.until))
+        Some(std::time::Instant::now() + std::time::Duration::from_secs(opts.until_seconds))
     };
 
     loop {

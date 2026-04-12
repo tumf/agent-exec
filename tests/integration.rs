@@ -512,7 +512,7 @@ fn wait_returns_json_after_job_finishes() {
     let job_id = run_v["job_id"].as_str().unwrap().to_string();
 
     // Wait with --until=5s; echo finishes fast.
-    let v = h.run(&["wait", "--until", "5000", &job_id]);
+    let v = h.run(&["wait", "--until", "5", &job_id]);
     assert_envelope(&v, "wait", true);
     assert_eq!(v["job_id"].as_str().unwrap_or(""), job_id);
     assert!(v.get("state").is_some(), "state missing");
@@ -1575,7 +1575,7 @@ fn list_filters_by_state_running() {
         .expect("job_id missing")
         .to_string();
     // Wait to ensure the echo job has completed.
-    h.run(&["wait", "--until", "5000", &short_job_id]);
+    h.run(&["wait", "--until", "5", &short_job_id]);
 
     // list --state running must contain the long job, not the short one.
     let v = h.run(&["list", "--state", "running"]);
@@ -1985,7 +1985,7 @@ fn run_wait_until_overrides_default_deadline() {
         "0",
         "--wait",
         "--until",
-        "100",
+        "1",
         "sleep",
         "60",
     ]);
@@ -1994,7 +1994,7 @@ fn run_wait_until_overrides_default_deadline() {
     assert_envelope(&v, "run", true);
     assert!(
         elapsed_ms < 5_000,
-        "run --wait --until 100 should return quickly"
+        "run --wait --until 1 should return quickly"
     );
     let state = v["state"].as_str().unwrap_or("");
     assert!(state == "running" || state == "created");
@@ -2039,10 +2039,7 @@ fn run_wait_rejects_until_and_forever_together() {
 #[test]
 fn run_rejects_until_without_wait() {
     let h = TestHarness::new();
-    assert_usage_error(
-        &["run", "--until", "100", "echo", "invalid"],
-        Some(h.root()),
-    );
+    assert_usage_error(&["run", "--until", "1", "echo", "invalid"], Some(h.root()));
 }
 
 #[test]
@@ -5889,7 +5886,7 @@ fn prefix_lookup_cross_command() {
     assert_eq!(tail_v["job_id"].as_str().unwrap_or(""), full_id);
 
     // wait accepts prefix.
-    let (wait_v, _) = run_cmd_raw(&["wait", "--until", "100", prefix], Some(h.root()));
+    let (wait_v, _) = run_cmd_raw(&["wait", "--until", "1", prefix], Some(h.root()));
     // ok may be false if job is still running, but job_id must be the full ID.
     assert_eq!(wait_v["job_id"].as_str().unwrap_or(""), full_id);
 
