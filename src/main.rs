@@ -328,11 +328,11 @@ enum Command {
 
     /// Wait for a job to finish.
     Wait {
-        /// Poll interval in milliseconds.
-        #[arg(long, default_value = "200")]
-        poll_ms: u64,
+        /// Poll interval in seconds.
+        #[arg(long = "poll", default_value = "1")]
+        poll_seconds: u64,
 
-        /// Maximum client-side wait deadline in milliseconds (default: 30000).
+        /// Maximum client-side wait deadline in seconds (default: 30).
         /// This controls how long `wait` polls and does not stop the underlying job;
         /// use `run --timeout` to enforce process runtime limits.
         #[arg(long, conflicts_with = "forever")]
@@ -797,7 +797,7 @@ fn run(cli: Cli) -> Result<()> {
         }
 
         Command::Wait {
-            poll_ms,
+            poll_seconds,
             until,
             forever,
             job_id,
@@ -805,8 +805,8 @@ fn run(cli: Cli) -> Result<()> {
             agent_exec::wait::execute(agent_exec::wait::WaitOpts {
                 job_id: &job_id,
                 root: root.as_deref(),
-                poll_ms,
-                until: until.unwrap_or(30_000),
+                poll_seconds,
+                until_seconds: until.unwrap_or(30),
                 forever,
             })?;
         }

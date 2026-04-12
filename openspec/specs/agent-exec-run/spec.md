@@ -171,7 +171,7 @@ Then `run` と `tail` の `*_observed_bytes` と `*_included_bytes` は同一の
 
 ### Requirement: run の同期待機オプション
 
-`run` は `--wait` が指定された場合、既定では最大 30,000ms までジョブの状態変化を待機しなければならない（MUST）。待機上限は `--until <ms>` によって上書きできなければならない（MUST）。`--forever` が指定された場合は終端状態 (`exited|killed|failed`) になるまで無制限に待機しなければならない（MUST）。
+`run` は `--wait` が指定された場合、既定では最大 30 秒までジョブの状態変化を待機しなければならない（MUST）。待機上限は `--until <seconds>` によって上書きできなければならない（MUST）。`--forever` が指定された場合は終端状態 (`exited|killed|failed`) になるまで無制限に待機しなければならない（MUST）。
 
 `--until` と `--forever` は `--wait` と組み合わせる観測用オプションであり、同時指定してはならない（MUST）。`--wait` なしで `--until` / `--forever` を受け付けてはならない（MUST）。
 
@@ -188,7 +188,7 @@ And `final_snapshot` と `finished_at` は含まれない
 
 #### Scenario: --wait --until で待機上限を短縮する
 
-Given `agent-exec run --wait --until 100 --snapshot-after 0 -- sleep 60` を実行する
+Given `agent-exec run --wait --until 1 --snapshot-after 0 -- sleep 60` を実行する
 When `run` の JSON が返る
 Then 返却時間は既定 30 秒より短い
 And `state` は `running` または `created` である
@@ -203,13 +203,13 @@ And `finished_at` が含まれる
 
 #### Scenario: --until と --forever の排他
 
-Given `agent-exec run --wait --until 100 --forever -- echo hi` を実行する
+Given `agent-exec run --wait --until 1 --forever -- echo hi` を実行する
 When CLI 引数を検証する
 Then usage error で失敗する
 
 #### Scenario: --wait なしの --until / --forever は拒否される
 
-Given `agent-exec run --until 100 -- echo hi` を実行する
+Given `agent-exec run --until 1 -- echo hi` を実行する
 When CLI 引数を検証する
 Then usage error で失敗する
 And `agent-exec run --forever -- echo hi` も usage error で失敗する
@@ -235,7 +235,7 @@ And shell syntax remains available to that command string
 
 ### Requirement: run の同期待機オプション
 
-`run` は `--wait` が指定された場合、既定では最大 30,000ms までジョブの状態変化を待機しなければならない（MUST）。待機上限は `--until <ms>` によって上書きできなければならない（MUST）。`--forever` が指定された場合は終端状態 (`exited|killed|failed`) になるまで無制限に待機しなければならない（MUST）。
+`run` は `--wait` が指定された場合、既定では最大 30 秒までジョブの状態変化を待機しなければならない（MUST）。待機上限は `--until <seconds>` によって上書きできなければならない（MUST）。`--forever` が指定された場合は終端状態 (`exited|killed|failed`) になるまで無制限に待機しなければならない（MUST）。
 
 `--until` と `--forever` は `--wait` と組み合わせる観測用 option であり、`--timeout` が表すジョブ実行時間の timeout とは別概念として扱わなければならない（MUST）。`--until` と `--forever` は単独使用を許可してはならず（MUST NOT）、互いに同時指定も許可してはならない（MUST NOT）。
 
@@ -283,11 +283,13 @@ Then the command fails with usage error
 
 ### Requirement: wait サブコマンドの待機期限オプション
 
-`wait` サブコマンドは既定では最大 30,000ms までジョブの終端状態を待機しなければならない（MUST）。待機上限は `--until <ms>` によって上書きできなければならない（MUST）。`--forever` が指定された場合は終端状態になるまで無制限に待機しなければならない（MUST）。`--until` と `--forever` は互いに同時指定を許可してはならない（MUST NOT）。
+`wait` サブコマンドは既定では最大 30 秒までジョブの終端状態を待機しなければならない（MUST）。待機上限は `--until <seconds>` によって上書きできなければならない（MUST）。`--forever` が指定された場合は終端状態になるまで無制限に待機しなければならない（MUST）。`--until` と `--forever` は互いに同時指定を許可してはならない（MUST NOT）。
 
 待機上限に達してもジョブは終了させてはならない（MUST NOT）。終端状態まで到達した場合は `state` と `exit_code` を返さなければならない（MUST）。待機上限に達してもジョブが非終端状態の場合は非終端の `state` を返し、`exit_code` を含めてはならない（MUST NOT）。
 
-既存の `--timeout-ms` オプションは `--until` に置換する（MUST）。
+待機期限指定は秒単位の `--until` に統一しなければならない（MUST）。`--timeout-ms` は有効なオプションとして受け付けてはならない（MUST NOT）。
+
+`wait` のポーリング間隔は秒単位の `--poll <seconds>` で指定できなければならない（MUST）。この間隔は観測用の近似値であり、ミリ秒精度の厳密なチェック時刻を保証してはならない（MUST NOT）。
 
 #### Scenario: wait uses the default 30 second deadline
 
@@ -299,7 +301,7 @@ And if the job finished within the deadline, the response state is terminal
 #### Scenario: wait --until returns while the job keeps running
 
 Given a running job created by `agent-exec run -- sh -c "sleep 10"`
-When `agent-exec wait --until 100 <job_id>` is executed
+When `agent-exec wait --until 1 <job_id>` is executed
 Then the response state is `created` or `running`
 And `exit_code` is absent
 
@@ -311,9 +313,23 @@ Then the response state is terminal after the job exits
 
 #### Scenario: wait --until and --forever are mutually exclusive
 
-Given a user executes `agent-exec wait --until 100 --forever <job_id>`
+Given a user executes `agent-exec wait --until 1 --forever <job_id>`
 When clap validates arguments
 Then the command fails with usage error
+
+#### Scenario: wait exposes second-based poll option
+
+Given a user inspects `agent-exec wait --help`
+When the polling option is shown
+Then the canonical polling option is documented in seconds
+And the help text does not imply millisecond-accurate checking
+
+#### Scenario: wait rejects removed timeout-ms spelling
+
+Given a user executes `agent-exec wait --timeout-ms 100 <job_id>`
+When clap validates arguments
+Then the command fails with usage error
+And stdout is empty
 
 
 ### Requirement: 環境変数の注入
@@ -359,72 +375,70 @@ Given `--stdin value --stdin-file ./input.txt` が指定される
 When `agent-exec run` または `agent-exec create` の CLI 引数を検証する
 Then どちらも usage error で失敗する
 
+## Requirements
+
+### Requirement: 人間向け待機期限オプションは秒単位である
+
+`run --wait` と `wait` が受け付ける人間向け待機期限オプションは秒単位で解釈しなければならない（MUST）。既定の待機期限は 30 秒でなければならない（MUST）。内部実装でミリ秒や `Duration` に変換してもよいが、CLI 契約・ヘルプ・ドキュメント・統合テストは秒単位を正規表現として扱わなければならない（MUST）。
+
+#### Scenario: wait uses second-based until
+
+**Given**: a running job created by `agent-exec run -- sh -c "sleep 10"`
+**When**: `agent-exec wait --until 30 <job_id>` is executed
+**Then**: the command interprets `30` as 30 seconds
+**And**: the wait deadline is not interpreted as 30 milliseconds
+
+#### Scenario: run --wait uses second-based until
+
+**Given**: a user executes `agent-exec run --wait --until 30 -- sh -c "sleep 10"`
+**When**: clap accepts the arguments and the command waits for terminal state
+**Then**: the wait deadline is interpreted as 30 seconds
+
+### Requirement: 人間向けポーリング間隔オプションは秒単位である
+
+`wait` および `run --wait` の人間向けポーリング間隔オプションは秒単位で表現しなければならない（MUST）。ポーリングは観測用の近似間隔であり、ミリ秒精度の厳密なチェック時刻を保証してはならない（MUST NOT）。
+
+#### Scenario: wait exposes second-based poll option
+
+**Given**: a user inspects `agent-exec wait --help`
+**When**: the polling option is shown
+**Then**: the canonical polling option is documented in seconds
+**And**: the help text does not imply millisecond-accurate checking
+
+#### Scenario: run --wait exposes second-based poll option
+
+**Given**: a user inspects `agent-exec run --help`
+**When**: the wait polling option is shown
+**Then**: the canonical polling option is documented in seconds
+
 
 ### Requirement: wait サブコマンドの待機期限オプション
 
-`wait` サブコマンドは既定では最大 30,000ms までジョブの終端状態を待機しなければならない（MUST）。待機上限は `--until <ms>` によって上書きできなければならない（MUST）。`--forever` が指定された場合は終端状態になるまで無制限に待機しなければならない（MUST）。`--until` と `--forever` は互いに同時指定を許可してはならない（MUST NOT）。
+`wait` サブコマンドは既定では最大 30 秒までジョブの終端状態を待機しなければならない（MUST）。待機上限は `--until <seconds>` によって上書きできなければならない（MUST）。`--forever` が指定された場合は終端状態になるまで無制限に待機しなければならない（MUST）。`--until` と `--forever` は互いに同時指定を許可してはならない（MUST NOT）。
 
 待機上限に達してもジョブは終了させてはならない（MUST NOT）。終端状態まで到達した場合は `state` と `exit_code` を返さなければならない（MUST）。待機上限に達してもジョブが非終端状態の場合は非終端の `state` を返し、`exit_code` を含めてはならない（MUST NOT）。
 
-`--timeout-ms` は `wait` サブコマンドの有効なオプションとして受け付けてはならない（MUST NOT）。待機期限指定は `--until` に統一しなければならない（MUST）。
+待機期限指定は秒単位の `--until` に統一しなければならない（MUST）。ミリ秒前提の旧語彙や旧解釈を残す場合は、互換または拒否の挙動を明示的に定義しなければならない（MUST）。
 
 #### Scenario: wait uses the default 30 second deadline
 
-Given a running job created by `agent-exec run -- sh -c "sleep 1; echo done"`
-When `agent-exec wait <job_id>` is executed
-Then the wait returns within approximately 30 seconds
-And if the job finished within the deadline, the response state is terminal
+**Given**: a running job created by `agent-exec run -- sh -c "sleep 1; echo done"`
+**When**: `agent-exec wait <job_id>` is executed
+**Then**: the wait returns within approximately 30 seconds
+**And**: if the job finished within the deadline, the response state is terminal
 
 #### Scenario: wait --until returns while the job keeps running
 
-Given a running job created by `agent-exec run -- sh -c "sleep 10"`
-When `agent-exec wait --until 100 <job_id>` is executed
-Then the response state is `created` or `running`
-And `exit_code` is absent
+**Given**: a running job created by `agent-exec run -- sh -c "sleep 10"`
+**When**: `agent-exec wait --until 1 <job_id>` is executed
+**Then**: the response state is `created` or `running`
+**And**: `exit_code` is absent
 
 #### Scenario: wait --forever preserves unbounded waiting
 
-Given a running job created by `agent-exec run -- sh -c "sleep 1; echo done"`
-When `agent-exec wait --forever <job_id>` is executed
-Then the response state is terminal after the job exits
-
-#### Scenario: wait rejects removed timeout-ms spelling
-
-Given a user executes `agent-exec wait --timeout-ms 100 <job_id>`
-When clap validates arguments
-Then the command fails with usage error
-And stdout is empty
-
-
-### Requirement: snapshot/tail の責務分離
-
-ログ末尾の観測は `tail` が担わなければならない（MUST）。`run` と `start` は snapshot を返してはならず（MUST NOT）、`tail-lines` と `max-bytes` による切り詰め、および `encoding="utf-8-lossy"` を伴う末尾取得契約は `tail` 専用としなければならない（MUST）。
-
-#### Scenario: tail が末尾観測 API である
-Given 実行中または完了済みのジョブがある
-When `agent-exec tail <job_id> --lines 10 --max-bytes 1024` を実行する
-Then `stdout_tail`/`stderr_tail` は制約内の内容であり `encoding` が含まれる
-And `run` / `start` のレスポンスには同等の snapshot フィールドは含まれない
-
-### Requirement: run/status/tail/wait/kill の JSON
-
-`run` は `job_id`、`state`、`stdout_log_path`、`stderr_log_path` を含む JSON を返さなければならない（MUST）。`run` は `snapshot`、`final_snapshot`、snapshot 由来の bytes メトリクスを含めてはならない（MUST NOT）。`tail` は `stdout_log_path` と `stderr_log_path` と bytes メトリクスを含めなければならない（MUST）。`observed_bytes` は取得時点のログファイルサイズ（bytes）を示し、`included_bytes` は JSON に含めた `*_tail` の UTF-8 bytes 長を示す（MUST）。
-
-#### Scenario: run はログパスだけを返す
-
-Given `agent-exec run -- echo hi` を実行する
-When `run` の JSON が返る
-Then `stdout_log_path` と `stderr_log_path` が含まれる
-And `snapshot` は含まれない
-And `final_snapshot` は含まれない
-
-#### Scenario: tail はログパスと bytes メトリクスを返す
-
-Given `agent-exec tail <job_id> --max-bytes 128` を実行する
-When ログ末尾が取得される
-Then `stdout_log_path` と `stderr_log_path` が含まれ、
-And `stdout_observed_bytes` と `stderr_observed_bytes` が 0 以上の整数で返る
-And `stdout_included_bytes` と `stderr_included_bytes` が返り、`*_included_bytes` は `*_observed_bytes` を超えない
+**Given**: a running job created by `agent-exec run -- sh -c "sleep 1; echo done"`
+**When**: `agent-exec wait --forever <job_id>` is executed
+**Then**: the response state is terminal after the job exits
 
 ### Requirement: run と start の観測責務削除
 

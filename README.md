@@ -237,7 +237,7 @@ Returns the last N lines of stdout and stderr.
 ### `wait` — block until done
 
 ```bash
-agent-exec wait [--until N] [--poll-ms N] [--forever] <JOB_ID>
+agent-exec wait [--until SECONDS] [--poll SECONDS] [--forever] <JOB_ID>
 ```
 
 Polls until the job reaches a terminal state or the wait deadline elapses.
