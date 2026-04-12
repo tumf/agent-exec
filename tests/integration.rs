@@ -324,8 +324,6 @@ fn tail_returns_json_with_encoding() {
     // Spec requires stdout / stderr field names (not stdout / stderr).
     assert!(v.get("stdout").is_some(), "stdout missing");
     assert!(v.get("stderr").is_some(), "stderr missing");
-    // Spec requires truncated field.
-    assert!(v.get("truncated").is_some(), "truncated missing");
 }
 
 fn wait_until_terminal(h: &TestHarness, job_id: &str) -> serde_json::Value {
@@ -1246,9 +1244,9 @@ fn run_json_response_includes_masked_env_vars() {
     );
 }
 
-/// Spec: tail returns truncated=true when output exceeds constraints.
+/// Spec: tail range reflects returned window when output exceeds constraints.
 #[test]
-fn tail_truncated_when_over_limit() {
+fn tail_range_reflects_slice_when_over_limit() {
     let h = TestHarness::new();
 
     // Generate exactly 5 lines; request only 2 lines.
@@ -1266,10 +1264,15 @@ fn tail_truncated_when_over_limit() {
 
     let v = h.run(&["tail", "--tail-lines", "2", &job_id]);
     assert_envelope(&v, "tail", true);
-    // With --lines 2 and 5 lines of output, truncated should be true.
-    assert!(
-        v["truncated"].as_bool().unwrap_or(false),
-        "expected truncated=true; response: {v}"
+
+    let stdout = v["stdout"].as_str().unwrap_or_default();
+    let range = v["stdout_range"].as_array().expect("stdout_range missing");
+    let begin = range.first().and_then(|x| x.as_u64()).unwrap_or(0);
+    let end = range.get(1).and_then(|x| x.as_u64()).unwrap_or(0);
+    assert_eq!(
+        end.saturating_sub(begin),
+        stdout.len() as u64,
+        "stdout_range length must match returned stdout bytes: {v}"
     );
 }
 

@@ -11,3 +11,8 @@
 ## Future Work
 
 - `status` / `wait` でも同一 range 契約を返す高レベル観測 API が必要なら別 proposal で扱う
+
+## Acceptance #1 Failure Follow-up
+
+- [x] `tail` / `GET /tail/:id` / 関連テスト・ドキュメントから `truncated` を canonical field として返す前提を除去し、range/total-bytes 契約だけで欠落判定できる shape に揃える
+- [x] `read_head_metrics` / `read_tail_metrics` の range 算出を raw byte 数基準へ修正し、非 UTF-8 ログでも `stdout_range` / `stderr_range` が `[begin, end)` の実 byte 区間と一致することを CLI/HTTP テストで検証する

@@ -184,8 +184,6 @@ pub struct TailData {
     pub job_id: String,
     pub stdout: String,
     pub stderr: String,
-    /// True when the output was truncated by tail_lines or max_bytes constraints.
-    pub truncated: bool,
     pub encoding: String,
     /// Absolute path to stdout.log for this job.
     pub stdout_log_path: String,

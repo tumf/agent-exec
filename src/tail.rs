@@ -45,7 +45,6 @@ pub fn execute(opts: TailOpts) -> Result<()> {
             job_id: job_dir.job_id.clone(),
             stdout: stdout.tail,
             stderr: stderr.tail,
-            truncated: stdout.truncated || stderr.truncated,
             encoding: "utf-8-lossy".to_string(),
             stdout_log_path: stdout_log_path.display().to_string(),
             stderr_log_path: stderr_log_path.display().to_string(),
