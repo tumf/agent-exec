@@ -32,7 +32,7 @@
 
 ### Requirement: POST /exec によるジョブ起動
 
-`POST /exec` はリクエストボディの `command` フィールド（必須）と任意の `cwd`・`env`・`timeout_ms`・`wait` を受け取り、`run` サブコマンドと同等のジョブを起動して `RunData` を返さなければならない（MUST）。
+`POST /exec` はリクエストボディの `command` フィールド（必須）と任意の `cwd`・`env`・`timeout_ms` を受け取り、`run` サブコマンドと同等のジョブを起動して `RunData` を返さなければならない（MUST）。`wait` を受け付けてはならない（MUST NOT）。
 
 #### Scenario: ジョブ起動成功
 
@@ -70,7 +70,7 @@
 
 **Given**: 完了したジョブが存在する
 **When**: `GET /tail/<job_id>` をリクエストする
-**Then**: HTTP 200 かつ `stdout` フィールドを含む JSON が返る
+**Then**: HTTP 200 かつ `stdout_tail` フィールドを含む JSON が返る
 
 ### Requirement: GET /wait/:id による完了待機
 

@@ -20,8 +20,8 @@ use std::sync::Arc;
 
 use crate::jobstore::{JobDir, JobNotFound, resolve_root};
 use crate::schema::{
-    JobMeta, JobMetaJob, KillData, Response, RunData, SCHEMA_VERSION, StatusData, TailData,
-    WaitData,
+    JobMeta, JobMetaJob, JobStatus, KillData, Response, RunData, SCHEMA_VERSION, StatusData,
+    TailData, WaitData,
 };
 
 /// Options for the `serve` sub-command.
@@ -114,12 +114,12 @@ async fn health_handler() -> impl IntoResponse {
 // ---- POST /exec ----
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ExecRequest {
     command: Option<Vec<String>>,
     cwd: Option<String>,
     env: Option<HashMap<String, String>>,
     timeout_ms: Option<u64>,
-    wait: Option<bool>,
 }
 
 async fn exec_handler(State(state): State<Arc<AppState>>, request: Request) -> AxumResponse {
@@ -174,7 +174,6 @@ async fn exec_handler(State(state): State<Arc<AppState>>, request: Request) -> A
         .collect();
     let cwd = req.cwd;
     let timeout_ms = req.timeout_ms.unwrap_or(0);
-    let do_wait = req.wait.unwrap_or(false);
 
     let result = tokio::task::spawn_blocking(move || {
         run_exec_inner(
@@ -183,7 +182,6 @@ async fn exec_handler(State(state): State<Arc<AppState>>, request: Request) -> A
             cwd.as_deref(),
             env_vars,
             timeout_ms,
-            do_wait,
         )
     })
     .await;
@@ -206,11 +204,10 @@ fn run_exec_inner(
     cwd: Option<&str>,
     env_vars: Vec<String>,
     timeout_ms: u64,
-    do_wait: bool,
 ) -> Result<serde_json::Value> {
     use crate::run::{
-        SnapshotWaitOpts, SpawnSupervisorParams, now_rfc3339_pub, pre_create_log_files,
-        resolve_effective_cwd, run_snapshot_wait, spawn_supervisor_process,
+        SpawnSupervisorParams, now_rfc3339_pub, pre_create_log_files, resolve_effective_cwd,
+        spawn_supervisor_process,
     };
 
     let elapsed_start = std::time::Instant::now();
@@ -277,19 +274,7 @@ fn run_exec_inner(
     let stdout_log_path = job_dir.stdout_path().display().to_string();
     let stderr_log_path = job_dir.stderr_path().display().to_string();
 
-    let (final_state, exit_code_opt, finished_at_opt, snapshot, final_snapshot_opt, waited_ms) =
-        run_snapshot_wait(
-            &job_dir,
-            &SnapshotWaitOpts {
-                snapshot_after: 0,
-                tail_lines: 50,
-                max_bytes: 65536,
-                wait: do_wait,
-                wait_poll_ms: 200,
-                wait_until_ms: 0,
-                wait_forever: true,
-            },
-        );
+    let final_state = JobStatus::Running.as_str().to_string();
 
     let elapsed_ms = elapsed_start.elapsed().as_millis() as u64;
 
@@ -300,14 +285,9 @@ fn run_exec_inner(
             state: final_state,
             tags: vec![],
             env_vars: vec![],
-            snapshot,
             stdout_log_path,
             stderr_log_path,
-            waited_ms,
             elapsed_ms,
-            exit_code: exit_code_opt,
-            finished_at: finished_at_opt,
-            final_snapshot: final_snapshot_opt,
         },
     );
 

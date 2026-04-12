@@ -132,26 +132,12 @@ pub struct RunData {
     /// Omitted from JSON when empty.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub env_vars: Vec<String>,
-    /// Present when `snapshot_after` elapsed before `run` returned.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub snapshot: Option<Snapshot>,
     /// Absolute path to stdout.log for this job.
     pub stdout_log_path: String,
     /// Absolute path to stderr.log for this job.
     pub stderr_log_path: String,
-    /// Milliseconds actually waited for snapshot (0 when snapshot_after=0).
-    pub waited_ms: u64,
-    /// Wall-clock milliseconds from run invocation start to JSON output.
+    /// Wall-clock milliseconds from run/start invocation start to JSON output.
     pub elapsed_ms: u64,
-    /// Exit code of the process; present only when `--wait` is used and job has terminated.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub exit_code: Option<i32>,
-    /// RFC 3339 timestamp when the job finished; present only when `--wait` is used.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub finished_at: Option<String>,
-    /// Final log tail snapshot taken after job completion; present only when `--wait` is used.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub final_snapshot: Option<Snapshot>,
 }
 
 /// Response for `status` command.

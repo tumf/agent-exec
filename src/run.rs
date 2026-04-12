@@ -3,8 +3,8 @@
 //! Design decisions (from design.md):
 //! - `run` spawns a short-lived front-end that forks a `_supervise` child.
 //! - The supervisor continues logging stdout/stderr after `run` returns.
-//! - If `--snapshot-after` elapses before `run` returns, a snapshot is
-//!   included in the JSON response.
+//! - `run` returns launch metadata immediately; observation is delegated to
+//!   `status` / `wait` / `tail`.
 
 use anyhow::{Context, Result};
 use std::io::IsTerminal;
@@ -16,7 +16,6 @@ use ulid::Ulid;
 use crate::jobstore::{JobDir, resolve_root};
 use crate::schema::{
     JobMeta, JobMetaJob, JobState, JobStateJob, JobStateResult, JobStatus, Response, RunData,
-    Snapshot,
 };
 use crate::tag::dedup_tags;
 
@@ -34,12 +33,6 @@ pub struct RunOpts<'a> {
     pub command: Vec<String>,
     /// Override for jobs root directory.
     pub root: Option<&'a str>,
-    /// Milliseconds to wait before returning; 0 = return immediately.
-    pub snapshot_after: u64,
-    /// Number of tail lines to include in snapshot.
-    pub tail_lines: u64,
-    /// Max bytes for tail.
-    pub max_bytes: u64,
     /// Timeout in milliseconds; 0 = no timeout.
     pub timeout_ms: u64,
     /// Milliseconds after SIGTERM before SIGKILL; 0 = immediate SIGKILL.
@@ -62,16 +55,6 @@ pub struct RunOpts<'a> {
     pub log: Option<&'a str>,
     /// Interval (ms) for state.json updated_at refresh; 0 = disabled.
     pub progress_every_ms: u64,
-    /// If true, wait for the job to reach a terminal state before returning.
-    /// The response will include exit_code, finished_at, and final_snapshot.
-    pub wait: bool,
-    /// Poll interval in milliseconds when `wait` is true.
-    pub wait_poll_ms: u64,
-    /// Maximum wait duration in milliseconds when `wait` is true.
-    /// Ignored when `wait_forever` is true.
-    pub wait_until_ms: u64,
-    /// If true, wait indefinitely when `wait` is true.
-    pub wait_forever: bool,
     /// Shell command string for command notification sink; executed via platform shell.
     /// None = no command sink.
     pub notify_command: Option<String>,
@@ -97,9 +80,6 @@ impl<'a> Default for RunOpts<'a> {
         RunOpts {
             command: vec![],
             root: None,
-            snapshot_after: 10_000,
-            tail_lines: 50,
-            max_bytes: 65536,
             timeout_ms: 0,
             kill_after_ms: 0,
             cwd: None,
@@ -111,10 +91,6 @@ impl<'a> Default for RunOpts<'a> {
             tags: vec![],
             log: None,
             progress_every_ms: 0,
-            wait: false,
-            wait_poll_ms: 200,
-            wait_until_ms: 30_000,
-            wait_forever: false,
             notify_command: None,
             notify_file: None,
             output_pattern: None,
@@ -126,9 +102,6 @@ impl<'a> Default for RunOpts<'a> {
         }
     }
 }
-
-/// Maximum allowed value for `snapshot_after` in milliseconds (10 seconds).
-const MAX_SNAPSHOT_AFTER_MS: u64 = 10_000;
 
 /// Parameters for spawning a supervisor process.
 ///
@@ -386,109 +359,7 @@ pub fn pre_create_log_files(job_dir: &JobDir) -> Result<()> {
     Ok(())
 }
 
-/// Options controlling the snapshot/wait phase after job launch.
-pub struct SnapshotWaitOpts {
-    pub snapshot_after: u64,
-    pub tail_lines: u64,
-    pub max_bytes: u64,
-    pub wait: bool,
-    pub wait_poll_ms: u64,
-    pub wait_until_ms: u64,
-    pub wait_forever: bool,
-}
-
-/// Run the snapshot/wait phase and return (final_state_str, exit_code, finished_at,
-/// snapshot, final_snapshot, waited_ms).
-pub fn run_snapshot_wait(
-    job_dir: &JobDir,
-    opts: &SnapshotWaitOpts,
-) -> (
-    String,
-    Option<i32>,
-    Option<String>,
-    Option<Snapshot>,
-    Option<Snapshot>,
-    u64,
-) {
-    use crate::schema::JobStatus;
-
-    let effective_snapshot_after = if opts.wait {
-        0
-    } else {
-        opts.snapshot_after.min(MAX_SNAPSHOT_AFTER_MS)
-    };
-
-    let wait_start = std::time::Instant::now();
-
-    let snapshot = if effective_snapshot_after > 0 {
-        debug!(ms = effective_snapshot_after, "polling for snapshot");
-        let deadline = wait_start + std::time::Duration::from_millis(effective_snapshot_after);
-        let poll_interval = std::time::Duration::from_millis(15);
-        loop {
-            std::thread::sleep(poll_interval);
-            if let Ok(st) = job_dir.read_state()
-                && !st.status().is_non_terminal()
-            {
-                debug!("snapshot poll: job no longer running/created, exiting early");
-                break;
-            }
-            if std::time::Instant::now() >= deadline {
-                debug!("snapshot poll: deadline reached");
-                break;
-            }
-        }
-        Some(build_snapshot(job_dir, opts.tail_lines, opts.max_bytes))
-    } else {
-        None
-    };
-
-    let (final_state, exit_code_opt, finished_at_opt, final_snapshot_opt) = if opts.wait {
-        debug!(
-            wait_until_ms = opts.wait_until_ms,
-            wait_forever = opts.wait_forever,
-            "--wait: polling for terminal or deadline"
-        );
-        let poll = std::time::Duration::from_millis(opts.wait_poll_ms.max(1));
-        let wait_deadline = if opts.wait_forever {
-            None
-        } else {
-            Some(wait_start + std::time::Duration::from_millis(opts.wait_until_ms))
-        };
-
-        loop {
-            std::thread::sleep(poll);
-            if let Ok(st) = job_dir.read_state() {
-                if !st.status().is_non_terminal() {
-                    let snap = build_snapshot(job_dir, opts.tail_lines, opts.max_bytes);
-                    let ec = st.exit_code();
-                    let fa = st.finished_at.clone();
-                    let state_str = st.status().as_str().to_string();
-                    break (state_str, ec, fa, Some(snap));
-                }
-
-                if let Some(deadline) = wait_deadline
-                    && std::time::Instant::now() >= deadline
-                {
-                    break (st.status().as_str().to_string(), None, None, None);
-                }
-            }
-        }
-    } else {
-        (JobStatus::Running.as_str().to_string(), None, None, None)
-    };
-
-    let waited_ms = wait_start.elapsed().as_millis() as u64;
-    (
-        final_state,
-        exit_code_opt,
-        finished_at_opt,
-        snapshot,
-        final_snapshot_opt,
-        waited_ms,
-    )
-}
-
-/// Execute `run`: spawn job, possibly wait for snapshot, return JSON.
+/// Execute `run`: spawn job and return launch metadata immediately.
 pub fn execute(opts: RunOpts) -> Result<()> {
     if opts.command.is_empty() {
         anyhow::bail!("no command specified for run");
@@ -617,58 +488,24 @@ pub fn execute(opts: RunOpts) -> Result<()> {
     let stdout_log_path = job_dir.stdout_path().display().to_string();
     let stderr_log_path = job_dir.stderr_path().display().to_string();
 
-    let (final_state, exit_code_opt, finished_at_opt, snapshot, final_snapshot_opt, waited_ms) =
-        run_snapshot_wait(
-            &job_dir,
-            &SnapshotWaitOpts {
-                snapshot_after: opts.snapshot_after,
-                tail_lines: opts.tail_lines,
-                max_bytes: opts.max_bytes,
-                wait: opts.wait,
-                wait_poll_ms: opts.wait_poll_ms,
-                wait_until_ms: opts.wait_until_ms,
-                wait_forever: opts.wait_forever,
-            },
-        );
-
     let elapsed_ms = elapsed_start.elapsed().as_millis() as u64;
 
     let response = Response::new(
         "run",
         RunData {
             job_id,
-            state: final_state,
+            state: JobStatus::Running.as_str().to_string(),
             tags,
             // Include masked env_vars in the JSON response so callers can inspect
             // which variables were set (with secret values replaced by "***").
             env_vars: masked_env_vars,
-            snapshot,
             stdout_log_path,
             stderr_log_path,
-            waited_ms,
             elapsed_ms,
-            exit_code: exit_code_opt,
-            finished_at: finished_at_opt,
-            final_snapshot: final_snapshot_opt,
         },
     );
     response.print();
     Ok(())
-}
-
-fn build_snapshot(job_dir: &JobDir, tail_lines: u64, max_bytes: u64) -> Snapshot {
-    let stdout = job_dir.read_tail_metrics("stdout.log", tail_lines, max_bytes);
-    let stderr = job_dir.read_tail_metrics("stderr.log", tail_lines, max_bytes);
-    Snapshot {
-        truncated: stdout.truncated || stderr.truncated,
-        encoding: "utf-8-lossy".to_string(),
-        stdout_observed_bytes: stdout.observed_bytes,
-        stderr_observed_bytes: stderr.observed_bytes,
-        stdout_included_bytes: stdout.included_bytes,
-        stderr_included_bytes: stderr.included_bytes,
-        stdout_tail: stdout.tail,
-        stderr_tail: stderr.tail,
-    }
 }
 
 /// Options for the `_supervise` internal sub-command.
