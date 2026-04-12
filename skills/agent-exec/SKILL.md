@@ -46,8 +46,8 @@ Use these options most often:
 - `--cwd <dir>`: run from a specific directory (default: the caller's current working directory)
 - `--env KEY=VALUE` / `--env-file <file>`: set environment variables
 - `--no-inherit-env`: avoid inheriting the current process environment (default behavior is to inherit it)
-- `--wait` / `--wait-poll-ms <ms>`: return only after the job reaches a terminal state (defaults: `false`, `200`)
-- `--until <ms>` / `--forever`: bound or remove the client-side wait deadline when `--wait` is used (default: `30000`; without `--wait`, `run` does not use this deadline)
+- `--wait`: return only after the job reaches a terminal state
+- `--until <seconds>` / `--forever`: bound or remove the client-side wait deadline when `--wait` is used (default: `30`; without `--wait`, `run` does not use this deadline)
 - `--notify-command <COMMAND>`: run a shell command on completion via the configured shell wrapper (default wrapper: `sh -lc` on Unix, `cmd /C` on Windows); event JSON is sent to stdin
 - `--notify-file <PATH>`: append one NDJSON `job.finished` event per completed job
 - `--config <PATH>`: load shell wrapper settings from a specific `config.toml`
@@ -61,7 +61,7 @@ Default behavior for `run`:
 - runs in the caller's current working directory unless `--cwd` is set
 - inherits the caller's environment unless `--no-inherit-env` is set
 - does not wait for terminal state unless `--wait` is set
-- with `--wait`, does not use `--snapshot-after`; instead it polls every `200ms` and stops waiting after `30000ms` unless `--until` or `--forever` changes that
+- with `--wait`, does not use `--snapshot-after`; instead it uses a 30 second client-side wait deadline unless `--until` or `--forever` changes that
 
 Pass a plain shell command string to `--notify-command`. The command sink also receives:
 
@@ -81,7 +81,7 @@ Use these commands after `run`:
 
 - `agent-exec status <JOB_ID>`: read current state (`running`, `exited`, `killed`, `failed`)
 - `agent-exec tail [--tail-lines N] [--max-bytes N] <JOB_ID>`: read stdout/stderr tails (defaults: `50`, `65536`)
-- `agent-exec wait [--until N] [--poll-ms N] [--forever] <JOB_ID>`: block until terminal state (defaults: `--poll-ms 200`, `--until 30000` unless `--forever` is set)
+- `agent-exec wait [--until N] [--poll N] [--forever] <JOB_ID>`: block until terminal state (defaults: `--poll 1`, `--until 30` unless `--forever` is set)
 - `agent-exec kill [--signal TERM|INT|KILL] <JOB_ID>`: request termination (default signal: `TERM`)
 - `agent-exec notify set <JOB_ID> --command <COMMAND>`: attach or replace the completion callback after the job has already started
 
