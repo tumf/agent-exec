@@ -70,7 +70,7 @@ Use these commands after `run`:
 
 - `agent-exec status <JOB_ID>`: read current state (`running`, `exited`, `killed`, `failed`)
 - `agent-exec tail [--tail-lines N] [--max-bytes N] <JOB_ID>`: read stdout/stderr tails
-- `agent-exec wait [--until N] [--poll-ms N] [--forever] <JOB_ID>`: block until terminal state (`--timeout-ms` remains a deprecated legacy alias)
+- `agent-exec wait [--until N] [--poll-ms N] [--forever] <JOB_ID>`: block until terminal state
 - `agent-exec kill [--signal TERM|INT|KILL] <JOB_ID>`: request termination
 - `agent-exec notify set <JOB_ID> --command <COMMAND>`: attach or replace the completion callback after the job has already started
 

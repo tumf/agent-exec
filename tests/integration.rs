@@ -559,6 +559,15 @@ fn wait_forever_waits_until_terminal() {
 }
 
 #[test]
+fn wait_rejects_legacy_timeout_ms_alias() {
+    let h = TestHarness::new();
+    assert_usage_error(
+        &["wait", "--timeout-ms", "100", "missing-job"],
+        Some(h.root()),
+    );
+}
+
+#[test]
 fn stdin_option_conflict_is_usage_error_for_run_and_create() {
     let h = TestHarness::new();
     assert_usage_error(
@@ -5879,8 +5888,8 @@ fn prefix_lookup_cross_command() {
     assert_envelope(&tail_v, "tail", true);
     assert_eq!(tail_v["job_id"].as_str().unwrap_or(""), full_id);
 
-    // wait accepts prefix and keeps legacy --timeout-ms compatibility.
-    let (wait_v, _) = run_cmd_raw(&["wait", "--timeout-ms", "100", prefix], Some(h.root()));
+    // wait accepts prefix.
+    let (wait_v, _) = run_cmd_raw(&["wait", "--until", "100", prefix], Some(h.root()));
     // ok may be false if job is still running, but job_id must be the full ID.
     assert_eq!(wait_v["job_id"].as_str().unwrap_or(""), full_id);
 
