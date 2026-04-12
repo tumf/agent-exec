@@ -41,7 +41,6 @@ agent-exec run [OPTIONS] -- <COMMAND> [ARGS...]
 
 Use these options most often:
 
-- `--snapshot-after <ms>`: delay the initial response briefly to include a snapshot (default: `10000`)
 - `--tail-lines <N>` / `--max-bytes <N>`: size the returned snapshot tails (defaults: `50`, `65536`)
 - `--timeout <ms>` / `--kill-after <ms>`: enforce termination deadlines (defaults: `0`, `0`)
 - `--cwd <dir>`: run from a specific directory (default: the caller's current working directory)
