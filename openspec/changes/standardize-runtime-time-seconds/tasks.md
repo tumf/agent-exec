@@ -10,3 +10,9 @@
 
 - Review whether external automation depends on prior millisecond spellings before release notes are finalized.
 - Decide separately whether persisted/result schema field names like `elapsed_ms` should ever be renamed, since that is a broader API compatibility decision.
+
+## Acceptance #1 Failure Follow-up
+
+- [x] Update hidden `_supervise` clap help in `src/main.rs` so `--timeout`, `--kill-after`, and `--progress-every` are documented in seconds or are no longer exposed as human-facing help text.
+- [x] Remove stale `--snapshot-after` canonical examples from `openspec/specs/agent-exec-run-logging/spec.md` and `openspec/specs/agent-exec-test-harness/spec.md` so canonical specs consistently treat the flag as removed.
+- [x] Add integration coverage for `agent-exec start --snapshot-after ...` usage-error rejection (and any other removed start observation flags required by the canonical spec), or narrow the checklist/spec claim to the behavior that is actually verified.

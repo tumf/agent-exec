@@ -481,11 +481,11 @@ enum Command {
         #[arg(long)]
         full_log: Option<String>,
 
-        /// Timeout in milliseconds; 0 = no timeout.
+        /// Timeout in seconds; 0 = no timeout.
         #[arg(long, default_value = "0")]
         timeout: u64,
 
-        /// Milliseconds after SIGTERM before SIGKILL; 0 = immediate SIGKILL.
+        /// Seconds after SIGTERM before SIGKILL; 0 = immediate SIGKILL.
         #[arg(long, default_value = "0")]
         kill_after: u64,
 
@@ -509,7 +509,7 @@ enum Command {
         #[arg(long = "inherit-env", default_value = "false", action = clap::ArgAction::SetTrue, conflicts_with = "no_inherit_env", id = "supervise_inherit_env")]
         inherit_env: bool,
 
-        /// Interval (ms) for state.json updated_at refresh; 0 = disabled.
+        /// Interval (seconds) for state.json updated_at refresh; 0 = disabled.
         #[arg(long, default_value = "0")]
         progress_every: u64,
 
@@ -957,8 +957,8 @@ fn run(cli: Cli) -> Result<()> {
                 root: std::path::Path::new(&supervise_root),
                 command: &command,
                 full_log: full_log.as_deref(),
-                timeout_ms: timeout,
-                kill_after_ms: kill_after,
+                timeout_ms: timeout.saturating_mul(1000),
+                kill_after_ms: kill_after.saturating_mul(1000),
                 cwd: cwd.as_deref(),
                 env_vars,
                 env_files,

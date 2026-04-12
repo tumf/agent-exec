@@ -254,14 +254,16 @@ pub fn spawn_supervisor_process(
         .arg(&params.full_log_path);
 
     if params.timeout_ms > 0 {
+        let timeout_seconds = params.timeout_ms.saturating_add(999) / 1000;
         supervisor_cmd
             .arg("--timeout")
-            .arg(params.timeout_ms.to_string());
+            .arg(timeout_seconds.to_string());
     }
     if params.kill_after_ms > 0 {
+        let kill_after_seconds = params.kill_after_ms.saturating_add(999) / 1000;
         supervisor_cmd
             .arg("--kill-after")
-            .arg(params.kill_after_ms.to_string());
+            .arg(kill_after_seconds.to_string());
     }
     if let Some(ref cwd) = params.cwd {
         supervisor_cmd.arg("--cwd").arg(cwd);
@@ -279,9 +281,10 @@ pub fn spawn_supervisor_process(
         supervisor_cmd.arg("--stdin-file").arg(stdin_file);
     }
     if params.progress_every_ms > 0 {
+        let progress_every_seconds = params.progress_every_ms.saturating_add(999) / 1000;
         supervisor_cmd
             .arg("--progress-every")
-            .arg(params.progress_every_ms.to_string());
+            .arg(progress_every_seconds.to_string());
     }
     if let Some(ref nc) = params.notify_command {
         supervisor_cmd.arg("--notify-command").arg(nc);

@@ -1576,6 +1576,14 @@ fn start_rejects_removed_wait_flag() {
     assert_usage_error(&["start", "--wait", job_id], Some(h.root()));
 }
 
+#[test]
+fn start_rejects_removed_snapshot_after_flag() {
+    let h = TestHarness::new();
+    let create_v = h.run(&["create", "--", "echo", "start_snapshot_after_removed"]);
+    let job_id = create_v["job_id"].as_str().expect("job_id missing");
+    assert_usage_error(&["start", "--snapshot-after", "1", job_id], Some(h.root()));
+}
+
 /// run response should remain launch-focused and not include snapshot/wait fields.
 #[test]
 fn run_response_omits_snapshot_and_wait_fields() {
