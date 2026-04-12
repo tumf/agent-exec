@@ -151,7 +151,7 @@ Persists the job definition. Accepts the same definition-time options as `run`
 (command, `--cwd`, `--env`, `--env-file`, `--mask`, `--stdin`, `--stdin-file`,
 `--timeout`, `--kill-after`, `--progress-every`, `--notify-command`,
 `--notify-file`, `--shell-wrapper`).
-Does **not** accept observation options (`--snapshot-after`, `--tail-lines`, `--max-bytes`, `--wait`, `--wait-poll-ms`).
+Does **not** accept observation options (`--tail-lines`, `--max-bytes`, `--wait`).
 
 `--stdin` / `--stdin-file` are materialized into `<job-dir>/stdin.bin` during
 `create`. Later `start` reuses the persisted `meta.json.stdin_file` value and

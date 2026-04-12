@@ -5026,6 +5026,51 @@ fn delete_all_skips_running_and_created_jobs() {
     h.run(&["kill", &running_job_id]);
 }
 
+/// `delete --all` skips jobs whose persisted state is terminal but whose pid is still alive.
+#[test]
+fn delete_all_skips_terminal_state_with_live_pid() {
+    let h = TestHarness::new();
+    let dir = tempfile::tempdir().unwrap();
+
+    let (run_v, _) =
+        run_cmd_with_root_and_cwd(&["run", "echo", "done"], Some(h.root()), Some(dir.path()));
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+    h.run(&["wait", &job_id]);
+
+    let job_dir = std::path::Path::new(h.root()).join(&job_id);
+    let state_path = job_dir.join("state.json");
+    let mut state: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&state_path).expect("read state.json"))
+            .expect("parse state.json");
+    state["pid"] = serde_json::json!(std::process::id());
+    std::fs::write(
+        &state_path,
+        serde_json::to_vec_pretty(&state).expect("serialize state"),
+    )
+    .expect("write state.json");
+
+    let (del_v, _) =
+        run_cmd_with_root_and_cwd(&["delete", "--all"], Some(h.root()), Some(dir.path()));
+    assert_envelope(&del_v, "delete", true);
+    assert_eq!(del_v["deleted"].as_u64().unwrap_or(1), 0, "{del_v}");
+
+    let jobs = del_v["jobs"].as_array().unwrap();
+    assert!(
+        jobs.iter().any(|j| {
+            j["job_id"].as_str().unwrap_or("") == job_id
+                && j["action"].as_str().unwrap_or("") == "skipped"
+                && j["reason"].as_str().unwrap_or("") == "pid_alive"
+        }),
+        "expected pid_alive skip: {del_v}"
+    );
+
+    let status_v = h.run(&["status", &job_id]);
+    assert!(
+        status_v["ok"].as_bool().unwrap_or(false),
+        "job must survive: {status_v}"
+    );
+}
+
 /// `delete --dry-run --all` reports candidates without removing any directories.
 #[test]
 fn delete_all_dry_run_preserves_directories() {

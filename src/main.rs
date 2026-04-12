@@ -485,7 +485,7 @@ enum Command {
         #[arg(long, default_value = "0")]
         timeout: u64,
 
-        /// Seconds after SIGTERM before SIGKILL; 0 = immediate SIGKILL.
+        /// Seconds after SIGTERM to send SIGKILL; 0 = immediate SIGKILL on timeout.
         #[arg(long, default_value = "0")]
         kill_after: u64,
 
@@ -509,7 +509,7 @@ enum Command {
         #[arg(long = "inherit-env", default_value = "false", action = clap::ArgAction::SetTrue, conflicts_with = "no_inherit_env", id = "supervise_inherit_env")]
         inherit_env: bool,
 
-        /// Interval (seconds) for state.json updated_at refresh; 0 = disabled.
+        /// Interval in seconds for state.json updated_at refresh; 0 = disabled.
         #[arg(long, default_value = "0")]
         progress_every: u64,
 
