@@ -50,7 +50,7 @@ Common exit codes:
 
 - Use `--wait` when the initial response must include terminal fields like `exit_code`, `finished_at`, and `final_snapshot`.
 - Use `--mask KEY` when secrets are present in `--env`; masked values become `***` in output and persisted metadata.
-- Use `--snapshot-after 0` when immediate return matters more than an initial tail snapshot.
+- `run` already returns immediately by default unless `--wait` is used.
 
 ## `list` notes
 

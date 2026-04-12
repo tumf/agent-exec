@@ -42,7 +42,7 @@ agent-exec run \
 Example updating notification after the job has already started:
 
 ```bash
-JOB=$(agent-exec run --snapshot-after 0 -- long-running-command --flag value | jq -r .job_id)
+JOB=$(agent-exec run -- long-running-command --flag value | jq -r .job_id)
 
 agent-exec notify set "$JOB" \
   --command 'openclaw agent --deliver --reply-channel "$OPENCLAW_REPLY_CHANNEL" --session-id "$OPENCLAW_SESSION_ID" -m "job_id=$AGENT_EXEC_JOB_ID event_path=$AGENT_EXEC_EVENT_PATH"'

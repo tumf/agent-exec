@@ -151,7 +151,7 @@ Persists the job definition. Accepts the same definition-time options as `run`
 (command, `--cwd`, `--env`, `--env-file`, `--mask`, `--stdin`, `--stdin-file`,
 `--timeout`, `--kill-after`, `--progress-every`, `--notify-command`,
 `--notify-file`, `--shell-wrapper`).
-Does **not** accept observation options (`--snapshot-after`, `--tail-lines`, `--max-bytes`, `--wait`, `--wait-poll-ms`).
+Does **not** accept observation options (`--tail-lines`, `--max-bytes`, `--wait`).
 
 `--stdin` / `--stdin-file` are materialized into `<job-dir>/stdin.bin` during
 `create`. Later `start` reuses the persisted `meta.json.stdin_file` value and
@@ -184,8 +184,8 @@ Key options:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--timeout <ms>` | 0 (none) | Kill job after N ms |
-| `--kill-after <ms>` | 0 | ms after SIGTERM to send SIGKILL |
+| `--timeout <seconds>` | 0 (none) | Kill job after N seconds |
+| `--kill-after <seconds>` | 0 | Seconds after SIGTERM to send SIGKILL |
 | `--cwd <dir>` | inherited | Working directory |
 | `--env KEY=VALUE` | — | Set environment variable (repeatable) |
 | `--mask KEY` | — | Redact secret values from JSON output (repeatable) |

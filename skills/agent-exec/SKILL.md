@@ -42,7 +42,7 @@ agent-exec run [OPTIONS] -- <COMMAND> [ARGS...]
 Use these options most often:
 
 - `--tail-lines <N>` / `--max-bytes <N>`: size the returned snapshot tails (defaults: `50`, `65536`)
-- `--timeout <ms>` / `--kill-after <ms>`: enforce termination deadlines (defaults: `0`, `0`)
+- `--timeout <seconds>` / `--kill-after <seconds>`: enforce termination deadlines (defaults: `0`, `0`)
 - `--cwd <dir>`: run from a specific directory (default: the caller's current working directory)
 - `--env KEY=VALUE` / `--env-file <file>`: set environment variables
 - `--no-inherit-env`: avoid inheriting the current process environment (default behavior is to inherit it)
@@ -55,13 +55,13 @@ Use these options most often:
 
 Default behavior for `run`:
 
-- without `--wait`, returns after a short snapshot wait instead of waiting for completion: `--snapshot-after 10000`
+- without `--wait`, returns immediately after launch instead of waiting for completion
 - includes up to `50` tail lines and `65536` bytes per stream in snapshots
 - does not enforce a runtime limit unless `--timeout` is set
 - runs in the caller's current working directory unless `--cwd` is set
 - inherits the caller's environment unless `--no-inherit-env` is set
 - does not wait for terminal state unless `--wait` is set
-- with `--wait`, does not use `--snapshot-after`; instead it uses a 30 second client-side wait deadline unless `--until` or `--forever` changes that
+- with `--wait`, it uses a 30 second client-side wait deadline unless `--until` or `--forever` changes that
 
 Pass a plain shell command string to `--notify-command`. The command sink also receives:
 
