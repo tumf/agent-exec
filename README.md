@@ -253,8 +253,6 @@ agent-exec wait [--until N] [--poll-ms N] [--forever] <JOB_ID>
 Polls until the job reaches a terminal state or the wait deadline elapses.
 `--until` is a client-side wait deadline and does not stop the underlying job.
 Use `run --timeout` when you need a process runtime limit.
-Legacy compatibility: `--timeout-ms` remains accepted as a deprecated alias,
-but `--until` is the canonical option for docs/tests.
 
 ### `kill` — send signal
 
