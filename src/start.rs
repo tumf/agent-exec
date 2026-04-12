@@ -7,10 +7,10 @@
 use anyhow::Result;
 use tracing::info;
 
-use crate::jobstore::{resolve_root, InvalidJobState, JobDir};
+use crate::jobstore::{InvalidJobState, JobDir, resolve_root};
 use crate::run::{
-    mask_env_vars, run_snapshot_wait, spawn_supervisor_process, SnapshotWaitOpts,
-    SpawnSupervisorParams,
+    SnapshotWaitOpts, SpawnSupervisorParams, mask_env_vars, run_snapshot_wait,
+    spawn_supervisor_process,
 };
 use crate::schema::{JobStatus, Response, RunData};
 

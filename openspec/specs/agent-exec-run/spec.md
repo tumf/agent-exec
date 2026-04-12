@@ -282,11 +282,13 @@ Then the command fails with usage error
 
 ### Requirement: wait サブコマンドの待機期限オプション
 
-`wait` サブコマンドは既定では最大 30,000ms までジョブの終端状態を待機しなければならない（MUST）。待機上限は `--until <ms>` によって上書きできなければならない（MUST）。`--forever` が指定された場合は終端状態になるまで無制限に待機しなければならない（MUST）。`--until` と `--forever` は互いに同時指定を許可してはならない（MUST NOT）。
+`wait` サブコマンドは既定では最大 30 秒までジョブの終端状態を待機しなければならない（MUST）。待機上限は `--until <seconds>` によって上書きできなければならない（MUST）。`--forever` が指定された場合は終端状態になるまで無制限に待機しなければならない（MUST）。`--until` と `--forever` は互いに同時指定を許可してはならない（MUST NOT）。
 
 待機上限に達してもジョブは終了させてはならない（MUST NOT）。終端状態まで到達した場合は `state` と `exit_code` を返さなければならない（MUST）。待機上限に達してもジョブが非終端状態の場合は非終端の `state` を返し、`exit_code` を含めてはならない（MUST NOT）。
 
-既存の `--timeout-ms` オプションは `--until` に置換する（MUST）。
+待機期限指定は秒単位の `--until` に統一しなければならない（MUST）。`--timeout-ms` は有効なオプションとして受け付けてはならない（MUST NOT）。
+
+`wait` のポーリング間隔は秒単位の `--poll <seconds>` で指定できなければならない（MUST）。この間隔は観測用の近似値であり、ミリ秒精度の厳密なチェック時刻を保証してはならない（MUST NOT）。
 
 #### Scenario: wait uses the default 30 second deadline
 
@@ -298,7 +300,7 @@ And if the job finished within the deadline, the response state is terminal
 #### Scenario: wait --until returns while the job keeps running
 
 Given a running job created by `agent-exec run -- sh -c "sleep 10"`
-When `agent-exec wait --until 100 <job_id>` is executed
+When `agent-exec wait --until 1 <job_id>` is executed
 Then the response state is `created` or `running`
 And `exit_code` is absent
 
@@ -310,9 +312,23 @@ Then the response state is terminal after the job exits
 
 #### Scenario: wait --until and --forever are mutually exclusive
 
-Given a user executes `agent-exec wait --until 100 --forever <job_id>`
+Given a user executes `agent-exec wait --until 1 --forever <job_id>`
 When clap validates arguments
 Then the command fails with usage error
+
+#### Scenario: wait exposes second-based poll option
+
+Given a user inspects `agent-exec wait --help`
+When the polling option is shown
+Then the canonical polling option is documented in seconds
+And the help text does not imply millisecond-accurate checking
+
+#### Scenario: wait rejects removed timeout-ms spelling
+
+Given a user executes `agent-exec wait --timeout-ms 100 <job_id>`
+When clap validates arguments
+Then the command fails with usage error
+And stdout is empty
 
 
 ### Requirement: 環境変数の注入
@@ -357,39 +373,3 @@ And `error.code` は `stdin_required` である
 Given `--stdin value --stdin-file ./input.txt` が指定される
 When `agent-exec run` または `agent-exec create` の CLI 引数を検証する
 Then どちらも usage error で失敗する
-
-
-### Requirement: wait サブコマンドの待機期限オプション
-
-`wait` サブコマンドは既定では最大 30,000ms までジョブの終端状態を待機しなければならない（MUST）。待機上限は `--until <ms>` によって上書きできなければならない（MUST）。`--forever` が指定された場合は終端状態になるまで無制限に待機しなければならない（MUST）。`--until` と `--forever` は互いに同時指定を許可してはならない（MUST NOT）。
-
-待機上限に達してもジョブは終了させてはならない（MUST NOT）。終端状態まで到達した場合は `state` と `exit_code` を返さなければならない（MUST）。待機上限に達してもジョブが非終端状態の場合は非終端の `state` を返し、`exit_code` を含めてはならない（MUST NOT）。
-
-`--timeout-ms` は `wait` サブコマンドの有効なオプションとして受け付けてはならない（MUST NOT）。待機期限指定は `--until` に統一しなければならない（MUST）。
-
-#### Scenario: wait uses the default 30 second deadline
-
-Given a running job created by `agent-exec run -- sh -c "sleep 1; echo done"`
-When `agent-exec wait <job_id>` is executed
-Then the wait returns within approximately 30 seconds
-And if the job finished within the deadline, the response state is terminal
-
-#### Scenario: wait --until returns while the job keeps running
-
-Given a running job created by `agent-exec run -- sh -c "sleep 10"`
-When `agent-exec wait --until 100 <job_id>` is executed
-Then the response state is `created` or `running`
-And `exit_code` is absent
-
-#### Scenario: wait --forever preserves unbounded waiting
-
-Given a running job created by `agent-exec run -- sh -c "sleep 1; echo done"`
-When `agent-exec wait --forever <job_id>` is executed
-Then the response state is terminal after the job exits
-
-#### Scenario: wait rejects removed timeout-ms spelling
-
-Given a user executes `agent-exec wait --timeout-ms 100 <job_id>`
-When clap validates arguments
-Then the command fails with usage error
-And stdout is empty

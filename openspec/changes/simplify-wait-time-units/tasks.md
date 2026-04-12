@@ -10,3 +10,9 @@
 
 - Review whether downstream scripts or automation depend on millisecond spellings before release notes and migration guidance are finalized.
 - If backward compatibility needs a phased rollout, document deprecation timing in release notes rather than in the core CLI spec.
+
+## Acceptance #1 Failure Follow-up
+
+- [x] Run `cargo fmt --all` and update `src/start.rs` so `cargo fmt --all -- --check` and the pre-commit/prek hook pass cleanly.
+- [x] Remove the duplicated millisecond-based `wait` requirements from `openspec/specs/agent-exec-run/spec.md` and leave a single canonical seconds-based contract for `wait --until` / `--poll` / legacy rejection behavior.
+- [x] Re-run `cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --all`, and `prek run -a`, then update task 5 only after all gates pass.
