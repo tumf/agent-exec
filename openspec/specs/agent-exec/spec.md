@@ -185,6 +185,7 @@ And stdout が JSON-only である旨が明記されている
 `run` はジョブを起動し、観測用 snapshot を返却前に生成するための追加待機を行ってはならない（MUST NOT）。`run` の主責務は job 起動と `job_id` / 初期 state / ログパスの返却であり、完了待機と出力観測は `wait` / `tail` / `status` に分離しなければならない（MUST）。
 
 `snapshot-after`、`tail-lines`、`max-bytes`、`wait` は `run` の CLI で受け付けてはならない（MUST NOT）。
+`run`/`create`/`_supervise` の runtime 制御時間オプション（`--timeout`、`--kill-after`、`--progress-every`）は人間向け契約として秒単位で提示されなければならない（MUST）。
 
 #### Scenario: run は snapshot なしで即時返却する
 

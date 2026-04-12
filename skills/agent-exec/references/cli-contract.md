@@ -15,7 +15,7 @@ Expect one JSON object on stdout for every successful command:
 
 Key success payloads:
 
-- `run`: returns `job_id`, `state`, log paths, timing fields, optional `snapshot`, and optional terminal fields when `--wait` is used
+- `run`: returns launch metadata (`job_id`, `state`, log paths, timing fields) immediately
 - `status`: returns `job_id`, `state`, `started_at`, and optional terminal fields
 - `tail`: returns `stdout_tail`, `stderr_tail`, truncation details, and observed byte counts
 - `wait`: returns terminal `state` and optional `exit_code`
@@ -48,9 +48,8 @@ Common exit codes:
 
 ## `run` notes
 
-- Use `--wait` when the initial response must include terminal fields like `exit_code`, `finished_at`, and `final_snapshot`.
+- `run` returns launch metadata immediately; use `wait` for terminal state and `tail` for output observation.
 - Use `--mask KEY` when secrets are present in `--env`; masked values become `***` in output and persisted metadata.
-- `run` already returns immediately by default unless `--wait` is used.
 
 ## `list` notes
 

@@ -70,8 +70,8 @@ Run a job with a timeout; SIGTERM after 5 s, SIGKILL after 2 s more:
 
 ```bash
 agent-exec run \
-  --timeout 5000 \
-  --kill-after 2000 \
+  --timeout 5 \
+  --kill-after 2 \
   sleep 60
 ```
 
