@@ -15,3 +15,7 @@
 
 - [x] `README.md` の Job Finished Events 例から削除済み `run --wait` を除去し、通知設定は `run` 後に `wait` / `tail` で観測する導線へ更新する
 - [x] `src/serve.rs` の `POST /exec` から launch-only `run` と矛盾する `wait` 同期待機経路を削除または別 API へ分離し、`tests/serve_integration.rs` と serve 関連ドキュメント/仕様を整合させる
+
+## Acceptance #2 Failure Follow-up
+
+- [x] `openspec/specs/agent-exec-serve/spec.md` の `GET /tail/:id` シナリオを実装契約どおり `stdout_tail` フィールド前提へ修正し、HTTP tail API の canonical spec を `tail` サブコマンド互換の JSON 形状と一致させる

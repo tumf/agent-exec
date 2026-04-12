@@ -70,7 +70,7 @@
 
 **Given**: 完了したジョブが存在する
 **When**: `GET /tail/<job_id>` をリクエストする
-**Then**: HTTP 200 かつ `stdout` フィールドを含む JSON が返る
+**Then**: HTTP 200 かつ `stdout_tail` フィールドを含む JSON が返る
 
 ### Requirement: GET /wait/:id による完了待機
 
