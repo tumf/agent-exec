@@ -138,12 +138,6 @@ pub struct RunData {
     pub stderr_log_path: String,
     /// Wall-clock milliseconds from run/start invocation start to JSON output.
     pub elapsed_ms: u64,
-    /// Exit code of the process; present only when `--wait` is used and job has terminated.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub exit_code: Option<i32>,
-    /// RFC 3339 timestamp when the job finished; present only when `--wait` is used.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub finished_at: Option<String>,
 }
 
 /// Response for `status` command.

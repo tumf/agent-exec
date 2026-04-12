@@ -23,3 +23,20 @@
   - README/spec とテスト期待値を新契約へ同期し、`cargo test --test integration` / clippy / full test を再通過させる
 - owner: engineering
 - decision_due: 2026-04-12
+
+## Rejecting Recovery Tasks
+
+- [ ] Investigate blocker in openspec/changes/remove-snapshot-run-start-observation/REJECTED.md and implement a non-rejection recovery path before rerunning apply
+
+## Implementation Blocker #2
+- category: other
+- summary: run/start の非 snapshot 契約へ実装は進んだが、integration test 群が旧契約依存のため一括移行を完了できず task 4-6 を完了判定できない
+- evidence:
+  - `cargo test --test integration` で 44 件失敗（`unexpected argument '--wait'`, `--snapshot-after`, snapshot/final_snapshot/waited_ms 期待不一致）
+  - tests/integration.rs: 旧契約（`run --wait`, `start --wait`, `snapshot`, `final_snapshot`, `waited_ms`）前提テストが多数残存
+- impact: task 4（テスト更新）、task 5（README/spec 同期）、task 6（CI 相当コマンド通過）の完了判定不可
+- unblock_actions:
+  - integration tests を run/start の起動専用契約へ全面移行し、観測系は wait/tail に再配置する
+  - README と canonical specs の旧 snapshot 記述を新契約へ更新し、`cargo fmt/clippy/test` を再通過させる
+- owner: engineering
+- decision_due: 2026-04-12

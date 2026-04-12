@@ -101,8 +101,6 @@ pub fn execute(opts: StartOpts) -> Result<()> {
             stdout_log_path,
             stderr_log_path,
             elapsed_ms: 0,
-            exit_code: None,
-            finished_at: None,
         },
     )
     .print();

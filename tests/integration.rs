@@ -3254,7 +3254,7 @@ fn gc_skips_unreadable_state() {
 
 /// Helper: run a job with tags and return the JSON output.
 fn run_with_tags(h: &TestHarness, tags: &[&str]) -> serde_json::Value {
-    let mut args = vec!["run", "0"];
+    let mut args = vec!["run"];
     for tag in tags {
         args.push("--tag");
         args.push(tag);

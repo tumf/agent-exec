@@ -20,8 +20,8 @@ use std::sync::Arc;
 
 use crate::jobstore::{JobDir, JobNotFound, resolve_root};
 use crate::schema::{
-    JobMeta, JobMetaJob, KillData, Response, RunData, SCHEMA_VERSION, StatusData, TailData,
-    WaitData,
+    JobMeta, JobMetaJob, JobStatus, KillData, Response, RunData, SCHEMA_VERSION, StatusData,
+    TailData, WaitData,
 };
 
 /// Options for the `serve` sub-command.
@@ -209,8 +209,8 @@ fn run_exec_inner(
     do_wait: bool,
 ) -> Result<serde_json::Value> {
     use crate::run::{
-        RunWaitOpts, SpawnSupervisorParams, now_rfc3339_pub, pre_create_log_files,
-        resolve_effective_cwd, run_wait, spawn_supervisor_process,
+        SpawnSupervisorParams, now_rfc3339_pub, pre_create_log_files, resolve_effective_cwd,
+        spawn_supervisor_process,
     };
 
     let elapsed_start = std::time::Instant::now();
@@ -277,15 +277,17 @@ fn run_exec_inner(
     let stdout_log_path = job_dir.stdout_path().display().to_string();
     let stderr_log_path = job_dir.stderr_path().display().to_string();
 
-    let (final_state, exit_code_opt, finished_at_opt) = run_wait(
-        &job_dir,
-        &RunWaitOpts {
-            wait: do_wait,
-            wait_poll_ms: 200,
-            wait_until_ms: 0,
-            wait_forever: true,
-        },
-    );
+    let final_state = if do_wait {
+        loop {
+            let state = job_dir.read_state()?;
+            if !state.status().is_non_terminal() {
+                break state.status().as_str().to_string();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+    } else {
+        JobStatus::Running.as_str().to_string()
+    };
 
     let elapsed_ms = elapsed_start.elapsed().as_millis() as u64;
 
@@ -299,8 +301,6 @@ fn run_exec_inner(
             stdout_log_path,
             stderr_log_path,
             elapsed_ms,
-            exit_code: exit_code_opt,
-            finished_at: finished_at_opt,
         },
     );
 

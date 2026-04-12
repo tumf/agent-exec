@@ -55,16 +55,6 @@ pub struct RunOpts<'a> {
     pub log: Option<&'a str>,
     /// Interval (ms) for state.json updated_at refresh; 0 = disabled.
     pub progress_every_ms: u64,
-    /// If true, wait for the job to reach a terminal state before returning.
-    /// The response will include exit_code, finished_at, and final_snapshot.
-    pub wait: bool,
-    /// Poll interval in milliseconds when `wait` is true.
-    pub wait_poll_ms: u64,
-    /// Maximum wait duration in milliseconds when `wait` is true.
-    /// Ignored when `wait_forever` is true.
-    pub wait_until_ms: u64,
-    /// If true, wait indefinitely when `wait` is true.
-    pub wait_forever: bool,
     /// Shell command string for command notification sink; executed via platform shell.
     /// None = no command sink.
     pub notify_command: Option<String>,
@@ -101,10 +91,6 @@ impl<'a> Default for RunOpts<'a> {
             tags: vec![],
             log: None,
             progress_every_ms: 0,
-            wait: false,
-            wait_poll_ms: 200,
-            wait_until_ms: 30_000,
-            wait_forever: false,
             notify_command: None,
             notify_file: None,
             output_pattern: None,
@@ -374,56 +360,7 @@ pub fn pre_create_log_files(job_dir: &JobDir) -> Result<()> {
     Ok(())
 }
 
-/// Options controlling optional wait phase after job launch.
-pub struct RunWaitOpts {
-    pub wait: bool,
-    pub wait_poll_ms: u64,
-    pub wait_until_ms: u64,
-    pub wait_forever: bool,
-}
-
-/// Optionally wait for terminal state after launch and return final state tuple.
-pub fn run_wait(job_dir: &JobDir, opts: &RunWaitOpts) -> (String, Option<i32>, Option<String>) {
-    use crate::schema::JobStatus;
-
-    if !opts.wait {
-        return (JobStatus::Running.as_str().to_string(), None, None);
-    }
-
-    debug!(
-        wait_until_ms = opts.wait_until_ms,
-        wait_forever = opts.wait_forever,
-        "--wait: polling for terminal or deadline"
-    );
-    let wait_start = std::time::Instant::now();
-    let poll = std::time::Duration::from_millis(opts.wait_poll_ms.max(1));
-    let wait_deadline = if opts.wait_forever {
-        None
-    } else {
-        Some(wait_start + std::time::Duration::from_millis(opts.wait_until_ms))
-    };
-
-    loop {
-        std::thread::sleep(poll);
-        if let Ok(st) = job_dir.read_state() {
-            if !st.status().is_non_terminal() {
-                return (
-                    st.status().as_str().to_string(),
-                    st.exit_code(),
-                    st.finished_at.clone(),
-                );
-            }
-
-            if let Some(deadline) = wait_deadline
-                && std::time::Instant::now() >= deadline
-            {
-                return (st.status().as_str().to_string(), None, None);
-            }
-        }
-    }
-}
-
-/// Execute `run`: spawn job, possibly wait for snapshot, return JSON.
+/// Execute `run`: spawn job and return launch metadata immediately.
 pub fn execute(opts: RunOpts) -> Result<()> {
     if opts.command.is_empty() {
         anyhow::bail!("no command specified for run");
@@ -552,23 +489,13 @@ pub fn execute(opts: RunOpts) -> Result<()> {
     let stdout_log_path = job_dir.stdout_path().display().to_string();
     let stderr_log_path = job_dir.stderr_path().display().to_string();
 
-    let (final_state, exit_code_opt, finished_at_opt) = run_wait(
-        &job_dir,
-        &RunWaitOpts {
-            wait: opts.wait,
-            wait_poll_ms: opts.wait_poll_ms,
-            wait_until_ms: opts.wait_until_ms,
-            wait_forever: opts.wait_forever,
-        },
-    );
-
     let elapsed_ms = elapsed_start.elapsed().as_millis() as u64;
 
     let response = Response::new(
         "run",
         RunData {
             job_id,
-            state: final_state,
+            state: JobStatus::Running.as_str().to_string(),
             tags,
             // Include masked env_vars in the JSON response so callers can inspect
             // which variables were set (with secret values replaced by "***").
@@ -576,8 +503,6 @@ pub fn execute(opts: RunOpts) -> Result<()> {
             stdout_log_path,
             stderr_log_path,
             elapsed_ms,
-            exit_code: exit_code_opt,
-            finished_at: finished_at_opt,
         },
     );
     response.print();

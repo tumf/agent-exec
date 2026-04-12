@@ -260,29 +260,6 @@ enum Command {
         #[arg(long, default_value = "0")]
         progress_every: u64,
 
-        /// Wait for the job to reach a terminal state before returning.
-        /// When set, the response includes exit_code, finished_at, and final_snapshot.
-        #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue)]
-        wait: bool,
-
-        /// Poll interval in milliseconds while waiting for a terminal state.
-        #[arg(long, default_value = "200")]
-        wait_poll_ms: u64,
-
-        /// Maximum wait duration in milliseconds when used with --wait (default: 30000).
-        #[arg(long, requires = "wait", conflicts_with = "forever")]
-        until: Option<u64>,
-
-        /// Wait indefinitely until the job reaches a terminal state (requires --wait).
-        #[arg(
-            long,
-            default_value = "false",
-            action = clap::ArgAction::SetTrue,
-            requires = "wait",
-            conflicts_with = "until"
-        )]
-        forever: bool,
-
         /// Shell command string to run on job completion; executed via the configured shell
         /// wrapper. Event JSON is sent to stdin.
         /// Also sets AGENT_EXEC_EVENT_PATH, AGENT_EXEC_JOB_ID, and AGENT_EXEC_EVENT_TYPE.
@@ -751,10 +728,6 @@ fn run(cli: Cli) -> Result<()> {
             tags,
             log,
             progress_every,
-            wait,
-            wait_poll_ms,
-            until,
-            forever,
             notify_command,
             notify_file,
             output_pattern,
@@ -792,10 +765,6 @@ fn run(cli: Cli) -> Result<()> {
                 tags,
                 log: log.as_deref(),
                 progress_every_ms: progress_every,
-                wait,
-                wait_poll_ms,
-                wait_until_ms: until.unwrap_or(30_000),
-                wait_forever: forever,
                 notify_command,
                 notify_file,
                 output_pattern,
