@@ -13,7 +13,7 @@ Choose it when work should outlive the current turn, return a job id immediately
 
 - Keep stdout machine-readable. `agent-exec` prints one JSON object to stdout; diagnostic logs belong on stderr.
 - Prefer `agent-exec run` for long-running or pollable work, then use `status`, `tail`, `wait`, `kill`, or `list` as needed.
-- Use `--wait` when the caller needs terminal state in the initial response.
+- `run` は起動メタデータを即時返却する。終端状態が必要な場合は `wait` を使う。
 - Use `--mask KEY` for secrets passed via `--env`; masked values appear as `***` in JSON and persisted metadata.
 - Use `--notify-command` or `--notify-file` when another process must react to job completion.
 
@@ -41,13 +41,11 @@ agent-exec run [OPTIONS] -- <COMMAND> [ARGS...]
 
 Use these options most often:
 
-- `--tail-lines <N>` / `--max-bytes <N>`: size the returned snapshot tails (defaults: `50`, `65536`)
-- `--timeout <ms>` / `--kill-after <ms>`: enforce termination deadlines (defaults: `0`, `0`)
+- `--timeout <seconds>` / `--kill-after <seconds>`: enforce termination deadlines (defaults: `0`, `0`)
+- `--progress-every <seconds>`: refresh `state.json.updated_at` while running (default: `0`, disabled)
 - `--cwd <dir>`: run from a specific directory (default: the caller's current working directory)
 - `--env KEY=VALUE` / `--env-file <file>`: set environment variables
 - `--no-inherit-env`: avoid inheriting the current process environment (default behavior is to inherit it)
-- `--wait`: return only after the job reaches a terminal state
-- `--until <seconds>` / `--forever`: bound or remove the client-side wait deadline when `--wait` is used (default: `30`; without `--wait`, `run` does not use this deadline)
 - `--notify-command <COMMAND>`: run a shell command on completion via the configured shell wrapper (default wrapper: `sh -lc` on Unix, `cmd /C` on Windows); event JSON is sent to stdin
 - `--notify-file <PATH>`: append one NDJSON `job.finished` event per completed job
 - `--config <PATH>`: load shell wrapper settings from a specific `config.toml`
@@ -55,13 +53,10 @@ Use these options most often:
 
 Default behavior for `run`:
 
-- without `--wait`, returns after a short snapshot wait instead of waiting for completion: `--snapshot-after 10000`
-- includes up to `50` tail lines and `65536` bytes per stream in snapshots
+- returns launch metadata immediately; use `wait` for completion and `tail` for output observation
 - does not enforce a runtime limit unless `--timeout` is set
 - runs in the caller's current working directory unless `--cwd` is set
 - inherits the caller's environment unless `--no-inherit-env` is set
-- does not wait for terminal state unless `--wait` is set
-- with `--wait`, does not use `--snapshot-after`; instead it uses a 30 second client-side wait deadline unless `--until` or `--forever` changes that
 
 Pass a plain shell command string to `--notify-command`. The command sink also receives:
 

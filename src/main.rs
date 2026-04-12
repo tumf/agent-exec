@@ -106,11 +106,11 @@ enum Command {
         #[arg(long)]
         root: Option<String>,
 
-        /// Timeout in milliseconds; 0 = no timeout.
+        /// Timeout in seconds; 0 = no timeout.
         #[arg(long, default_value = "0")]
         timeout: u64,
 
-        /// Milliseconds after SIGTERM to send SIGKILL; 0 = immediate SIGKILL on timeout.
+        /// Seconds after SIGTERM to send SIGKILL; 0 = immediate SIGKILL on timeout.
         #[arg(long, default_value = "0")]
         kill_after: u64,
 
@@ -146,7 +146,7 @@ enum Command {
         #[arg(long, value_name = "PATH", value_hint = ValueHint::FilePath, conflicts_with = "stdin")]
         stdin_file: Option<String>,
 
-        /// Interval (ms) at which state.json.updated_at is refreshed; 0 = disabled.
+        /// Interval (seconds) at which state.json.updated_at is refreshed; 0 = disabled.
         #[arg(long, default_value = "0")]
         progress_every: u64,
 
@@ -208,11 +208,11 @@ enum Command {
 
     /// Run a command as a background job and return JSON immediately.
     Run {
-        /// Timeout in milliseconds; 0 = no timeout.
+        /// Timeout in seconds; 0 = no timeout.
         #[arg(long, default_value = "0")]
         timeout: u64,
 
-        /// Milliseconds after SIGTERM to send SIGKILL; 0 = immediate SIGKILL on timeout.
+        /// Seconds after SIGTERM to send SIGKILL; 0 = immediate SIGKILL on timeout.
         #[arg(long, default_value = "0")]
         kill_after: u64,
 
@@ -256,7 +256,7 @@ enum Command {
         #[arg(long, value_hint = ValueHint::FilePath)]
         log: Option<String>,
 
-        /// Interval (ms) at which state.json.updated_at is refreshed; 0 = disabled.
+        /// Interval (seconds) at which state.json.updated_at is refreshed; 0 = disabled.
         #[arg(long, default_value = "0")]
         progress_every: u64,
 
@@ -688,15 +688,15 @@ fn run(cli: Cli) -> Result<()> {
             agent_exec::create::execute(agent_exec::create::CreateOpts {
                 command,
                 root: root.as_deref(),
-                timeout_ms: timeout,
-                kill_after_ms: kill_after,
+                timeout_ms: timeout.saturating_mul(1000),
+                kill_after_ms: kill_after.saturating_mul(1000),
                 cwd: cwd.as_deref(),
                 env_vars,
                 env_files,
                 inherit_env: should_inherit,
                 mask,
                 stdin: resolved_stdin,
-                progress_every_ms: progress_every,
+                progress_every_ms: progress_every.saturating_mul(1000),
                 notify_command,
                 notify_file,
                 shell_wrapper: resolved_wrapper,
@@ -754,8 +754,8 @@ fn run(cli: Cli) -> Result<()> {
             agent_exec::run::execute(agent_exec::run::RunOpts {
                 command,
                 root: root.as_deref(),
-                timeout_ms: timeout,
-                kill_after_ms: kill_after,
+                timeout_ms: timeout.saturating_mul(1000),
+                kill_after_ms: kill_after.saturating_mul(1000),
                 cwd: cwd.as_deref(),
                 env_vars,
                 env_files,
@@ -764,7 +764,7 @@ fn run(cli: Cli) -> Result<()> {
                 stdin: resolved_stdin,
                 tags,
                 log: log.as_deref(),
-                progress_every_ms: progress_every,
+                progress_every_ms: progress_every.saturating_mul(1000),
                 notify_command,
                 notify_file,
                 output_pattern,

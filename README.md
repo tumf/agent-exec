@@ -70,8 +70,8 @@ Run a job with a timeout; SIGTERM after 5 s, SIGKILL after 2 s more:
 
 ```bash
 agent-exec run \
-  --timeout 5000 \
-  --kill-after 2000 \
+  --timeout 5 \
+  --kill-after 2 \
   sleep 60
 ```
 
@@ -184,8 +184,8 @@ Key options:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--timeout <ms>` | 0 (none) | Kill job after N ms |
-| `--kill-after <ms>` | 0 | ms after SIGTERM to send SIGKILL |
+| `--timeout <seconds>` | 0 (none) | Kill job after N seconds |
+| `--kill-after <seconds>` | 0 | Seconds after SIGTERM to send SIGKILL |
 | `--cwd <dir>` | inherited | Working directory |
 | `--env KEY=VALUE` | — | Set environment variable (repeatable) |
 | `--mask KEY` | — | Redact secret values from JSON output (repeatable) |

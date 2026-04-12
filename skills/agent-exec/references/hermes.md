@@ -61,7 +61,7 @@ agent-exec run \
 ## Example: attach notification after launch
 
 ```bash
-JOB=$(agent-exec run --snapshot-after 0 -- make test | jq -r .job_id)
+JOB=$(agent-exec run -- make test | jq -r .job_id)
 
 agent-exec notify set "$JOB" \
   --command 'hermes notify --provider cliproxy -m "Tests finished: job_id=$AGENT_EXEC_JOB_ID event_path=$AGENT_EXEC_EVENT_PATH"'

@@ -218,7 +218,7 @@ fn assert_envelope(v: &serde_json::Value, expected_type: &str, expected_ok: bool
 #[test]
 fn run_returns_json_with_job_id() {
     let h = TestHarness::new();
-    // Use --snapshot-after 0 to return immediately (avoid 10s default wait in tests).
+    // run returns immediately, so this can be tested directly (avoid 10s default wait in tests).
     let v = h.run(&["run", "echo", "hello"]);
     assert_envelope(&v, "run", true);
     let job_id = v["job_id"].as_str().expect("job_id missing");
@@ -243,7 +243,7 @@ fn run_returns_launch_only_payload_without_snapshot() {
 fn status_returns_json_for_existing_job() {
     let h = TestHarness::new();
 
-    // First run a job (use --snapshot-after 0 to return immediately).
+    // First run a job (run returns immediately).
     let run_v = h.run(&["run", "echo", "hi"]);
     let job_id = run_v["job_id"].as_str().unwrap().to_string();
 
@@ -516,7 +516,7 @@ fn create_with_stdin_dash_materializes_input_for_later_start() {
 fn wait_returns_json_after_job_finishes() {
     let h = TestHarness::new();
 
-    // Use --snapshot-after 0 to return immediately so we can test wait separately.
+    // run returns immediately, so this can be tested directly so we can test wait separately.
     let run_v = h.run(&["run", "echo", "done"]);
     let job_id = run_v["job_id"].as_str().unwrap().to_string();
 
@@ -645,7 +645,7 @@ fn run_stdin_dash_with_tty_like_stdin_fails_fast() {
 fn kill_returns_json() {
     let h = TestHarness::new();
 
-    // Run a long-running command (use --snapshot-after 0 to return immediately).
+    // Run a long-running command (run returns immediately).
     let run_v = h.run(&["run", "sleep", "60"]);
     let job_id = run_v["job_id"].as_str().unwrap().to_string();
 
@@ -703,7 +703,7 @@ fn run_creates_full_log() {
 fn run_creates_all_log_files_immediately() {
     let h = TestHarness::new();
 
-    // Run with --snapshot-after 0 so the test doesn't wait for the child.
+    // run already returns immediately; no child wait is required here.
     let run_v = h.run(&["run", "echo", "log_files_test"]);
     let job_id = run_v["job_id"].as_str().unwrap().to_string();
 
@@ -727,7 +727,7 @@ fn run_creates_all_log_files_immediately() {
 fn state_json_required_fields_present_with_null_for_options() {
     let h = TestHarness::new();
 
-    // Run a job and read back state.json from the job directory (use --snapshot-after 0 to return immediately).
+    // Run a job and read back state.json from the job directory.
     let run_v = h.run(&["run", "echo", "state_test"]);
     let job_id = run_v["job_id"].as_str().unwrap().to_string();
 
@@ -866,7 +866,7 @@ fn invalid_subcommand_exits_with_code_2() {
 #[test]
 fn run_with_double_dash_separator() {
     let h = TestHarness::new();
-    // Use `--` before the command as the spec requires (use --snapshot-after 0 to return immediately).
+    // Use `--` before the command as the spec requires.
     let v = h.run(&["run", "--", "echo", "hello_dash"]);
     assert_envelope(&v, "run", true);
     let job_id = v["job_id"].as_str().expect("job_id missing");
@@ -1044,16 +1044,8 @@ fn run_timeout_terminates_child() {
     let h = TestHarness::new();
 
     // Start a long sleep with a short timeout.
-    // Use --snapshot-after 0 to return immediately; timeout is tested via status.
-    let run_v = h.run(&[
-        "run",
-        "--timeout",
-        "1000",
-        "--kill-after",
-        "1000",
-        "sleep",
-        "60",
-    ]);
+    // run returns immediately, so this can be tested directly; timeout is tested via status.
+    let run_v = h.run(&["run", "--timeout", "1", "--kill-after", "1", "sleep", "60"]);
     let job_id = run_v["job_id"].as_str().unwrap().to_string();
 
     // Poll until the job is no longer running (timeout + kill-after should fire).
@@ -1078,13 +1070,12 @@ fn run_timeout_terminates_child() {
 fn run_progress_every_updates_state() {
     let h = TestHarness::new();
 
-    // Run a long sleep with progress-every=200ms.
-    // Use --snapshot-after 0 to return immediately; progress-every is the focus here.
-    let run_v = h.run(&["run", "--progress-every", "200", "sleep", "5"]);
+    // Run a long sleep with progress-every=1s.
+    let run_v = h.run(&["run", "--progress-every", "1", "sleep", "5"]);
     let job_id = run_v["job_id"].as_str().unwrap().to_string();
 
-    // Wait briefly to allow state.json to be updated.
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    // Wait for at least one progress tick.
+    std::thread::sleep(std::time::Duration::from_millis(1500));
 
     let state_path = std::path::Path::new(h.root())
         .join(&job_id)
@@ -1110,12 +1101,12 @@ fn progress_every_supervise_stops_after_child_exits() {
     let h = TestHarness::new();
 
     // Run a short-lived command with --progress-every only (no timeout).
-    // Use --snapshot-after 0 to return immediately; progress-every is the focus here.
-    let run_v = h.run(&["run", "--progress-every", "100", "--", "echo", "done"]);
+    // run returns immediately, so this can be tested directly; progress-every is the focus here.
+    let run_v = h.run(&["run", "--progress-every", "1", "--", "echo", "done"]);
     let job_id = run_v["job_id"].as_str().unwrap().to_string();
 
-    // Wait enough time for the supervisor to detect child exit and update state.
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    // Wait enough time for the first progress tick and child-exit reconciliation.
+    std::thread::sleep(std::time::Duration::from_millis(2500));
 
     let v = h.run(&["status", &job_id]);
     let state = v["state"].as_str().unwrap_or("running");
@@ -1388,7 +1379,7 @@ fn list_returns_empty_when_root_does_not_exist() {
 fn list_returns_jobs_sorted_by_started_at_desc() {
     let h = TestHarness::new();
 
-    // Run two jobs (use --snapshot-after 0 to return immediately); both should appear in list.
+    // Run two jobs (run returns immediately); both should appear in list.
     let _r1 = h.run(&["run", "echo", "job1"]);
     // Small sleep to ensure distinct timestamps.
     std::thread::sleep(std::time::Duration::from_millis(10));
@@ -1424,7 +1415,7 @@ fn list_returns_jobs_sorted_by_started_at_desc() {
 fn list_limit_truncates_result() {
     let h = TestHarness::new();
 
-    // Run 3 jobs (use --snapshot-after 0 to return immediately).
+    // Run 3 jobs (run returns immediately).
     h.run(&["run", "echo", "j1"]);
     std::thread::sleep(std::time::Duration::from_millis(10));
     h.run(&["run", "echo", "j2"]);
@@ -1516,7 +1507,7 @@ fn list_filters_by_state_running() {
 fn list_skips_invalid_directories() {
     let h = TestHarness::new();
 
-    // Run a valid job first (use --snapshot-after 0 to return immediately).
+    // Run a valid job first (run returns immediately).
     let r = h.run(&["run", "echo", "valid"]);
     let valid_job_id = r["job_id"].as_str().unwrap().to_string();
 
