@@ -17,32 +17,31 @@ cargo install --path .
 
 ## Quick Start
 
-### Short-lived job (`run` → `wait` → `tail`)
+### Short-lived job (`run` だけで結果確認)
 
-Run a command, wait for it to finish, then read its output:
+既定では `run` が最大 10 秒待機し、inline output を返します。
 
 ```bash
-# 1. Start the job (returns immediately with a job_id)
-JOB=$(agent-exec run echo "hello world" | jq -r .job_id)
-
-# 2. Wait for completion
-agent-exec wait "$JOB"
-
-# 3. Read output
-agent-exec tail "$JOB"
+# 1. Start job and read inline output
+agent-exec run echo "hello world"
 ```
 
-Example output of `tail`:
+Example output of `run`:
 
 ```json
 {
   "schema_version": "0.1",
   "ok": true,
-  "type": "tail",
+  "type": "run",
   "job_id": "01J...",
-  "stdout_tail": "hello world",
-  "stderr_tail": "",
-  "truncated": false
+  "state": "exited",
+  "stdout": "hello world\n",
+  "stderr": "",
+  "stdout_range": [0, 12],
+  "stderr_range": [0, 0],
+  "stdout_total_bytes": 12,
+  "stderr_total_bytes": 0,
+  "encoding": "utf-8-lossy"
 }
 ```
 
@@ -92,8 +91,8 @@ agent-exec start "$JOB"
   settings to `meta.json` and writes `state.json` with `state="created"`.
   It returns `type="create"` and the `job_id`.
 - `start` reads the persisted definition and spawns the supervisor.
-  It returns launch metadata only; use `wait`/`tail` for observation.
-- `run` remains available as the convenience path for immediate execution (also launch metadata only).
+  既定では最大 10 秒待機し、inline output（head 範囲）を返します。
+- `run` は即時実行の convenience path で、同じ inline output 契約を返します（`--no-wait` で待機無効化可能）。
 
 ### Persisted environment
 
@@ -168,10 +167,10 @@ agent-exec start [OPTIONS] <JOB_ID>
 
 Launches the job whose definition was persisted by `create`.
 
-`start` is launch-only and accepts only the job identifier (plus global flags like `--root`/`--yaml`).
-Observation is intentionally separated: use `wait` for completion state and `tail` for output.
+`start` accepts wait controls (`--wait`, `--until`, `--forever`, `--no-wait`) and `--max-bytes` for head extraction.
+既定では `--wait --until 10` 相当で inline output を返し、`--no-wait` で待機をスキップできます。
 
-Returns `type="start"` launch metadata (`job_id`, `state`, `stdout_log_path`, `stderr_log_path`, `elapsed_ms`).
+Returns `type="start"` with inline output fields (`stdout`, `stderr`, `stdout_range`, `stderr_range`, `stdout_total_bytes`, `stderr_total_bytes`, `encoding`).
 Only jobs in `created` state can be started; any other state returns `error.code="invalid_state"`.
 
 ### `run` — start a background job
@@ -191,6 +190,11 @@ Key options:
 | `--mask KEY` | — | Redact secret values from JSON output (repeatable) |
 | `--stdin <VALUE>` | — | Provide job stdin content directly. Use `--stdin -` for pipe/heredoc/redirect input. |
 | `--stdin-file <PATH>` | — | Copy file contents into job-local `stdin.bin` and use it as child stdin. |
+| `--wait` | true | Wait for inline output observation before returning. |
+| `--until <seconds>` | 10 | Maximum wait time for inline observation. |
+| `--forever` | false | Wait indefinitely for terminal/observation. |
+| `--no-wait` | false | Alias to skip waiting (`--until 0`). |
+| `--max-bytes <bytes>` | 65536 | Max head bytes per stream in inline output. |
 | `--tag <TAG>` | — | Assign a user-defined tag to the job (repeatable; duplicates deduplicated) |
 | `--notify-command <COMMAND>` | — | Run a shell command when the job finishes; event JSON is sent on stdin |
 | `--notify-file <PATH>` | — | Append a `job.finished` event as NDJSON |
@@ -229,10 +233,10 @@ Returns `running`, `exited`, `killed`, or `failed`, plus `exit_code` when finish
 ### `tail` — read output
 
 ```bash
-agent-exec tail [--tail-lines N] <JOB_ID>
+agent-exec tail [--tail-lines N] [--max-bytes N] <JOB_ID>
 ```
 
-Returns the last N lines of stdout and stderr.
+Returns tail output as `stdout` / `stderr` with `stdout_range` / `stderr_range` and total byte metrics.
 
 ### `wait` — block until done
 

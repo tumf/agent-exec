@@ -15,15 +15,16 @@ When `agent-exec status <job_id>` and `agent-exec wait <job_id>` are evaluated f
 Then the regression analysis must treat this as a distinct failure shape from descendant-held stdio only
 And any accepted fix must be verified against this workload-liveness case, not only shell-only synthetic cases
 
-### Requirement: tail がログ末尾観測を担う
+### Requirement: head/tail 観測契約
 
-ログ末尾の観測は `tail` が担わなければならない（MUST）。`run` と `start` は snapshot を返してはならず（MUST NOT）、`tail-lines` と `max-bytes` による切り詰め契約は `tail` にのみ適用されなければならない（MUST）。
+`run` と `start` は head 観測（先頭 bytes）を返し、`tail` は tail 観測（末尾 bytes）を返さなければならない（MUST）。
+`run`/`start`/`tail` は canonical field として `stdout` / `stderr` / `stdout_range` / `stderr_range` / `stdout_total_bytes` / `stderr_total_bytes` / `encoding` を返さなければならない（MUST）。
 
 #### Scenario: tail が末尾観測 API である
 Given 実行中または完了済みのジョブが存在する
 When `agent-exec tail --tail-lines 10 --max-bytes 1024 <job_id>` を実行する
-Then `stdout_tail`/`stderr_tail` と `encoding="utf-8-lossy"` が返る
-And `run`/`start` のレスポンスには `snapshot` が含まれない
+Then `stdout`/`stderr` と `encoding="utf-8-lossy"` が返る
+And `stdout_range`/`stderr_range` が返る
 
 ### Requirement: ログファイル
 
@@ -47,7 +48,7 @@ Then 対象プロセスは終了している
 
 デフォルトは `inherit-env` を有効としなければならない（MUST）。`--inherit-env` と `--no-inherit-env` は同時指定不可としなければならない（MUST）。`--env-file` は指定順で適用し、`--env` はその後に上書きされなければならない（MUST）。
 
-`run` が受け付ける definition-time option は、同じ persisted job definition を表す限り `create` でも受け付けなければならない（MUST）。そのような option は `run` と `create` の両方で同じ `meta.json` 意味論に落ちるよう定義しなければならない（MUST）。削除済みの `snapshot-after` や `run --wait` など旧観測オプションを現行 surface として復活させてはならない（MUST NOT）。
+`run` が受け付ける definition-time option は、同じ persisted job definition を表す限り `create` でも受け付けなければならない（MUST）。そのような option は `run` と `create` の両方で同じ `meta.json` 意味論に落ちるよう定義しなければならない（MUST）。`run --wait` は現行の正規観測オプションであり、`--no-wait`/`--until`/`--forever` と整合した意味で提供されなければならない（MUST）。
 
 #### Scenario: persisted env definition stays aligned between create and run
 
@@ -119,21 +120,18 @@ Given `agent-exec run --progress-every 5 -- <cmd>` を実行する
 When 5 秒経過する
 Then `state.json.updated_at` が更新されている
 
-### Requirement: run/status/tail/wait/kill の JSON
+### Requirement: run/start/tail の JSON range 契約
 
-`run` と `tail` の JSON には `stdout_log_path` と `stderr_log_path` を含めなければならない（MUST）。
-`run` の `snapshot` および `tail` は、`stdout_observed_bytes`/`stderr_observed_bytes` と
-`stdout_included_bytes`/`stderr_included_bytes` を含めなければならない（MUST）。
-`observed_bytes` は取得時点のログファイルサイズ（bytes）を示し、
-`included_bytes` は JSON に含めた `*_tail` の UTF-8 bytes 長を示す（MUST）。
+`run` / `start` / `tail` の JSON には `stdout_log_path` と `stderr_log_path` を含めなければならない（MUST）。
+また `stdout_range` / `stderr_range` と `stdout_total_bytes` / `stderr_total_bytes` を含め、`[begin, end)` の half-open interval 契約を満たさなければならない（MUST）。
 
-#### Scenario: tail のログパスと bytes メトリクス
+#### Scenario: tail のログパスと range メトリクス
 
 Given `agent-exec tail <job_id> --max-bytes 128` を実行する
 When ログ末尾が取得される
-Then `stdout_log_path` と `stderr_log_path` が含まれ、
-`stdout_observed_bytes` と `stderr_observed_bytes` が 0 以上の整数で返る
-And `stdout_included_bytes` と `stderr_included_bytes` が返り、`*_included_bytes` は `*_observed_bytes` を超えない
+Then `stdout_log_path` と `stderr_log_path` が含まれる
+And `stdout_range` と `stderr_range` が含まれる
+And `stdout_total_bytes` と `stderr_total_bytes` が 0 以上の整数で返る
 
 ### Requirement: 人間向け runtime 制御時間は秒単位である
 
@@ -152,9 +150,10 @@ Given `agent-exec create --timeout 30 --kill-after 5 --progress-every 1 -- sh -c
 When job definition が保存される
 Then これらの人間向け runtime 制御値は秒単位契約として保存される
 
-### Requirement: 削除済み snapshot-era guidance は正規 surface に残さない
+### Requirement: 旧 snapshot-era field は正規 surface に残さない
 
-削除済みの `snapshot-after` およびそれに依存する旧 guidance は、現行 CLI の正規 help、README、skills、統合テストに残してはならない（MUST NOT）。現行 `run` は起動メタデータを即時返却し、観測責務は `wait` / `tail` / `status` に分離しなければならない（MUST）。
+`snapshot` / `final_snapshot` / `stdout_tail` / `stderr_tail` / `*_observed_bytes` / `*_included_bytes` は現行 CLI の正規 help、README、skills、統合テストに残してはならない（MUST NOT）。
+現行 `run` は inline output を返し、`tail` は同一 field 名で tail 範囲を返さなければならない（MUST）。
 
 #### Scenario: removed snapshot option is rejected
 
@@ -162,11 +161,11 @@ Given `agent-exec run --snapshot-after 10 -- echo hi` を実行する
 When CLI 引数を検証する
 Then usage error で失敗する
 
-#### Scenario: skills no longer teach snapshot-after
+#### Scenario: skills no longer teach snapshot-era fields
 
 Given `skills/agent-exec/**` を参照する
-When 現行 run 例を確認する
-Then live 例は `--snapshot-after 0` を要求しない
+When 現行 run/tail 例を確認する
+Then live 例は `snapshot` や `stdout_tail` を使わない
 
 ### Requirement: Unix shell-wrapper exec handoff for argv-mode launches
 

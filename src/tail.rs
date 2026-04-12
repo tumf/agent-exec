@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 
-use crate::jobstore::{resolve_root, JobDir};
+use crate::jobstore::{JobDir, resolve_root};
 use crate::schema::{Response, TailData};
 
 /// Options for the `tail` sub-command.

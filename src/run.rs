@@ -518,7 +518,13 @@ pub fn execute(opts: RunOpts) -> Result<()> {
     let stdout_log_path = job_dir.stdout_path().display().to_string();
     let stderr_log_path = job_dir.stderr_path().display().to_string();
 
-    let observation = observe_inline_output(&job_dir, opts.wait, opts.until_seconds, opts.forever, opts.max_bytes)?;
+    let observation = observe_inline_output(
+        &job_dir,
+        opts.wait,
+        opts.until_seconds,
+        opts.forever,
+        opts.max_bytes,
+    )?;
     let elapsed_ms = elapsed_start.elapsed().as_millis() as u64;
 
     let response = Response::new(

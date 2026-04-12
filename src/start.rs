@@ -7,9 +7,9 @@
 use anyhow::Result;
 use tracing::info;
 
-use crate::jobstore::{resolve_root, InvalidJobState, JobDir};
+use crate::jobstore::{InvalidJobState, JobDir, resolve_root};
 use crate::run::{
-    mask_env_vars, observe_inline_output, spawn_supervisor_process, SpawnSupervisorParams,
+    SpawnSupervisorParams, mask_env_vars, observe_inline_output, spawn_supervisor_process,
 };
 use crate::schema::{JobStatus, Response, RunData};
 

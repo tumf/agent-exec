@@ -13,7 +13,7 @@ fn binary() -> PathBuf {
     // Prefer the current exe's directory (works inside cargo test).
     let mut p = std::env::current_exe().expect("current exe");
     p.pop(); // remove test binary name
-             // In release mode there's no "deps" subdirectory; try both.
+    // In release mode there's no "deps" subdirectory; try both.
     if p.ends_with("deps") {
         p.pop();
     }
@@ -3381,7 +3381,7 @@ fn notify_set_updated_command_used_at_completion() {
     let captured_str = captured.to_str().unwrap();
 
     // Run a slow job (sleep 1s) without a notify_command.
-    let v = h.run(&["run", "--", "sleep", "1"]);
+    let v = h.run(&["run", "--no-wait", "--", "sleep", "1"]);
     assert_envelope(&v, "run", true);
     let job_id = v["job_id"].as_str().expect("job_id").to_string();
 
@@ -3755,7 +3755,14 @@ fn output_match_command_sink_fires_on_matching_line() {
     let captured_str = captured.to_str().unwrap();
 
     // Run a job that sleeps briefly, then prints the matching line.
-    let v = h.run(&["run", "--", "sh", "-c", "sleep 0.3; echo ERROR_LINE"]);
+    let v = h.run(&[
+        "run",
+        "--no-wait",
+        "--",
+        "sh",
+        "-c",
+        "sleep 0.3; echo ERROR_LINE",
+    ]);
     assert_envelope(&v, "run", true);
     let job_id = v["job_id"].as_str().expect("job_id").to_string();
 
@@ -3815,6 +3822,7 @@ fn output_match_file_sink_appends_per_match() {
     // Job prints two matching lines.
     let v = h.run(&[
         "run",
+        "--no-wait",
         "--",
         "sh",
         "-c",
@@ -3939,7 +3947,14 @@ fn output_match_notification_events_ndjson_written() {
     let events_file = tmp_dir.path().join("output_events.ndjson");
     let events_file_str = events_file.to_str().unwrap();
 
-    let v = h.run(&["run", "--", "sh", "-c", "sleep 0.2; echo RECORD_ME"]);
+    let v = h.run(&[
+        "run",
+        "--no-wait",
+        "--",
+        "sh",
+        "-c",
+        "sleep 0.2; echo RECORD_ME",
+    ]);
     assert_envelope(&v, "run", true);
     let job_id = v["job_id"].as_str().expect("job_id").to_string();
 
@@ -3987,6 +4002,7 @@ fn output_match_regex_pattern_fires_on_match() {
 
     let v = h.run(&[
         "run",
+        "--no-wait",
         "--",
         "sh",
         "-c",
@@ -4037,6 +4053,7 @@ fn output_match_stream_stderr_only() {
     // Print "MATCH" to both stdout and stderr.
     let v = h.run(&[
         "run",
+        "--no-wait",
         "--",
         "sh",
         "-c",
@@ -4096,7 +4113,7 @@ fn output_match_near_future_line_triggers_delivery() {
     // be picked up for the very next line.  Intervals are generous for CI.
     let v = h.run(&[
         "run",
-
+        "--no-wait",
         "--",
         "sh",
         "-c",

@@ -20,8 +20,8 @@ use std::sync::Arc;
 
 use crate::jobstore::{JobDir, JobNotFound, resolve_root};
 use crate::schema::{
-    JobMeta, JobMetaJob, KillData, Response, RunData, SCHEMA_VERSION, StatusData,
-    TailData, WaitData,
+    JobMeta, JobMetaJob, KillData, Response, RunData, SCHEMA_VERSION, StatusData, TailData,
+    WaitData,
 };
 
 /// Options for the `serve` sub-command.
