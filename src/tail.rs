@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 
-use crate::jobstore::{JobDir, resolve_root};
+use crate::jobstore::{resolve_root, JobDir};
 use crate::schema::{Response, TailData};
 
 /// Options for the `tail` sub-command.
@@ -43,16 +43,16 @@ pub fn execute(opts: TailOpts) -> Result<()> {
         "tail",
         TailData {
             job_id: job_dir.job_id.clone(),
-            stdout_tail: stdout.tail,
-            stderr_tail: stderr.tail,
+            stdout: stdout.tail,
+            stderr: stderr.tail,
             truncated: stdout.truncated || stderr.truncated,
             encoding: "utf-8-lossy".to_string(),
             stdout_log_path: stdout_log_path.display().to_string(),
             stderr_log_path: stderr_log_path.display().to_string(),
-            stdout_observed_bytes: stdout.observed_bytes,
-            stderr_observed_bytes: stderr.observed_bytes,
-            stdout_included_bytes: stdout.included_bytes,
-            stderr_included_bytes: stderr.included_bytes,
+            stdout_range: stdout.range,
+            stderr_range: stderr.range,
+            stdout_total_bytes: stdout.observed_bytes,
+            stderr_total_bytes: stderr.observed_bytes,
         },
     );
     response.print();

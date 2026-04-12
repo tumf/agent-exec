@@ -13,7 +13,7 @@ fn binary() -> PathBuf {
     // Prefer the current exe's directory (works inside cargo test).
     let mut p = std::env::current_exe().expect("current exe");
     p.pop(); // remove test binary name
-    // In release mode there's no "deps" subdirectory; try both.
+             // In release mode there's no "deps" subdirectory; try both.
     if p.ends_with("deps") {
         p.pop();
     }
@@ -218,22 +218,30 @@ fn assert_envelope(v: &serde_json::Value, expected_type: &str, expected_ok: bool
 #[test]
 fn run_returns_json_with_job_id() {
     let h = TestHarness::new();
-    // run returns immediately, so this can be tested directly (avoid 10s default wait in tests).
     let v = h.run(&["run", "echo", "hello"]);
     assert_envelope(&v, "run", true);
     let job_id = v["job_id"].as_str().expect("job_id missing");
     assert!(!job_id.is_empty(), "job_id is empty");
-    assert_eq!(v["state"].as_str().unwrap_or(""), "running");
+    assert!(v.get("stdout").is_some(), "stdout missing: {v}");
+    assert!(v.get("stderr").is_some(), "stderr missing: {v}");
 }
 
 #[test]
-fn run_returns_launch_only_payload_without_snapshot() {
+fn run_returns_inline_payload_without_legacy_snapshot_fields() {
     let h = TestHarness::new();
     let v = h.run(&["run", "echo", "snapshot_test"]);
     assert_envelope(&v, "run", true);
     assert!(
         v.get("snapshot").is_none(),
         "snapshot field must be absent: {v}"
+    );
+    assert!(
+        v.get("final_snapshot").is_none(),
+        "final_snapshot field must be absent: {v}"
+    );
+    assert!(
+        v.get("waited_ms").is_some(),
+        "waited_ms must be present: {v}"
     );
 }
 
@@ -313,9 +321,9 @@ fn tail_returns_json_with_encoding() {
     assert_envelope(&v, "tail", true);
     assert_eq!(v["job_id"].as_str().unwrap_or(""), job_id);
     assert_eq!(v["encoding"].as_str().unwrap_or(""), "utf-8-lossy");
-    // Spec requires stdout_tail / stderr_tail field names (not stdout / stderr).
-    assert!(v.get("stdout_tail").is_some(), "stdout_tail missing");
-    assert!(v.get("stderr_tail").is_some(), "stderr_tail missing");
+    // Spec requires stdout / stderr field names (not stdout / stderr).
+    assert!(v.get("stdout").is_some(), "stdout missing");
+    assert!(v.get("stderr").is_some(), "stderr missing");
     // Spec requires truncated field.
     assert!(v.get("truncated").is_some(), "truncated missing");
 }
@@ -346,10 +354,10 @@ fn run_stdin_dash_pipe_materialized_and_visible_in_meta() {
     assert_eq!(wait_v["state"].as_str().unwrap_or(""), "exited");
 
     let tail_v = h.run(&["tail", &job_id]);
-    let stdout_tail = tail_v["stdout_tail"].as_str().unwrap_or("");
+    let stdout = tail_v["stdout"].as_str().unwrap_or("");
     assert!(
-        stdout_tail.contains("alpha") && stdout_tail.contains("beta"),
-        "tail.stdout_tail should contain piped stdin: {stdout_tail:?}"
+        stdout.contains("alpha") && stdout.contains("beta"),
+        "tail.stdout should contain piped stdin: {stdout:?}"
     );
 
     let meta_path = std::path::Path::new(h.root())
@@ -380,8 +388,8 @@ fn run_stdin_inline_preserves_exact_bytes() {
     assert_eq!(wait_v["state"].as_str().unwrap_or(""), "exited");
 
     let tail_v = h.run(&["tail", &job_id]);
-    let stdout_tail = tail_v["stdout_tail"].as_str().unwrap_or("");
-    assert_eq!(stdout_tail, "abc", "inline stdin should not append newline");
+    let stdout = tail_v["stdout"].as_str().unwrap_or("");
+    assert_eq!(stdout, "abc", "inline stdin should not append newline");
 }
 
 #[test]
@@ -404,8 +412,8 @@ fn run_stdin_file_uses_materialized_copy() {
     assert_eq!(wait_v["state"].as_str().unwrap_or(""), "exited");
 
     let tail_v = h.run(&["tail", &job_id]);
-    let stdout_tail = tail_v["stdout_tail"].as_str().unwrap_or("");
-    assert_eq!(stdout_tail, "file-input");
+    let stdout = tail_v["stdout"].as_str().unwrap_or("");
+    assert_eq!(stdout, "file-input");
 
     let stdin_path = std::path::Path::new(h.root())
         .join(&job_id)
@@ -482,8 +490,8 @@ fn create_start_reuses_stdin_definition() {
     assert_eq!(wait_v["state"].as_str().unwrap_or(""), "exited");
 
     let tail_v = h.run(&["tail", &job_id]);
-    let stdout_tail = tail_v["stdout_tail"].as_str().unwrap_or("");
-    assert_eq!(stdout_tail, "hello");
+    let stdout = tail_v["stdout"].as_str().unwrap_or("");
+    assert_eq!(stdout, "hello");
 }
 
 #[test]
@@ -506,8 +514,8 @@ fn create_with_stdin_dash_materializes_input_for_later_start() {
     assert_eq!(wait_v["state"].as_str().unwrap_or(""), "exited");
 
     let tail_v = h.run(&["tail", &job_id]);
-    let stdout_tail = tail_v["stdout_tail"].as_str().unwrap_or("");
-    assert_eq!(stdout_tail, "from-create-pipe");
+    let stdout = tail_v["stdout"].as_str().unwrap_or("");
+    assert_eq!(stdout, "from-create-pipe");
 }
 
 // ── wait ───────────────────────────────────────────────────────────────────────
@@ -1268,7 +1276,7 @@ fn tail_truncated_when_over_limit() {
 // ── add-run-tail-metrics: new fields ──────────────────────────────────────────
 
 #[test]
-fn run_includes_elapsed_ms_and_log_paths_only() {
+fn run_includes_elapsed_ms_log_paths_and_inline_metrics() {
     let h = TestHarness::new();
 
     let v = h.run(&["run", "echo", "metrics_test"]);
@@ -1290,8 +1298,18 @@ fn run_includes_elapsed_ms_and_log_paths_only() {
     assert!(std::path::Path::new(stderr_path).is_absolute());
 
     assert!(
-        v.get("waited_ms").is_none(),
-        "waited_ms must be absent: {v}"
+        v.get("waited_ms").is_some(),
+        "waited_ms must be present: {v}"
+    );
+    assert!(v.get("stdout").is_some(), "stdout must be present: {v}");
+    assert!(v.get("stderr").is_some(), "stderr must be present: {v}");
+    assert!(
+        v.get("stdout_range").is_some(),
+        "stdout_range must be present: {v}"
+    );
+    assert!(
+        v.get("stderr_range").is_some(),
+        "stderr_range must be present: {v}"
     );
     assert!(v.get("snapshot").is_none(), "snapshot must be absent: {v}");
 }
@@ -1330,28 +1348,32 @@ fn tail_includes_log_paths_and_bytes_metrics() {
 
     // Bytes metrics must be present.
     assert!(
-        v.get("stdout_observed_bytes").is_some(),
-        "stdout_observed_bytes missing from tail response: {v}"
+        v.get("stdout_total_bytes").is_some(),
+        "stdout_total_bytes missing from tail response: {v}"
     );
     assert!(
-        v.get("stderr_observed_bytes").is_some(),
-        "stderr_observed_bytes missing from tail response: {v}"
+        v.get("stderr_total_bytes").is_some(),
+        "stderr_total_bytes missing from tail response: {v}"
     );
     assert!(
-        v.get("stdout_included_bytes").is_some(),
-        "stdout_included_bytes missing from tail response: {v}"
+        v.get("stdout_range").is_some(),
+        "stdout_range missing from tail response: {v}"
     );
     assert!(
-        v.get("stderr_included_bytes").is_some(),
-        "stderr_included_bytes missing from tail response: {v}"
+        v.get("stderr_range").is_some(),
+        "stderr_range missing from tail response: {v}"
     );
 
-    // included_bytes must be <= observed_bytes.
-    let stdout_observed = v["stdout_observed_bytes"].as_u64().unwrap_or(0);
-    let stdout_included = v["stdout_included_bytes"].as_u64().unwrap_or(0);
+    // range end must be <= total bytes.
+    let stdout_observed = v["stdout_total_bytes"].as_u64().unwrap_or(0);
+    let stdout_end = v["stdout_range"]
+        .as_array()
+        .and_then(|r| r.get(1))
+        .and_then(|x| x.as_u64())
+        .unwrap_or(0);
     assert!(
-        stdout_included <= stdout_observed,
-        "stdout_included_bytes ({stdout_included}) must be <= stdout_observed_bytes ({stdout_observed})"
+        stdout_end <= stdout_observed,
+        "stdout_range end ({stdout_end}) must be <= stdout_total_bytes ({stdout_observed})"
     );
 }
 
@@ -1545,12 +1567,10 @@ fn run_rejects_removed_snapshot_after_flag() {
 }
 
 #[test]
-fn run_rejects_removed_max_bytes_flag() {
+fn run_accepts_max_bytes_flag() {
     let h = TestHarness::new();
-    assert_usage_error(
-        &["run", "--max-bytes", "256", "echo", "invalid"],
-        Some(h.root()),
-    );
+    let v = h.run(&["run", "--max-bytes", "256", "echo", "valid"]);
+    assert_envelope(&v, "run", true);
 }
 
 #[test]
@@ -1563,17 +1583,19 @@ fn run_rejects_removed_tail_lines_flag() {
 }
 
 #[test]
-fn run_rejects_removed_wait_flag() {
+fn run_accepts_wait_flag() {
     let h = TestHarness::new();
-    assert_usage_error(&["run", "--wait", "echo", "invalid"], Some(h.root()));
+    let v = h.run(&["run", "--wait", "true", "echo", "valid"]);
+    assert_envelope(&v, "run", true);
 }
 
 #[test]
-fn start_rejects_removed_wait_flag() {
+fn start_accepts_wait_flag() {
     let h = TestHarness::new();
-    let create_v = h.run(&["create", "--", "echo", "start_wait_removed"]);
+    let create_v = h.run(&["create", "--", "echo", "start_wait_enabled"]);
     let job_id = create_v["job_id"].as_str().expect("job_id missing");
-    assert_usage_error(&["start", "--wait", job_id], Some(h.root()));
+    let v = h.run(&["start", "--wait", "true", job_id]);
+    assert_envelope(&v, "start", true);
 }
 
 #[test]
@@ -1584,46 +1606,59 @@ fn start_rejects_removed_snapshot_after_flag() {
     assert_usage_error(&["start", "--snapshot-after", "1", job_id], Some(h.root()));
 }
 
-/// run response should remain launch-focused and not include snapshot/wait fields.
+/// run/start response should use inline canonical fields (no legacy snapshot names).
 #[test]
-fn run_response_omits_snapshot_and_wait_fields() {
+fn run_start_response_uses_inline_output_fields() {
     let h = TestHarness::new();
-    let v = h.run(&["run", "echo", "no_snapshot_fields"]);
-    assert_envelope(&v, "run", true);
-    assert!(v.get("snapshot").is_none(), "snapshot must be absent: {v}");
+    let run_v = h.run(&["run", "echo", "inline_fields"]);
+    assert_envelope(&run_v, "run", true);
     assert!(
-        v.get("final_snapshot").is_none(),
-        "final_snapshot must be absent: {v}"
+        run_v.get("snapshot").is_none(),
+        "snapshot must be absent: {run_v}"
     );
     assert!(
-        v.get("waited_ms").is_none(),
-        "waited_ms must be absent: {v}"
+        run_v.get("final_snapshot").is_none(),
+        "final_snapshot must be absent: {run_v}"
     );
-}
+    assert!(
+        run_v.get("waited_ms").is_some(),
+        "waited_ms must be present: {run_v}"
+    );
+    assert!(
+        run_v.get("stdout").is_some(),
+        "stdout must be present: {run_v}"
+    );
+    assert!(
+        run_v.get("stderr").is_some(),
+        "stderr must be present: {run_v}"
+    );
+    assert!(
+        run_v.get("stdout_range").is_some(),
+        "stdout_range must be present: {run_v}"
+    );
+    assert!(
+        run_v.get("stderr_range").is_some(),
+        "stderr_range must be present: {run_v}"
+    );
 
-/// start response should remain launch-focused and not include snapshot/wait fields.
-#[test]
-fn start_response_omits_snapshot_and_wait_fields() {
-    let h = TestHarness::new();
-    let create_v = h.run(&["create", "--", "echo", "start_no_snapshot_fields"]);
+    let create_v = h.run(&["create", "--", "echo", "start_inline_fields"]);
     let job_id = create_v["job_id"]
         .as_str()
         .expect("job_id missing")
         .to_string();
-
     let start_v = h.run(&["start", &job_id]);
     assert_envelope(&start_v, "start", true);
     assert!(
-        start_v.get("snapshot").is_none(),
-        "snapshot must be absent from start response: {start_v}"
+        start_v.get("waited_ms").is_some(),
+        "waited_ms must be present: {start_v}"
     );
     assert!(
-        start_v.get("final_snapshot").is_none(),
-        "final_snapshot must be absent from start response: {start_v}"
+        start_v.get("stdout").is_some(),
+        "stdout must be present: {start_v}"
     );
     assert!(
-        start_v.get("waited_ms").is_none(),
-        "waited_ms must be absent from start response: {start_v}"
+        start_v.get("stderr").is_some(),
+        "stderr must be present: {start_v}"
     );
 }
 
@@ -4549,10 +4584,10 @@ fn argv_mode_exec_handoff_completes() {
 
     // Verify the command output reached stdout.log.
     let logs_v = h.run(&["tail", job_id, "--tail-lines", "5"]);
-    let stdout_tail = logs_v["stdout_tail"].as_str().unwrap_or("");
+    let stdout = logs_v["stdout"].as_str().unwrap_or("");
     assert!(
-        stdout_tail.contains("argv-ok"),
-        "stdout must contain 'argv-ok'; got: {stdout_tail:?}"
+        stdout.contains("argv-ok"),
+        "stdout must contain 'argv-ok'; got: {stdout:?}"
     );
 }
 
@@ -4571,14 +4606,14 @@ fn shell_string_mode_preserved_after_argv_change() {
     let wait_v = wait_until_terminal(&h, job_id);
     assert_eq!(wait_v["exit_code"], 0, "shell-string mode job must exit 0");
     let logs_v = h.run(&["tail", job_id, "--tail-lines", "5"]);
-    let stdout_tail = logs_v["stdout_tail"].as_str().unwrap_or("");
+    let stdout = logs_v["stdout"].as_str().unwrap_or("");
     assert!(
-        stdout_tail.contains("string-ok"),
-        "stdout must contain 'string-ok'; got: {stdout_tail:?}"
+        stdout.contains("string-ok"),
+        "stdout must contain 'string-ok'; got: {stdout:?}"
     );
     assert!(
-        stdout_tail.contains("string-two"),
-        "stdout must contain 'string-two' (shell && operator); got: {stdout_tail:?}"
+        stdout.contains("string-two"),
+        "stdout must contain 'string-two' (shell && operator); got: {stdout:?}"
     );
 }
 
@@ -4666,11 +4701,11 @@ fn status_remains_running_while_root_alive_despite_success_output_post_0_1_10_is
 
     // Fact 1: success-like output is captured and visible.
     let tail_v = h.run(&["tail", &job_id, "--tail-lines", "20"]);
-    let stdout_tail = tail_v["stdout_tail"].as_str().unwrap_or("");
+    let stdout = tail_v["stdout"].as_str().unwrap_or("");
     assert!(
-        stdout_tail.contains("Orchestrator completed successfully"),
+        stdout.contains("Orchestrator completed successfully"),
         "success-like output must be visible in stdout log before process exits; \
-         got: {stdout_tail:?}"
+         got: {stdout:?}"
     );
 
     // Fact 2: status is still `running` because the root workload process (sleep 30)
@@ -4713,10 +4748,10 @@ fn argv_mode_non_unix_shell_string_fallback_completes() {
     );
 
     let logs_v = h.run(&["tail", job_id, "--tail-lines", "5"]);
-    let stdout_tail = logs_v["stdout_tail"].as_str().unwrap_or("");
+    let stdout = logs_v["stdout"].as_str().unwrap_or("");
     assert!(
-        stdout_tail.contains("argv-win-ok"),
-        "stdout must contain 'argv-win-ok' on non-Unix argv fallback; got: {stdout_tail:?}"
+        stdout.contains("argv-win-ok"),
+        "stdout must contain 'argv-win-ok' on non-Unix argv fallback; got: {stdout:?}"
     );
 }
 

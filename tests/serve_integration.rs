@@ -188,10 +188,7 @@ fn test_tail_returns_stdout() {
 
     let (status, json) = get_json(&srv.url(&format!("/tail/{job_id}")));
     assert_eq!(status, 200, "GET /tail failed: {json}");
-    assert!(
-        json.get("stdout_tail").is_some(),
-        "missing stdout_tail in: {json}"
-    );
+    assert!(json.get("stdout").is_some(), "missing stdout in: {json}");
     assert_common_fields(&json);
 }
 

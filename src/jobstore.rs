@@ -113,6 +113,20 @@ pub struct TailMetrics {
     pub observed_bytes: u64,
     /// Number of bytes included in `tail`.
     pub included_bytes: u64,
+    /// Raw byte range [begin, end) represented by the returned text.
+    pub range: [u64; 2],
+}
+
+/// Metrics for the head slice of a log file.
+pub struct HeadMetrics {
+    /// The head text (lossy UTF-8, first max_bytes bytes).
+    pub head: String,
+    /// Total file size in bytes (0 if the file does not exist).
+    pub observed_bytes: u64,
+    /// Number of bytes included in `head`.
+    pub included_bytes: u64,
+    /// Raw byte range [begin, end) represented by the returned text.
+    pub range: [u64; 2],
 }
 
 /// Handle to a specific job's directory.
@@ -311,11 +325,42 @@ impl JobDir {
         let observed_bytes = std::fs::metadata(self.path.join(filename))
             .map(|m| m.len())
             .unwrap_or(0);
+        let begin = observed_bytes.saturating_sub(included_bytes);
+        let end = observed_bytes;
         TailMetrics {
             tail,
             truncated,
             observed_bytes,
             included_bytes,
+            range: [begin, end],
+        }
+    }
+
+    /// Read head content and byte metrics for a single log file.
+    ///
+    /// Returns the first `max_bytes` bytes (decoded as UTF-8 lossy) with
+    /// canonical raw byte range metadata.
+    pub fn read_head_metrics(&self, filename: &str, max_bytes: u64) -> HeadMetrics {
+        let path = self.path.join(filename);
+        let Ok(data) = std::fs::read(&path) else {
+            return HeadMetrics {
+                head: String::new(),
+                observed_bytes: 0,
+                included_bytes: 0,
+                range: [0, 0],
+            };
+        };
+
+        let observed_bytes = data.len() as u64;
+        let included_len = observed_bytes.min(max_bytes) as usize;
+        let head = String::from_utf8_lossy(&data[..included_len]).into_owned();
+        let included_bytes = head.len() as u64;
+
+        HeadMetrics {
+            head,
+            observed_bytes,
+            included_bytes,
+            range: [0, included_bytes],
         }
     }
 
