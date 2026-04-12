@@ -101,18 +101,27 @@ pub fn resolve_root(cli_root: Option<&str>) -> PathBuf {
 
 /// Metrics returned by [`JobDir::read_tail_metrics`].
 ///
-/// Bundles the tail content together with the byte counts used in the
-/// `run` snapshot and `tail` JSON responses, so that both callers share
-/// the same calculation logic.
+/// Bundles the tail content together with the raw byte ranges used in the
+/// `tail` JSON responses, so that callers share the same calculation logic.
 pub struct TailMetrics {
     /// The tail text (lossy UTF-8, last N lines / max_bytes).
     pub tail: String,
-    /// Whether the content was truncated by bytes or lines constraints.
-    pub truncated: bool,
     /// Total file size in bytes (0 if the file does not exist).
     pub observed_bytes: u64,
-    /// Number of bytes included in `tail`.
+    /// Raw byte range [begin, end) represented by the returned text.
+    pub range: [u64; 2],
+}
+
+/// Metrics for the head slice of a log file.
+pub struct HeadMetrics {
+    /// The head text (lossy UTF-8, first max_bytes bytes).
+    pub head: String,
+    /// Total file size in bytes (0 if the file does not exist).
+    pub observed_bytes: u64,
+    /// Number of bytes included in `head`.
     pub included_bytes: u64,
+    /// Raw byte range [begin, end) represented by the returned text.
+    pub range: [u64; 2],
 }
 
 /// Handle to a specific job's directory.
@@ -251,71 +260,76 @@ impl JobDir {
         Ok(())
     }
 
-    /// Read the last `max_bytes` of a log file, returning lossy UTF-8.
-    pub fn tail_log(&self, filename: &str, tail_lines: u64, max_bytes: u64) -> String {
-        self.tail_log_with_truncated(filename, tail_lines, max_bytes)
-            .0
-    }
-
-    /// Read the last `max_bytes` of a log file, returning (content, truncated).
-    /// `truncated` is true when the content was cut by bytes or lines constraints.
-    pub fn tail_log_with_truncated(
-        &self,
-        filename: &str,
-        tail_lines: u64,
-        max_bytes: u64,
-    ) -> (String, bool) {
-        let path = self.path.join(filename);
-        let Ok(data) = std::fs::read(&path) else {
-            return (String::new(), false);
-        };
-
-        // Truncate to max_bytes from the end.
-        let byte_truncated = data.len() as u64 > max_bytes;
-        let start = if byte_truncated {
-            (data.len() as u64 - max_bytes) as usize
-        } else {
-            0
-        };
-        let slice = &data[start..];
-
-        // Lossy UTF-8 decode.
-        let text = String::from_utf8_lossy(slice);
-
-        // Keep only the last tail_lines.
-        if tail_lines == 0 {
-            return (text.into_owned(), byte_truncated);
-        }
-        let lines: Vec<&str> = text.lines().collect();
-        let skip = lines.len().saturating_sub(tail_lines as usize);
-        let line_truncated = skip > 0;
-        (lines[skip..].join("\n"), byte_truncated || line_truncated)
-    }
-
-    /// Read tail content and byte metrics for a single log file.
-    ///
-    /// Returns a [`TailMetrics`] that bundles the tail text, truncation flag,
-    /// observed file size, and included byte count.  Both `run`'s snapshot
-    /// generation and `tail`'s JSON generation use this helper so that the
-    /// metric calculation is defined in exactly one place.
-    ///
-    /// `encoding` is always `"utf-8-lossy"` (as required by the contract).
+    /// Read tail content and raw byte range metrics for a single log file.
     pub fn read_tail_metrics(
         &self,
         filename: &str,
         tail_lines: u64,
         max_bytes: u64,
     ) -> TailMetrics {
-        let (tail, truncated) = self.tail_log_with_truncated(filename, tail_lines, max_bytes);
-        let included_bytes = tail.len() as u64;
-        let observed_bytes = std::fs::metadata(self.path.join(filename))
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let path = self.path.join(filename);
+        let Ok(data) = std::fs::read(&path) else {
+            return TailMetrics {
+                tail: String::new(),
+                observed_bytes: 0,
+                range: [0, 0],
+            };
+        };
+
+        let observed_bytes = data.len() as u64;
+        let window_start = observed_bytes.saturating_sub(max_bytes) as usize;
+        let window = &data[window_start..];
+
+        let line_start_in_window = if tail_lines == 0 {
+            0
+        } else {
+            let mut chunks: Vec<&[u8]> = window.split(|b| *b == b'\n').collect();
+            if window.ends_with(b"\n") {
+                let _ = chunks.pop();
+            }
+            let keep_from = chunks.len().saturating_sub(tail_lines as usize);
+            chunks[..keep_from]
+                .iter()
+                .map(|c| c.len() + 1)
+                .sum::<usize>()
+        };
+
+        let selected = &window[line_start_in_window..];
+        let tail = String::from_utf8_lossy(selected).into_owned();
+        let begin = (window_start + line_start_in_window) as u64;
+
         TailMetrics {
             tail,
-            truncated,
+            observed_bytes,
+            range: [begin, observed_bytes],
+        }
+    }
+
+    /// Read head content and byte metrics for a single log file.
+    ///
+    /// Returns the first `max_bytes` bytes (decoded as UTF-8 lossy) with
+    /// canonical raw byte range metadata.
+    pub fn read_head_metrics(&self, filename: &str, max_bytes: u64) -> HeadMetrics {
+        let path = self.path.join(filename);
+        let Ok(data) = std::fs::read(&path) else {
+            return HeadMetrics {
+                head: String::new(),
+                observed_bytes: 0,
+                included_bytes: 0,
+                range: [0, 0],
+            };
+        };
+
+        let observed_bytes = data.len() as u64;
+        let included_len = observed_bytes.min(max_bytes) as usize;
+        let head = String::from_utf8_lossy(&data[..included_len]).into_owned();
+        let included_bytes = included_len as u64;
+
+        HeadMetrics {
+            head,
             observed_bytes,
             included_bytes,
+            range: [0, included_bytes],
         }
     }
 

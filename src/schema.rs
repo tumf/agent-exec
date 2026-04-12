@@ -138,6 +138,28 @@ pub struct RunData {
     pub stderr_log_path: String,
     /// Wall-clock milliseconds from run/start invocation start to JSON output.
     pub elapsed_ms: u64,
+    /// Time spent waiting for inline output observation.
+    pub waited_ms: u64,
+    /// UTF-8 lossy stdout excerpt.
+    pub stdout: String,
+    /// UTF-8 lossy stderr excerpt.
+    pub stderr: String,
+    /// Raw stdout byte range represented by `stdout` as [begin, end).
+    pub stdout_range: [u64; 2],
+    /// Raw stderr byte range represented by `stderr` as [begin, end).
+    pub stderr_range: [u64; 2],
+    /// Total bytes currently observed in stdout.log.
+    pub stdout_total_bytes: u64,
+    /// Total bytes currently observed in stderr.log.
+    pub stderr_total_bytes: u64,
+    /// Encoding contract for stdout/stderr excerpts.
+    pub encoding: String,
+    /// Exit code when terminal.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    /// Finished-at timestamp when terminal.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<String>,
 }
 
 /// Response for `status` command.
@@ -160,23 +182,21 @@ pub struct StatusData {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TailData {
     pub job_id: String,
-    pub stdout_tail: String,
-    pub stderr_tail: String,
-    /// True when the output was truncated by tail_lines or max_bytes constraints.
-    pub truncated: bool,
+    pub stdout: String,
+    pub stderr: String,
     pub encoding: String,
     /// Absolute path to stdout.log for this job.
     pub stdout_log_path: String,
     /// Absolute path to stderr.log for this job.
     pub stderr_log_path: String,
-    /// Size of stdout.log in bytes at the time of the tail read (0 if file absent).
-    pub stdout_observed_bytes: u64,
-    /// Size of stderr.log in bytes at the time of the tail read (0 if file absent).
-    pub stderr_observed_bytes: u64,
-    /// UTF-8 byte length of the stdout_tail string included in this response.
-    pub stdout_included_bytes: u64,
-    /// UTF-8 byte length of the stderr_tail string included in this response.
-    pub stderr_included_bytes: u64,
+    /// Raw stdout byte range represented by `stdout` as [begin, end).
+    pub stdout_range: [u64; 2],
+    /// Raw stderr byte range represented by `stderr` as [begin, end).
+    pub stderr_range: [u64; 2],
+    /// Total bytes currently observed in stdout.log.
+    pub stdout_total_bytes: u64,
+    /// Total bytes currently observed in stderr.log.
+    pub stderr_total_bytes: u64,
 }
 
 /// Response for `wait` command.

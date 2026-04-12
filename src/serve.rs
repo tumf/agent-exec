@@ -20,8 +20,8 @@ use std::sync::Arc;
 
 use crate::jobstore::{JobDir, JobNotFound, resolve_root};
 use crate::schema::{
-    JobMeta, JobMetaJob, JobStatus, KillData, Response, RunData, SCHEMA_VERSION, StatusData,
-    TailData, WaitData,
+    JobMeta, JobMetaJob, KillData, Response, RunData, SCHEMA_VERSION, StatusData, TailData,
+    WaitData,
 };
 
 /// Options for the `serve` sub-command.
@@ -206,8 +206,8 @@ fn run_exec_inner(
     timeout_ms: u64,
 ) -> Result<serde_json::Value> {
     use crate::run::{
-        SpawnSupervisorParams, now_rfc3339_pub, pre_create_log_files, resolve_effective_cwd,
-        spawn_supervisor_process,
+        SpawnSupervisorParams, now_rfc3339_pub, observe_inline_output, pre_create_log_files,
+        resolve_effective_cwd, spawn_supervisor_process,
     };
 
     let elapsed_start = std::time::Instant::now();
@@ -274,7 +274,7 @@ fn run_exec_inner(
     let stdout_log_path = job_dir.stdout_path().display().to_string();
     let stderr_log_path = job_dir.stderr_path().display().to_string();
 
-    let final_state = JobStatus::Running.as_str().to_string();
+    let observation = observe_inline_output(&job_dir, true, 10, false, 65536)?;
 
     let elapsed_ms = elapsed_start.elapsed().as_millis() as u64;
 
@@ -282,12 +282,22 @@ fn run_exec_inner(
         "run",
         RunData {
             job_id,
-            state: final_state,
+            state: observation.state,
             tags: vec![],
             env_vars: vec![],
             stdout_log_path,
             stderr_log_path,
             elapsed_ms,
+            waited_ms: observation.waited_ms,
+            stdout: observation.stdout,
+            stderr: observation.stderr,
+            stdout_range: observation.stdout_range,
+            stderr_range: observation.stderr_range,
+            stdout_total_bytes: observation.stdout_total_bytes,
+            stderr_total_bytes: observation.stderr_total_bytes,
+            encoding: observation.encoding,
+            exit_code: observation.exit_code,
+            finished_at: observation.finished_at,
         },
     );
 
@@ -347,16 +357,15 @@ async fn tail_handler(State(state): State<Arc<AppState>>, Path(id): Path<String>
             "tail",
             TailData {
                 job_id: id,
-                stdout_tail: stdout.tail,
-                stderr_tail: stderr.tail,
-                truncated: stdout.truncated || stderr.truncated,
+                stdout: stdout.tail,
+                stderr: stderr.tail,
                 encoding: "utf-8-lossy".to_string(),
                 stdout_log_path: stdout_log_path.display().to_string(),
                 stderr_log_path: stderr_log_path.display().to_string(),
-                stdout_observed_bytes: stdout.observed_bytes,
-                stderr_observed_bytes: stderr.observed_bytes,
-                stdout_included_bytes: stdout.included_bytes,
-                stderr_included_bytes: stderr.included_bytes,
+                stdout_range: stdout.range,
+                stderr_range: stderr.range,
+                stdout_total_bytes: stdout.observed_bytes,
+                stderr_total_bytes: stderr.observed_bytes,
             },
         );
         Ok::<_, anyhow::Error>(serde_json::to_value(&response)?)

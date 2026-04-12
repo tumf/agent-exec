@@ -17,6 +17,21 @@ use crate::jobstore::{JobDir, resolve_root};
 use crate::schema::{
     JobMeta, JobMetaJob, JobState, JobStateJob, JobStateResult, JobStatus, Response, RunData,
 };
+
+#[derive(Debug, Clone)]
+pub struct InlineObservation {
+    pub waited_ms: u64,
+    pub stdout: String,
+    pub stderr: String,
+    pub stdout_range: [u64; 2],
+    pub stderr_range: [u64; 2],
+    pub stdout_total_bytes: u64,
+    pub stderr_total_bytes: u64,
+    pub encoding: String,
+    pub state: String,
+    pub exit_code: Option<i32>,
+    pub finished_at: Option<String>,
+}
 use crate::tag::dedup_tags;
 
 /// Options for the `run` sub-command.
@@ -33,6 +48,14 @@ pub struct RunOpts<'a> {
     pub command: Vec<String>,
     /// Override for jobs root directory.
     pub root: Option<&'a str>,
+    /// Wait for inline output observation before returning.
+    pub wait: bool,
+    /// Maximum wait duration in seconds for inline observation.
+    pub until_seconds: u64,
+    /// Wait indefinitely for terminal state / observation budget.
+    pub forever: bool,
+    /// Maximum bytes to include from the head of each stream.
+    pub max_bytes: u64,
     /// Timeout in milliseconds; 0 = no timeout.
     pub timeout_ms: u64,
     /// Milliseconds after SIGTERM before SIGKILL; 0 = immediate SIGKILL.
@@ -80,6 +103,10 @@ impl<'a> Default for RunOpts<'a> {
         RunOpts {
             command: vec![],
             root: None,
+            wait: true,
+            until_seconds: 10,
+            forever: false,
+            max_bytes: 65536,
             timeout_ms: 0,
             kill_after_ms: 0,
             cwd: None,
@@ -491,13 +518,20 @@ pub fn execute(opts: RunOpts) -> Result<()> {
     let stdout_log_path = job_dir.stdout_path().display().to_string();
     let stderr_log_path = job_dir.stderr_path().display().to_string();
 
+    let observation = observe_inline_output(
+        &job_dir,
+        opts.wait,
+        opts.until_seconds,
+        opts.forever,
+        opts.max_bytes,
+    )?;
     let elapsed_ms = elapsed_start.elapsed().as_millis() as u64;
 
     let response = Response::new(
         "run",
         RunData {
             job_id,
-            state: JobStatus::Running.as_str().to_string(),
+            state: observation.state,
             tags,
             // Include masked env_vars in the JSON response so callers can inspect
             // which variables were set (with secret values replaced by "***").
@@ -505,6 +539,16 @@ pub fn execute(opts: RunOpts) -> Result<()> {
             stdout_log_path,
             stderr_log_path,
             elapsed_ms,
+            waited_ms: observation.waited_ms,
+            stdout: observation.stdout,
+            stderr: observation.stderr,
+            stdout_range: observation.stdout_range,
+            stderr_range: observation.stderr_range,
+            stdout_total_bytes: observation.stdout_total_bytes,
+            stderr_total_bytes: observation.stderr_total_bytes,
+            encoding: observation.encoding,
+            exit_code: observation.exit_code,
+            finished_at: observation.finished_at,
         },
     );
     response.print();
@@ -554,6 +598,67 @@ pub struct SuperviseOpts<'a> {
 /// current process working directory. In either case, attempt to canonicalize
 /// the path for consistent comparison; on failure, fall back to the absolute
 /// path representation (avoids symlink / permission issues on some systems).
+pub fn observe_inline_output(
+    job_dir: &JobDir,
+    wait: bool,
+    until_seconds: u64,
+    forever: bool,
+    max_bytes: u64,
+) -> Result<InlineObservation> {
+    let started = std::time::Instant::now();
+    let deadline = if wait {
+        if forever {
+            None
+        } else {
+            Some(started + std::time::Duration::from_secs(until_seconds))
+        }
+    } else {
+        Some(started)
+    };
+
+    if wait {
+        loop {
+            let state = job_dir.read_state()?;
+            let has_output = std::fs::metadata(job_dir.stdout_path())
+                .map(|m| m.len() > 0)
+                .unwrap_or(false)
+                || std::fs::metadata(job_dir.stderr_path())
+                    .map(|m| m.len() > 0)
+                    .unwrap_or(false);
+
+            if !state.status().is_non_terminal() || has_output {
+                break;
+            }
+
+            if let Some(dl) = deadline
+                && std::time::Instant::now() >= dl
+            {
+                break;
+            }
+
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
+
+    let state = job_dir.read_state()?;
+    let stdout = job_dir.read_head_metrics("stdout.log", max_bytes);
+    let stderr = job_dir.read_head_metrics("stderr.log", max_bytes);
+
+    Ok(InlineObservation {
+        waited_ms: started.elapsed().as_millis() as u64,
+        stdout: stdout.head,
+        stderr: stderr.head,
+        stdout_range: stdout.range,
+        stderr_range: stderr.range,
+        stdout_total_bytes: stdout.observed_bytes,
+        stderr_total_bytes: stderr.observed_bytes,
+        encoding: "utf-8-lossy".to_string(),
+        state: state.status().as_str().to_string(),
+        exit_code: state.exit_code(),
+        finished_at: state.finished_at,
+    })
+}
+
 pub fn resolve_effective_cwd(cwd_override: Option<&str>) -> String {
     let base = match cwd_override {
         Some(p) => std::path::PathBuf::from(p),

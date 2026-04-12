@@ -201,6 +201,26 @@ enum Command {
         #[arg(long)]
         root: Option<String>,
 
+        /// Wait for inline output observation before returning.
+        #[arg(long, default_value = "true", action = clap::ArgAction::Set)]
+        wait: bool,
+
+        /// Maximum wait time in seconds for inline observation.
+        #[arg(long, default_value = "10", conflicts_with = "forever")]
+        until: u64,
+
+        /// Wait indefinitely for terminal state / observation budget.
+        #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue, conflicts_with = "until")]
+        forever: bool,
+
+        /// Alias for `--wait false --until 0`.
+        #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue)]
+        no_wait: bool,
+
+        /// Maximum bytes to include from the head of each stream.
+        #[arg(long, default_value = "65536")]
+        max_bytes: u64,
+
         /// Job ID of a previously created job.
         #[arg(add = ArgValueCompleter::new(agent_exec::completions::complete_created_jobs))]
         job_id: String,
@@ -298,6 +318,26 @@ enum Command {
         /// (e.g. "bash -lc"). Overrides the config file and built-in default.
         #[arg(long, value_name = "PROGRAM AND FLAGS")]
         shell_wrapper: Option<String>,
+
+        /// Wait for inline output observation before returning.
+        #[arg(long, default_value = "true", action = clap::ArgAction::Set)]
+        wait: bool,
+
+        /// Maximum wait time in seconds for inline observation.
+        #[arg(long, default_value = "10", conflicts_with = "forever")]
+        until: u64,
+
+        /// Wait indefinitely for terminal state / observation budget.
+        #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue, conflicts_with = "until")]
+        forever: bool,
+
+        /// Alias for `--wait false --until 0`.
+        #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue)]
+        no_wait: bool,
+
+        /// Maximum bytes to include from the head of each stream.
+        #[arg(long, default_value = "65536")]
+        max_bytes: u64,
 
         /// Command and arguments to run.
         #[arg(required = true, trailing_var_arg = true, value_hint = ValueHint::CommandWithArguments)]
@@ -709,10 +749,25 @@ fn run(cli: Cli) -> Result<()> {
             })?;
         }
 
-        Command::Start { root, job_id } => {
+        Command::Start {
+            root,
+            wait,
+            until,
+            forever,
+            no_wait,
+            max_bytes,
+            job_id,
+        } => {
+            let effective_wait = if no_wait { false } else { wait };
+            let effective_until_seconds = if no_wait { 0 } else { until };
+            let effective_forever = if no_wait { false } else { forever };
             agent_exec::start::execute(agent_exec::start::StartOpts {
                 job_id: &job_id,
                 root: root.as_deref(),
+                wait: effective_wait,
+                until_seconds: effective_until_seconds,
+                forever: effective_forever,
+                max_bytes,
             })?;
         }
 
@@ -739,6 +794,11 @@ fn run(cli: Cli) -> Result<()> {
             stdin_file,
             config,
             shell_wrapper,
+            wait,
+            until,
+            forever,
+            no_wait,
+            max_bytes,
             command,
         } => {
             // --inherit-env and --no-inherit-env are mutually exclusive (enforced by clap).
@@ -751,9 +811,16 @@ fn run(cli: Cli) -> Result<()> {
                 config.as_deref(),
             )?;
             let resolved_stdin = agent_exec::run::resolve_stdin_source(stdin, stdin_file);
+            let effective_wait = if no_wait { false } else { wait };
+            let effective_until_seconds = if no_wait { 0 } else { until };
+            let effective_forever = if no_wait { false } else { forever };
             agent_exec::run::execute(agent_exec::run::RunOpts {
                 command,
                 root: root.as_deref(),
+                wait: effective_wait,
+                until_seconds: effective_until_seconds,
+                forever: effective_forever,
+                max_bytes,
                 timeout_ms: timeout.saturating_mul(1000),
                 kill_after_ms: kill_after.saturating_mul(1000),
                 cwd: cwd.as_deref(),
