@@ -201,26 +201,6 @@ enum Command {
         #[arg(long)]
         root: Option<String>,
 
-        /// Wait N ms before returning (0 = return immediately, default = 10000ms).
-        #[arg(long, default_value = "10000")]
-        snapshot_after: u64,
-
-        /// Number of tail lines to include in snapshot.
-        #[arg(long, default_value = "50")]
-        tail_lines: u64,
-
-        /// Maximum bytes for tail.
-        #[arg(long, default_value = "65536")]
-        max_bytes: u64,
-
-        /// Wait for the job to reach a terminal state before returning.
-        #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue)]
-        wait: bool,
-
-        /// Poll interval in seconds while waiting for a terminal state.
-        #[arg(long = "wait-poll", default_value = "1")]
-        wait_poll_seconds: u64,
-
         /// Job ID of a previously created job.
         #[arg(add = ArgValueCompleter::new(agent_exec::completions::complete_created_jobs))]
         job_id: String,
@@ -228,18 +208,6 @@ enum Command {
 
     /// Run a command as a background job and return JSON immediately.
     Run {
-        /// Wait N ms before returning (0 = return immediately, default = 10000ms).
-        #[arg(long, default_value = "10000")]
-        snapshot_after: u64,
-
-        /// Number of tail lines to include in snapshot.
-        #[arg(long, default_value = "50")]
-        tail_lines: u64,
-
-        /// Maximum bytes for tail.
-        #[arg(long, default_value = "65536")]
-        max_bytes: u64,
-
         /// Timeout in milliseconds; 0 = no timeout.
         #[arg(long, default_value = "0")]
         timeout: u64,
@@ -291,29 +259,6 @@ enum Command {
         /// Interval (ms) at which state.json.updated_at is refreshed; 0 = disabled.
         #[arg(long, default_value = "0")]
         progress_every: u64,
-
-        /// Wait for the job to reach a terminal state before returning.
-        /// When set, the response includes exit_code, finished_at, and final_snapshot.
-        #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue)]
-        wait: bool,
-
-        /// Poll interval in seconds while waiting for a terminal state.
-        #[arg(long = "wait-poll", default_value = "1")]
-        wait_poll_seconds: u64,
-
-        /// Maximum wait duration in seconds when used with --wait (default: 30).
-        #[arg(long, requires = "wait", conflicts_with = "forever")]
-        until: Option<u64>,
-
-        /// Wait indefinitely until the job reaches a terminal state (requires --wait).
-        #[arg(
-            long,
-            default_value = "false",
-            action = clap::ArgAction::SetTrue,
-            requires = "wait",
-            conflicts_with = "until"
-        )]
-        forever: bool,
 
         /// Shell command string to run on job completion; executed via the configured shell
         /// wrapper. Event JSON is sent to stdin.
@@ -764,30 +709,14 @@ fn run(cli: Cli) -> Result<()> {
             })?;
         }
 
-        Command::Start {
-            root,
-            snapshot_after,
-            tail_lines,
-            max_bytes,
-            wait,
-            wait_poll_seconds,
-            job_id,
-        } => {
+        Command::Start { root, job_id } => {
             agent_exec::start::execute(agent_exec::start::StartOpts {
                 job_id: &job_id,
                 root: root.as_deref(),
-                snapshot_after,
-                tail_lines,
-                max_bytes,
-                wait,
-                wait_poll_ms: wait_poll_seconds.saturating_mul(1000),
             })?;
         }
 
         Command::Run {
-            snapshot_after,
-            tail_lines,
-            max_bytes,
             timeout,
             kill_after,
             cwd,
@@ -799,10 +728,6 @@ fn run(cli: Cli) -> Result<()> {
             tags,
             log,
             progress_every,
-            wait,
-            wait_poll_seconds,
-            until,
-            forever,
             notify_command,
             notify_file,
             output_pattern,
@@ -829,9 +754,6 @@ fn run(cli: Cli) -> Result<()> {
             agent_exec::run::execute(agent_exec::run::RunOpts {
                 command,
                 root: root.as_deref(),
-                snapshot_after,
-                tail_lines,
-                max_bytes,
                 timeout_ms: timeout,
                 kill_after_ms: kill_after,
                 cwd: cwd.as_deref(),
@@ -843,10 +765,6 @@ fn run(cli: Cli) -> Result<()> {
                 tags,
                 log: log.as_deref(),
                 progress_every_ms: progress_every,
-                wait,
-                wait_poll_seconds,
-                wait_until_seconds: until.unwrap_or(30),
-                wait_forever: forever,
                 notify_command,
                 notify_file,
                 output_pattern,

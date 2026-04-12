@@ -15,14 +15,15 @@ When `agent-exec status <job_id>` and `agent-exec wait <job_id>` are evaluated f
 Then the regression analysis must treat this as a distinct failure shape from descendant-held stdio only
 And any accepted fix must be verified against this workload-liveness case, not only shell-only synthetic cases
 
-### Requirement: snapshot/tail の末尾取得
+### Requirement: tail がログ末尾観測を担う
 
-`run` の `snapshot` と `tail` は `stdout.log`/`stderr.log` の末尾から生成しなければならない（MUST）。`tail-lines` と `max-bytes` の両制約で切り詰め、`encoding="utf-8-lossy"` を返さなければならない（MUST）。
+ログ末尾の観測は `tail` が担わなければならない（MUST）。`run` と `start` は snapshot を返してはならず（MUST NOT）、`tail-lines` と `max-bytes` による切り詰め契約は `tail` にのみ適用されなければならない（MUST）。
 
-#### Scenario: tail の制約適用
-Given `agent-exec tail <job_id> --lines 10 --max-bytes 1024` を実行する
-When ログ末尾が取得される
-Then `stdout_tail`/`stderr_tail` は制約内の内容であり `encoding` が含まれる
+#### Scenario: tail が末尾観測 API である
+Given 実行中または完了済みのジョブが存在する
+When `agent-exec tail --tail-lines 10 --max-bytes 1024 <job_id>` を実行する
+Then `stdout_tail`/`stderr_tail` と `encoding="utf-8-lossy"` が返る
+And `run`/`start` のレスポンスには `snapshot` が含まれない
 
 ### Requirement: ログファイル
 
@@ -439,21 +440,25 @@ Then どちらも usage error で失敗する
 **When**: `agent-exec wait --forever <job_id>` is executed
 **Then**: the response state is terminal after the job exits
 
-### Requirement: run --wait の待機期限オプション
+### Requirement: run と start の観測責務削除
 
-`run` は `--wait` が指定された場合、既定では最大 30 秒までジョブの状態変化を待機しなければならない（MUST）。待機上限は `--until <seconds>` によって上書きできなければならない（MUST）。`--forever` が指定された場合は終端状態 (`exited|killed|failed`) になるまで無制限に待機しなければならない（MUST）。
+`run` と `start` はジョブ起動コマンドとして即時返却しなければならない（MUST）。完了待機は `wait` が担い、出力取得は `tail` が担わなければならない（MUST）。`run --wait` と `start --wait`、および snapshot 系オプションは受け付けてはならない（MUST NOT）。
 
-`--until` と `--forever` は `--wait` と組み合わせる観測用オプションであり、同時指定してはならない（MUST NOT）。`--wait` なしで `--until` / `--forever` を受け付けてはならない（MUST）。待機期限指定は秒単位で統一しなければならない（MUST）。
+#### Scenario: start は snapshot なしで即時返却する
 
-#### Scenario: --wait --until uses second-based deadline
+Given `agent-exec create -- sh -c "sleep 1; echo hi"` で作成した job がある
+When `agent-exec start <job_id>` を実行する
+Then `start` の JSON に `job_id` と初期 state が含まれる
+And `snapshot` は含まれない
+And `final_snapshot` は含まれない
+And 後続の `agent-exec wait <job_id>` と `agent-exec tail <job_id>` で完了待機と出力取得が行える
 
-**Given**: `agent-exec run --wait --until 1 --snapshot-after 0 -- sleep 60` is executed
-**When**: the wait deadline is reached before the job exits
-**Then**: the response state is `created` or `running`
-**And**: the job continues running after the `run` command returns
+#### Scenario: start は削除済み観測オプションを拒否する
 
-#### Scenario: wait-deadline flags require --wait
+Given `agent-exec start --snapshot-after 10 <job_id>` を実行する
+When CLI 引数を検証する
+Then usage error で失敗する
 
-**Given**: a user executes `agent-exec run --until 1 -- sh -c "echo hi"`
-**When**: clap validates arguments
-**Then**: the command fails with usage error
+And given `agent-exec start --wait <job_id>` を実行する
+When CLI 引数を検証する
+Then usage error で失敗する
