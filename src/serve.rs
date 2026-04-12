@@ -209,8 +209,8 @@ fn run_exec_inner(
     do_wait: bool,
 ) -> Result<serde_json::Value> {
     use crate::run::{
-        SnapshotWaitOpts, SpawnSupervisorParams, now_rfc3339_pub, pre_create_log_files,
-        resolve_effective_cwd, run_snapshot_wait, spawn_supervisor_process,
+        RunWaitOpts, SpawnSupervisorParams, now_rfc3339_pub, pre_create_log_files,
+        resolve_effective_cwd, run_wait, spawn_supervisor_process,
     };
 
     let elapsed_start = std::time::Instant::now();
@@ -277,19 +277,15 @@ fn run_exec_inner(
     let stdout_log_path = job_dir.stdout_path().display().to_string();
     let stderr_log_path = job_dir.stderr_path().display().to_string();
 
-    let (final_state, exit_code_opt, finished_at_opt, snapshot, final_snapshot_opt, waited_ms) =
-        run_snapshot_wait(
-            &job_dir,
-            &SnapshotWaitOpts {
-                snapshot_after: 0,
-                tail_lines: 50,
-                max_bytes: 65536,
-                wait: do_wait,
-                wait_poll_ms: 200,
-                wait_until_ms: 0,
-                wait_forever: true,
-            },
-        );
+    let (final_state, exit_code_opt, finished_at_opt) = run_wait(
+        &job_dir,
+        &RunWaitOpts {
+            wait: do_wait,
+            wait_poll_ms: 200,
+            wait_until_ms: 0,
+            wait_forever: true,
+        },
+    );
 
     let elapsed_ms = elapsed_start.elapsed().as_millis() as u64;
 
@@ -300,14 +296,11 @@ fn run_exec_inner(
             state: final_state,
             tags: vec![],
             env_vars: vec![],
-            snapshot,
             stdout_log_path,
             stderr_log_path,
-            waited_ms,
             elapsed_ms,
             exit_code: exit_code_opt,
             finished_at: finished_at_opt,
-            final_snapshot: final_snapshot_opt,
         },
     );
 

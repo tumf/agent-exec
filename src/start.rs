@@ -7,11 +7,8 @@
 use anyhow::Result;
 use tracing::info;
 
-use crate::jobstore::{InvalidJobState, JobDir, resolve_root};
-use crate::run::{
-    SnapshotWaitOpts, SpawnSupervisorParams, mask_env_vars, run_snapshot_wait,
-    spawn_supervisor_process,
-};
+use crate::jobstore::{resolve_root, InvalidJobState, JobDir};
+use crate::run::{mask_env_vars, spawn_supervisor_process, SpawnSupervisorParams};
 use crate::schema::{JobStatus, Response, RunData};
 
 /// Options for the `start` sub-command.
@@ -21,16 +18,6 @@ pub struct StartOpts<'a> {
     pub job_id: &'a str,
     /// Override for jobs root directory.
     pub root: Option<&'a str>,
-    /// Milliseconds to wait before returning; 0 = return immediately.
-    pub snapshot_after: u64,
-    /// Number of tail lines to include in snapshot.
-    pub tail_lines: u64,
-    /// Max bytes for tail.
-    pub max_bytes: u64,
-    /// If true, wait for the job to reach a terminal state before returning.
-    pub wait: bool,
-    /// Poll interval in milliseconds when `wait` is true.
-    pub wait_poll_ms: u64,
 }
 
 /// Execute `start`: launch a created job and return JSON.
@@ -101,24 +88,6 @@ pub fn execute(opts: StartOpts) -> Result<()> {
     let stdout_log_path = job_dir.stdout_path().display().to_string();
     let stderr_log_path = job_dir.stderr_path().display().to_string();
 
-    let elapsed_start = std::time::Instant::now();
-
-    let (final_state, exit_code_opt, finished_at_opt, snapshot, final_snapshot_opt, waited_ms) =
-        run_snapshot_wait(
-            &job_dir,
-            &SnapshotWaitOpts {
-                snapshot_after: opts.snapshot_after,
-                tail_lines: opts.tail_lines,
-                max_bytes: opts.max_bytes,
-                wait: opts.wait,
-                wait_poll_ms: opts.wait_poll_ms,
-                wait_until_ms: 0,
-                wait_forever: true,
-            },
-        );
-
-    let elapsed_ms = elapsed_start.elapsed().as_millis() as u64;
-
     // The response uses the masked env_vars (display view), not the runtime values.
     let masked_env_vars = mask_env_vars(&meta.env_vars_runtime, &meta.mask);
 
@@ -126,17 +95,14 @@ pub fn execute(opts: StartOpts) -> Result<()> {
         "start",
         RunData {
             job_id: job_dir.job_id.clone(),
-            state: final_state,
+            state: JobStatus::Running.as_str().to_string(),
             tags: meta.tags.clone(),
             env_vars: masked_env_vars,
-            snapshot,
             stdout_log_path,
             stderr_log_path,
-            waited_ms,
-            elapsed_ms,
-            exit_code: exit_code_opt,
-            finished_at: finished_at_opt,
-            final_snapshot: final_snapshot_opt,
+            elapsed_ms: 0,
+            exit_code: None,
+            finished_at: None,
         },
     )
     .print();

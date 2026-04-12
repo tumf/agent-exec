@@ -10,3 +10,16 @@
 ## Future Work
 
 - 必要なら `wait` / `tail` をまとめて呼ぶ高レベル convenience サブコマンドを別提案で検討する
+
+## Implementation Blocker #1
+- category: other
+- summary: snapshot/start-wait 契約前提の大規模 integration test 群が現行仕様と不整合で、一括更新なしでは変更完了を検証できない
+- evidence:
+  - tests/integration.rs: 複数箇所で `--snapshot-after` / `start --wait` / `snapshot` / `final_snapshot` / `waited_ms` を前提
+  - `cargo test --test integration` 実行結果で `unexpected argument '--snapshot-after'` および snapshot 系期待不一致が多数発生
+- impact: task 4-6 の完了判定に必要な integration test 更新と検証が未完了
+- unblock_actions:
+  - integration tests を `run/start` 非snapshot契約と `wait` / `tail` 観測導線へ全面更新する
+  - README/spec とテスト期待値を新契約へ同期し、`cargo test --test integration` / clippy / full test を再通過させる
+- owner: engineering
+- decision_due: 2026-04-12
