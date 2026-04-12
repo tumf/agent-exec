@@ -15,14 +15,15 @@ When `agent-exec status <job_id>` and `agent-exec wait <job_id>` are evaluated f
 Then the regression analysis must treat this as a distinct failure shape from descendant-held stdio only
 And any accepted fix must be verified against this workload-liveness case, not only shell-only synthetic cases
 
-### Requirement: snapshot/tail の末尾取得
+### Requirement: tail がログ末尾観測を担う
 
-`run` の `snapshot` と `tail` は `stdout.log`/`stderr.log` の末尾から生成しなければならない（MUST）。`tail-lines` と `max-bytes` の両制約で切り詰め、`encoding="utf-8-lossy"` を返さなければならない（MUST）。
+ログ末尾の観測は `tail` が担わなければならない（MUST）。`run` と `start` は snapshot を返してはならず（MUST NOT）、`tail-lines` と `max-bytes` による切り詰め契約は `tail` にのみ適用されなければならない（MUST）。
 
-#### Scenario: tail の制約適用
-Given `agent-exec tail <job_id> --lines 10 --max-bytes 1024` を実行する
-When ログ末尾が取得される
-Then `stdout_tail`/`stderr_tail` は制約内の内容であり `encoding` が含まれる
+#### Scenario: tail が末尾観測 API である
+Given 実行中または完了済みのジョブが存在する
+When `agent-exec tail --tail-lines 10 --max-bytes 1024 <job_id>` を実行する
+Then `stdout_tail`/`stderr_tail` と `encoding="utf-8-lossy"` が返る
+And `run`/`start` のレスポンスには `snapshot` が含まれない
 
 ### Requirement: ログファイル
 

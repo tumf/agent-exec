@@ -7,8 +7,8 @@
 use anyhow::Result;
 use tracing::info;
 
-use crate::jobstore::{resolve_root, InvalidJobState, JobDir};
-use crate::run::{mask_env_vars, spawn_supervisor_process, SpawnSupervisorParams};
+use crate::jobstore::{InvalidJobState, JobDir, resolve_root};
+use crate::run::{SpawnSupervisorParams, mask_env_vars, spawn_supervisor_process};
 use crate::schema::{JobStatus, Response, RunData};
 
 /// Options for the `start` sub-command.

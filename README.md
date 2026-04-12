@@ -85,15 +85,15 @@ lifecycle where you define a job first and start it later.
 JOB=$(agent-exec create -- echo "deferred hello" | jq -r .job_id)
 
 # Step 2 — launch the job when ready
-agent-exec start --wait "$JOB"
+agent-exec start "$JOB"
 ```
 
 - `create` persists the command, environment, timeouts, and notification
   settings to `meta.json` and writes `state.json` with `state="created"`.
   It returns `type="create"` and the `job_id`.
 - `start` reads the persisted definition and spawns the supervisor.
-  It returns `type="start"` with the same snapshot/wait payload as `run`.
-- `run` remains available as the convenience path for immediate execution.
+  It returns launch metadata only; use `wait`/`tail` for observation.
+- `run` remains available as the convenience path for immediate execution (also launch metadata only).
 
 ### Persisted environment
 
@@ -151,7 +151,7 @@ Persists the job definition. Accepts the same definition-time options as `run`
 (command, `--cwd`, `--env`, `--env-file`, `--mask`, `--stdin`, `--stdin-file`,
 `--timeout`, `--kill-after`, `--progress-every`, `--notify-command`,
 `--notify-file`, `--shell-wrapper`).
-Does **not** accept snapshot/wait options (`--snapshot-after`, `--wait`).
+Does **not** accept observation options (`--snapshot-after`, `--tail-lines`, `--max-bytes`, `--wait`, `--wait-poll-ms`).
 
 `--stdin` / `--stdin-file` are materialized into `<job-dir>/stdin.bin` during
 `create`. Later `start` reuses the persisted `meta.json.stdin_file` value and
@@ -166,19 +166,13 @@ and `stderr_log_path`.
 agent-exec start [OPTIONS] <JOB_ID>
 ```
 
-Launches the job whose definition was persisted by `create`. Accepts
-observation-time options only:
+Launches the job whose definition was persisted by `create`.
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--snapshot-after <ms>` | 10000 | Wait N ms before returning |
-| `--tail-lines <N>` | 50 | Lines in snapshot |
-| `--max-bytes <N>` | 65536 | Max bytes in snapshot |
-| `--wait` | false | Block until terminal state |
-| `--wait-poll-ms <ms>` | 200 | Poll interval with `--wait` |
+`start` is launch-only and accepts only the job identifier (plus global flags like `--root`/`--yaml`).
+Observation is intentionally separated: use `wait` for completion state and `tail` for output.
 
-Returns `type="start"` with the same payload shape as `run`. Only jobs in
-`created` state can be started; any other state returns `error.code="invalid_state"`.
+Returns `type="start"` launch metadata (`job_id`, `state`, `stdout_log_path`, `stderr_log_path`, `elapsed_ms`).
+Only jobs in `created` state can be started; any other state returns `error.code="invalid_state"`.
 
 ### `run` — start a background job
 
@@ -190,18 +184,14 @@ Key options:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--snapshot-after <ms>` | 10000 | Wait N ms before returning (0 = return immediately) |
 | `--timeout <ms>` | 0 (none) | Kill job after N ms |
 | `--kill-after <ms>` | 0 | ms after SIGTERM to send SIGKILL |
-| `--tail-lines <N>` | 50 | Lines of output captured in the snapshot |
 | `--cwd <dir>` | inherited | Working directory |
 | `--env KEY=VALUE` | — | Set environment variable (repeatable) |
 | `--mask KEY` | — | Redact secret values from JSON output (repeatable) |
 | `--stdin <VALUE>` | — | Provide job stdin content directly. Use `--stdin -` for pipe/heredoc/redirect input. |
 | `--stdin-file <PATH>` | — | Copy file contents into job-local `stdin.bin` and use it as child stdin. |
 | `--tag <TAG>` | — | Assign a user-defined tag to the job (repeatable; duplicates deduplicated) |
-| `--wait` | false | Block until the job reaches a terminal state |
-| `--wait-poll-ms <ms>` | 200 | Poll interval used with `--wait` |
 | `--notify-command <COMMAND>` | — | Run a shell command when the job finishes; event JSON is sent on stdin |
 | `--notify-file <PATH>` | — | Append a `job.finished` event as NDJSON |
 | `--config <PATH>` | XDG default | Load shell wrapper config from a specific `config.toml` |
@@ -345,7 +335,7 @@ Updates the persisted notification configuration for an existing job. This is a 
 **Example — completion notification**
 
 ```bash
-JOB=$(agent-exec run --snapshot-after 0 -- sleep 5 | jq -r .job_id)
+JOB=$(agent-exec run -- sleep 5 | jq -r .job_id)
 agent-exec notify set "$JOB" --command 'cat > /tmp/event.json'
 ```
 
@@ -353,7 +343,7 @@ agent-exec notify set "$JOB" --command 'cat > /tmp/event.json'
 
 ```bash
 # Run a job that may print error lines.
-JOB=$(agent-exec run --snapshot-after 0 -- sh -c 'sleep 1; echo ERROR foo' | jq -r .job_id)
+JOB=$(agent-exec run -- sh -c 'sleep 1; echo ERROR foo' | jq -r .job_id)
 
 # Configure output-match: fire on every line containing "ERROR".
 agent-exec notify set "$JOB" \
@@ -651,7 +641,7 @@ Prefer sending `job_id` and `event_path` instead of the full JSON blob when the 
 Use `notify set` when the job is already running and you only learn the OpenClaw destination afterward.
 
 ```bash
-JOB=$(agent-exec run --snapshot-after 0 -- ./scripts/run-heavy-task.sh | jq -r .job_id)
+JOB=$(agent-exec run -- ./scripts/run-heavy-task.sh | jq -r .job_id)
 SESSION_ID="01bb09d5-6485-4a50-8d3b-3f6e80c61f9c"
 REPLY_CHANNEL="telegram"
 

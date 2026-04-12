@@ -103,7 +103,6 @@ impl<'a> Default for RunOpts<'a> {
     }
 }
 
-
 /// Parameters for spawning a supervisor process.
 ///
 /// Shared by `run::execute` and `start::execute`.
