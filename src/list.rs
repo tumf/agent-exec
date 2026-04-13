@@ -30,6 +30,7 @@ use anyhow::Result;
 use tracing::debug;
 
 use crate::jobstore::resolve_root;
+use crate::jobstore::short_job_id;
 use crate::run::resolve_effective_cwd;
 use crate::schema::{JobSummary, ListData, Response};
 use crate::tag::{matches_all_patterns, validate_filter_pattern};
@@ -194,6 +195,7 @@ pub fn execute(opts: ListOpts) -> Result<()> {
             .and_then(|s| s.started_at().map(|t| t.to_string()));
         jobs.push(JobSummary {
             job_id: meta.job.id.clone(),
+            short_job_id: short_job_id(&meta.job.id),
             state: state_str,
             exit_code,
             created_at: meta.created_at.clone(),

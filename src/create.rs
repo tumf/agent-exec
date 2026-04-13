@@ -6,9 +6,8 @@
 
 use anyhow::{Context, Result};
 use tracing::info;
-use ulid::Ulid;
 
-use crate::jobstore::{JobDir, resolve_root};
+use crate::jobstore::{JobDir, generate_job_id, resolve_root};
 use crate::run::{
     mask_env_vars, materialize_stdin_for_job, pre_create_log_files, resolve_effective_cwd,
     validate_stdin_source,
@@ -78,7 +77,7 @@ pub fn execute(opts: CreateOpts) -> Result<()> {
     std::fs::create_dir_all(&root)
         .with_context(|| format!("create jobs root {}", root.display()))?;
 
-    let job_id = Ulid::new().to_string();
+    let job_id = generate_job_id(&root)?;
     let created_at = crate::run::now_rfc3339_pub();
 
     let env_keys: Vec<String> = opts

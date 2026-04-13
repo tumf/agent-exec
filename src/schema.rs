@@ -230,6 +230,8 @@ pub struct SchemaData {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct JobSummary {
     pub job_id: String,
+    /// Human-facing short identifier (first 7 characters of job_id).
+    pub short_job_id: String,
     /// Job state: created | running | exited | killed | failed | unknown
     pub state: String,
     #[serde(skip_serializing_if = "Option::is_none")]
