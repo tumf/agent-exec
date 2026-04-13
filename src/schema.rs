@@ -78,6 +78,8 @@ pub struct ErrorDetail {
     pub message: String,
     /// Whether the caller may retry the same request and expect a different outcome.
     pub retryable: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
 }
 
 impl ErrorResponse {
@@ -97,8 +99,14 @@ impl ErrorResponse {
                 code: code.into(),
                 message: message.into(),
                 retryable,
+                details: None,
             },
         }
+    }
+
+    pub fn with_details(mut self, details: serde_json::Value) -> Self {
+        self.error.details = Some(details);
+        self
     }
 
     pub fn print(&self) {
@@ -817,5 +825,30 @@ mod tests {
         let deserialized: RunData = serde_json::from_str(&serialized).unwrap();
         assert_eq!(deserialized.signal.as_deref(), Some("SIGKILL"));
         assert_eq!(deserialized.duration_ms, Some(2000));
+    }
+
+    #[test]
+    fn error_detail_omits_details_when_none() {
+        let resp = ErrorResponse::new("test_error", "something went wrong", false);
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(
+            json["error"].get("details").is_none(),
+            "details should be omitted when None: {json}"
+        );
+    }
+
+    #[test]
+    fn error_detail_includes_details_when_present() {
+        let resp = ErrorResponse::new("ambiguous_job_id", "ambiguous prefix", false).with_details(
+            serde_json::json!({
+                "candidates": ["id1", "id2"],
+                "truncated": false,
+            }),
+        );
+        let json = serde_json::to_value(&resp).unwrap();
+        let details = &json["error"]["details"];
+        assert!(!details.is_null(), "details must be present: {json}");
+        assert_eq!(details["candidates"].as_array().unwrap().len(), 2);
+        assert_eq!(details["truncated"], false);
     }
 }

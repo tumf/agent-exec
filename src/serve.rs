@@ -203,15 +203,15 @@ fn err_resp(status: StatusCode, code: &str, message: &str) -> AxumResponse {
 fn map_err_to_response(e: anyhow::Error) -> AxumResponse {
     if e.downcast_ref::<JobNotFound>().is_some() {
         err_resp(StatusCode::NOT_FOUND, "job_not_found", &format!("{e:#}"))
-    } else if e
-        .downcast_ref::<crate::jobstore::AmbiguousJobId>()
-        .is_some()
-    {
-        err_resp(
-            StatusCode::BAD_REQUEST,
-            "ambiguous_job_id",
-            &format!("{e:#}"),
-        )
+    } else if let Some(amb) = e.downcast_ref::<crate::jobstore::AmbiguousJobId>() {
+        let truncated = amb.candidates.len() > 20;
+        let candidates: Vec<&str> = amb.candidates.iter().take(20).map(|s| s.as_str()).collect();
+        let mut json = error_json("ambiguous_job_id", &format!("{e:#}"));
+        json["error"]["details"] = serde_json::json!({
+            "candidates": candidates,
+            "truncated": truncated,
+        });
+        (StatusCode::BAD_REQUEST, Json(json)).into_response()
     } else if e
         .downcast_ref::<crate::jobstore::InvalidJobState>()
         .is_some()

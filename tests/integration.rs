@@ -5517,6 +5517,29 @@ fn ambiguous_prefix_returns_error() {
         !v["error"]["retryable"].as_bool().unwrap_or(true),
         "retryable must be false: {v}"
     );
+
+    let details = &v["error"]["details"];
+    assert!(!details.is_null(), "error.details must be present: {v}");
+    let candidates = details["candidates"]
+        .as_array()
+        .expect("details.candidates must be an array");
+    assert!(
+        candidates.len() >= 2,
+        "candidates must contain at least 2 entries: {v}"
+    );
+    assert!(
+        candidates.iter().any(|c| c.as_str() == Some(&id1)),
+        "candidates must include id1: {v}"
+    );
+    assert!(
+        candidates.iter().any(|c| c.as_str() == Some(&id2)),
+        "candidates must include id2: {v}"
+    );
+    assert_eq!(
+        details["truncated"].as_bool(),
+        Some(false),
+        "truncated must be false for 2 candidates: {v}"
+    );
 }
 
 #[test]

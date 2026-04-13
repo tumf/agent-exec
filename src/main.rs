@@ -705,8 +705,16 @@ fn main() {
         // "invalid_tag" is not retryable: the tag value is malformed.
         // "internal_error" is not retryable by default; a transient I/O error
         // would need its own code+retryable=true if we ever surface it.
-        if e.downcast_ref::<AmbiguousJobId>().is_some() {
-            ErrorResponse::new("ambiguous_job_id", format!("{e:#}"), false).print();
+        if let Some(amb) = e.downcast_ref::<AmbiguousJobId>() {
+            let truncated = amb.candidates.len() > 20;
+            let candidates: Vec<&str> =
+                amb.candidates.iter().take(20).map(|s| s.as_str()).collect();
+            ErrorResponse::new("ambiguous_job_id", format!("{e:#}"), false)
+                .with_details(serde_json::json!({
+                    "candidates": candidates,
+                    "truncated": truncated,
+                }))
+                .print();
         } else if e.downcast_ref::<JobNotFound>().is_some() {
             ErrorResponse::new("job_not_found", format!("{e:#}"), false).print();
         } else if e.downcast_ref::<UnknownSourceScheme>().is_some() {
