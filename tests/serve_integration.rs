@@ -373,6 +373,26 @@ fn test_status_ambiguous_prefix_returns_400() {
     assert_eq!(json["ok"], false);
     assert_eq!(json["error"]["code"], "ambiguous_job_id");
     assert_common_fields(&json);
+
+    let details = &json["error"]["details"];
+    assert!(!details.is_null(), "error.details must be present: {json}");
+    let candidates = details["candidates"]
+        .as_array()
+        .expect("details.candidates must be an array");
+    assert_eq!(candidates.len(), 2, "expected 2 candidates: {json}");
+    assert!(
+        candidates.iter().any(|c| c.as_str() == Some(first)),
+        "candidates must include first ID: {json}"
+    );
+    assert!(
+        candidates.iter().any(|c| c.as_str() == Some(second)),
+        "candidates must include second ID: {json}"
+    );
+    assert_eq!(
+        details["truncated"].as_bool(),
+        Some(false),
+        "truncated must be false: {json}"
+    );
 }
 
 #[test]
