@@ -1607,8 +1607,23 @@ fn run_rejects_removed_tail_lines_flag() {
 #[test]
 fn run_accepts_wait_flag() {
     let h = TestHarness::new();
-    let v = h.run(&["run", "--wait", "true", "echo", "valid"]);
+    let v = h.run(&["run", "--wait", "echo", "valid"]);
     assert_envelope(&v, "run", true);
+}
+
+#[test]
+fn run_accepts_wait_bool_forms_for_backward_compatibility() {
+    let h = TestHarness::new();
+    let v_true = h.run(&["run", "--wait", "true", "echo", "valid_true"]);
+    assert_envelope(&v_true, "run", true);
+
+    let v_false = h.run(&["run", "--wait", "false", "echo", "valid_false"]);
+    assert_envelope(&v_false, "run", true);
+    assert_eq!(
+        v_false["waited_ms"].as_u64().unwrap_or(u64::MAX),
+        0,
+        "--wait false must skip additional waiting"
+    );
 }
 
 #[test]
@@ -1616,8 +1631,28 @@ fn start_accepts_wait_flag() {
     let h = TestHarness::new();
     let create_v = h.run(&["create", "--", "echo", "start_wait_enabled"]);
     let job_id = create_v["job_id"].as_str().expect("job_id missing");
-    let v = h.run(&["start", "--wait", "true", job_id]);
+    let v = h.run(&["start", "--wait", job_id]);
     assert_envelope(&v, "start", true);
+}
+
+#[test]
+fn start_accepts_wait_bool_forms_for_backward_compatibility() {
+    let h = TestHarness::new();
+
+    let create_true = h.run(&["create", "--", "echo", "start_wait_true"]);
+    let job_id_true = create_true["job_id"].as_str().expect("job_id missing");
+    let v_true = h.run(&["start", "--wait", "true", job_id_true]);
+    assert_envelope(&v_true, "start", true);
+
+    let create_false = h.run(&["create", "--", "echo", "start_wait_false"]);
+    let job_id_false = create_false["job_id"].as_str().expect("job_id missing");
+    let v_false = h.run(&["start", "--wait", "false", job_id_false]);
+    assert_envelope(&v_false, "start", true);
+    assert_eq!(
+        v_false["waited_ms"].as_u64().unwrap_or(u64::MAX),
+        0,
+        "start --wait false must skip additional waiting"
+    );
 }
 
 #[test]

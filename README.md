@@ -168,7 +168,7 @@ agent-exec start [OPTIONS] <JOB_ID>
 Launches the job whose definition was persisted by `create`.
 
 `start` accepts wait controls (`--wait`, `--until`, `--forever`, `--no-wait`) and `--max-bytes` for head extraction.
-既定では `--wait --until 10` 相当で inline output を返し、`--no-wait` で待機をスキップできます。
+既定では bare `--wait`（`--wait true` と同義）と `--until 10` 相当で inline output を返し、`--no-wait`（`--wait false --until 0` 相当）で待機をスキップできます。
 
 Returns `type="start"` with inline output fields (`stdout`, `stderr`, `stdout_range`, `stderr_range`, `stdout_total_bytes`, `stderr_total_bytes`, `encoding`).
 Only jobs in `created` state can be started; any other state returns `error.code="invalid_state"`.
@@ -190,7 +190,7 @@ Key options:
 | `--mask KEY` | — | Redact secret values from JSON output (repeatable) |
 | `--stdin <VALUE>` | — | Provide job stdin content directly. Use `--stdin -` for pipe/heredoc/redirect input. |
 | `--stdin-file <PATH>` | — | Copy file contents into job-local `stdin.bin` and use it as child stdin. |
-| `--wait` | true | Wait for inline output observation before returning. |
+| `--wait [true|false]` | true | Wait for inline output observation before returning. Bare `--wait` means `true` (backward-compatible with explicit bool). |
 | `--until <seconds>` | 10 | Maximum wait time for inline observation. |
 | `--forever` | false | Wait indefinitely for terminal/observation. |
 | `--no-wait` | false | Alias to skip waiting (`--until 0`). |

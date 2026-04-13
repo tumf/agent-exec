@@ -13,7 +13,7 @@ Choose it when work should outlive the current turn, return a job id immediately
 
 - Keep stdout machine-readable. `agent-exec` prints one JSON object to stdout; diagnostic logs belong on stderr.
 - Prefer `agent-exec run` for long-running or pollable work, then use `status`, `tail`, `wait`, `kill`, or `list` as needed.
-- `run` は既定で最大 10 秒待機し、inline output（`stdout`/`stderr` + range）を返す。即時返却が必要な場合は `--no-wait` を使う。
+- `run` は既定で bare `--wait`（`--wait true` と同義）として最大 10 秒待機し、inline output（`stdout`/`stderr` + range）を返す。即時返却が必要な場合は `--no-wait` を使う。
 - Use `--mask KEY` for secrets passed via `--env`; masked values appear as `***` in JSON and persisted metadata.
 - Use `--notify-command` or `--notify-file` when another process must react to job completion.
 
@@ -53,8 +53,8 @@ Use these options most often:
 
 Default behavior for `run`:
 
-- waits up to 10 seconds by default and returns inline output (`stdout`/`stderr`, ranges, total bytes)
-- use `--no-wait` for immediate return; use `wait` for guaranteed terminal state
+- waits up to 10 seconds by default (bare `--wait`, equivalent to `--wait true`) and returns inline output (`stdout`/`stderr`, ranges, total bytes)
+- use `--no-wait` (equivalent to `--wait false --until 0`) for immediate return; use `wait` for guaranteed terminal state
 - does not enforce a runtime limit unless `--timeout` is set
 - runs in the caller's current working directory unless `--cwd` is set
 - inherits the caller's environment unless `--no-inherit-env` is set

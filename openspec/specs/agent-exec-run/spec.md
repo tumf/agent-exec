@@ -417,7 +417,7 @@ Then usage error で失敗する
 
 ### Requirement: run/start の観測責務
 
-`run` と `start` は launch-only ではなく、既定では `--wait --until 10` 相当の待機予算内で初回レスポンスに inline output を含めなければならない（MUST）。`--no-wait` は `--wait --until 0` のエイリアスとして受け付けなければならない（MUST）。
+`run` と `start` は launch-only ではなく、既定では bare `--wait`（`--wait true` と同義）と `--until 10` 相当の待機予算内で初回レスポンスに inline output を含めなければならない（MUST）。`--no-wait` は `--wait false --until 0` のエイリアスとして受け付けなければならない（MUST）。
 
 `run` / `start` の `stdout` と `stderr` は、それぞれのログの先頭 `N` bytes を UTF-8 lossy で復元した文字列でなければならない（MUST）。`stdout_range[0]` と `stderr_range[0]` は 0 でなければならない（MUST）。
 
