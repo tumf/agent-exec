@@ -311,7 +311,7 @@ Then どちらも usage error で失敗する
 
 待機上限に達してもジョブは終了させてはならない（MUST NOT）。終端状態まで到達した場合は `state` と `exit_code` を返さなければならない（MUST）。待機上限に達してもジョブが非終端状態の場合は非終端の `state` を返し、`exit_code` を含めてはならない（MUST NOT）。
 
-待機期限指定は秒単位の `--until` に統一しなければならない（MUST）。ミリ秒前提の旧語彙や旧解釈を残す場合は、互換または拒否の挙動を明示的に定義しなければならない（MUST）。
+待機期限指定は秒単位の `--until` に統一しなければならない（MUST）。`--timeout-ms` は有効なオプションとして受け付けてはならない（MUST NOT）。
 
 #### Scenario: wait uses the default 30 second deadline
 
@@ -333,31 +333,6 @@ Then どちらも usage error で失敗する
 **When**: `agent-exec wait --forever <job_id>` is executed
 **Then**: the response state is terminal after the job exits
 
-### Requirement: run と start の観測責務削除
-
-`run` と `start` はジョブ起動コマンドとして即時返却しなければならない（MUST）。完了待機は `wait` が担い、出力取得は `tail` が担わなければならない（MUST）。`start --wait` と snapshot 系オプションは受け付けてはならない（MUST NOT）。
-
-#### Scenario: start は snapshot なしで即時返却する
-
-Given `agent-exec create -- sh -c "sleep 1; echo hi"` で作成した job がある
-When `agent-exec start <job_id>` を実行する
-Then `start` の JSON に `job_id` と初期 state が含まれる
-And `snapshot` は含まれない
-And `final_snapshot` は含まれない
-And 後続の `agent-exec wait <job_id>` と `agent-exec tail <job_id>` で完了待機と出力取得が行える
-
-#### Scenario: start は削除済み観測オプションを拒否する
-
-Given `agent-exec start --snapshot-after 10 <job_id>` を実行する
-When CLI 引数を検証する
-Then usage error で失敗する
-
-And given `agent-exec start --wait <job_id>` を実行する
-When CLI 引数を検証する
-Then usage error で失敗する
-
-## Requirements
-
 ### Requirement: 人間向け runtime 制御時間は秒単位である
 
 `run`、`create`、および同じ人間向け CLI surface を共有する関連サブコマンドが受け付ける runtime 制御時間オプション (`--timeout`, `--kill-after`, `--progress-every`) は秒単位で解釈しなければならない（MUST）。内部実装でミリ秒へ変換してもよいが、clap help、README、skills、統合テストは秒単位を正規表現として扱わなければならない（MUST）。
@@ -375,66 +350,22 @@ Then usage error で失敗する
 **When**: the persisted job definition is created
 **Then**: the human-facing contract for those values is seconds
 
-### Requirement: 削除済み snapshot-era guidance は正規 surface に残さない
+### Requirement: 削除済み snapshot-era field は正規 surface に残さない
 
-削除済みの `snapshot-after` およびそれに依存する旧 guidance は、現行 CLI の正規 help、README、skills、統合テストに残してはならない（MUST NOT）。現行の `run` は即時返却し、観測責務は `wait` / `tail` / `status` に分離されていることを正規 docs が示さなければならない（MUST）。
+削除済みの `snapshot-after` フラグは受け付けてはならない（MUST NOT）。snapshot-era field 名（`snapshot` / `final_snapshot` / `stdout_tail` / `stderr_tail` / `*_observed_bytes` / `*_included_bytes`）は現行 CLI の正規 help、README、skills、統合テストに残してはならない（MUST NOT）。現行の `run` は既定で inline output を返し、`tail` は同一 field 名で末尾観測を返さなければならない（MUST）。
 
-#### Scenario: removed snapshot option is rejected
+#### Scenario: removed snapshot-after option is rejected
 
 **Given**: a user executes `agent-exec run --snapshot-after 10 -- echo hi`
 **When**: CLI arguments are validated
 **Then**: the command fails with usage error
 
-#### Scenario: skills no longer teach snapshot-after
+#### Scenario: skills no longer teach snapshot-era fields
 
 **Given**: a user reads `skills/agent-exec/**`
 **When**: they look for current run examples
-**Then**: the live examples do not require `--snapshot-after 0` to explain immediate return
+**Then**: the live examples do not use `snapshot` or `stdout_tail`
 
-
-### Requirement: run の既定スナップショットと出力含有
-
-`run` は返却前に観測用 snapshot を生成するための追加待機を行ってはならない（MUST NOT）。`run` の主責務は job 起動と `job_id` / 初期 state / ログパスの返却であり、完了待機と出力観測は `wait` / `tail` / `status` に分離しなければならない（MUST）。
-
-#### Scenario: default run returns immediately without snapshot wait
-
-**Given**: `agent-exec run -- sh -c "sleep 1; echo hi"` is executed
-**When**: the JSON response is returned
-**Then**: `job_id` is present
-**And**: `snapshot` is absent
-**And**: `final_snapshot` is absent
-
-### Requirement: run は削除済み snapshot オプションを拒否する
-
-`run` は `snapshot-after`、`tail-lines`、`max-bytes`、および削除済み観測系フラグを受け付けてはならない（MUST NOT）。
-
-#### Scenario: run rejects removed snapshot-after option
-
-**Given**: `agent-exec run --snapshot-after 10 -- echo hi` is executed
-**When**: CLI arguments are validated
-**Then**: the command fails with usage error
-
-
-### Requirement: run/start の観測責務
-
-`run` と `start` は launch-only ではなく、既定では bare `--wait`（`--wait true` と同義）と `--until 10` 相当の待機予算内で初回レスポンスに inline output を含めなければならない（MUST）。`--no-wait` は `--wait false --until 0` のエイリアスとして受け付けなければならない（MUST）。
-
-`run` / `start` の `stdout` と `stderr` は、それぞれのログの先頭 `N` bytes を UTF-8 lossy で復元した文字列でなければならない（MUST）。`stdout_range[0]` と `stderr_range[0]` は 0 でなければならない（MUST）。
-
-#### Scenario: start 既定は初回 head を返す
-
-Given `agent-exec create -- sh -c "printf 'abc'"` で作成した job がある
-When `agent-exec start <job_id>` を実行する
-Then `start` の JSON は `stdout` に `abc` を含む
-And `stdout_range` は `[0, 3]` である
-And `stdout_total_bytes` は `3` である
-
-#### Scenario: start --no-wait は launch-only を明示選択する
-
-Given `agent-exec create -- sh -c "sleep 60"` で作成した job がある
-When `agent-exec start --no-wait <job_id>` を実行する
-Then `start` の JSON は追加待機なしに返る
-And ジョブは継続実行してよい
 
 ### Requirement: tail が range 付き末尾観測を担う
 

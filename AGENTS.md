@@ -2,6 +2,18 @@
 
 For agentic coding assistants operating in this repository.
 
+## Core Concept
+
+`agent-exec` は「エージェントの往復数を削減する」ために設計された CLI。通常、エージェントがコマンドを実行するときは「起動 → 数秒 sleep → tail/status で観測」という 2 往復が必要になる（コマンドは実行直後に失敗する可能性が高いため）。`agent-exec` はこれを 1 往復に畳む。
+
+- `run` / `start` は既定で `--wait --until 10` 相当の観測待機を行い、初回レスポンスに inline output（`stdout` / `stderr` と range / total bytes）を含める。
+- 名前に反して即時返却しないのは意図的な設計。launch-only に見直す提案は基本コンセプトに反する。
+- 長時間の完了待機は `wait`（既定 30 秒）、末尾観測は `tail`、状態確認は `status` が担う。
+
+同じ理由で、`list` は既定で呼び出し側の current_dir に一致する job のみ返す（cwd フィルタ既定 ON）。エージェントは通常「自分が作業しているディレクトリの job」だけを必要とするため、全件返すとノイズが増えて余計な往復や判断を招く。全件を見たい場合は `--all` 等で明示する。
+
+この前提を崩す変更（例：`run` を launch-only にする、既定待機を 0 にする、cwd フィルタの既定を OFF にする）は、コアコンセプトの変更として扱うこと。
+
 ## Project Snapshot
 
 - Language: Rust (edition 2024)

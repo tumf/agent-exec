@@ -32,7 +32,7 @@
 
 ### Requirement: POST /exec によるジョブ起動
 
-`POST /exec` はリクエストボディの `command` フィールド（必須）と任意の `cwd`・`env`・`timeout_ms` を受け取り、`run` サブコマンドと同等のジョブを起動して `RunData` を返さなければならない（MUST）。`wait` を受け付けてはならない（MUST NOT）。
+`POST /exec` はリクエストボディの `command` フィールド（必須）と任意の `cwd`・`env`・`timeout`（秒、CLI `--timeout` と同じ秒単位契約） を受け取り、`run` サブコマンドと同等のジョブを起動して `RunData` を返さなければならない（MUST）。`wait` を受け付けてはならない（MUST NOT）。
 `POST /exec` のレスポンスは CLI `run` と同じ inline output field（`stdout`/`stderr` と range/total bytes）を返さなければならない（MUST）。
 
 #### Scenario: ジョブ起動成功
@@ -107,7 +107,7 @@
 
 ### Requirement: POST /exec によるジョブ起動
 
-`POST /exec` はリクエストボディの `command` フィールド（必須）と任意の `cwd`・`env`・`timeout_ms` を受け取り、CLI の `run` と同等の既定待機・inline output 契約でジョブを起動して返さなければならない（MUST）。`wait` を受け付けてはならない（MUST NOT）。
+`POST /exec` はリクエストボディの `command` フィールド（必須）と任意の `cwd`・`env`・`timeout`（秒、CLI `--timeout` と同じ秒単位契約） を受け取り、CLI の `run` と同等の既定待機・inline output 契約でジョブを起動して返さなければならない（MUST）。`wait` を受け付けてはならない（MUST NOT）。
 
 #### Scenario: POST /exec は CLI run と同じ output fields を返す
 
@@ -130,7 +130,7 @@ And `stdout_tail` は含まれない
 
 ### Requirement: POST /exec によるジョブ起動
 
-`POST /exec` はリクエストボディの `command` フィールド（必須）と任意の `cwd`・`env`・`timeout_ms` を受け取り、CLI の `run` と同等の既定待機・inline output 契約でジョブを起動して返さなければならない（MUST）。新規 job の `job_id` は hash-like 小文字 hex ID でなければならない（MUST）。`wait` を受け付けてはならない（MUST NOT）。
+`POST /exec` はリクエストボディの `command` フィールド（必須）と任意の `cwd`・`env`・`timeout`（秒、CLI `--timeout` と同じ秒単位契約） を受け取り、CLI の `run` と同等の既定待機・inline output 契約でジョブを起動して返さなければならない（MUST）。新規 job の `job_id` は hash-like 小文字 hex ID でなければならない（MUST）。`wait` を受け付けてはならない（MUST NOT）。
 
 #### Scenario: POST /exec returns a hash-like job ID
 
