@@ -694,6 +694,60 @@ fn kill_signal_non_listed_value_accepted_by_clap() {
     assert_ne!(code, 0, "expected non-zero exit code for unknown job id");
 }
 
+#[test]
+fn kill_observes_terminal_state() {
+    let h = TestHarness::new();
+
+    let run_v = h.run(&["run", "sleep", "60"]);
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    let v = h.run(&["kill", "--signal", "KILL", &job_id]);
+    assert_envelope(&v, "kill", true);
+    assert_eq!(v["job_id"].as_str().unwrap_or(""), job_id);
+
+    let state = v.get("state").and_then(|s| s.as_str());
+    assert!(state.is_some(), "state field must be present: {v}");
+    let state = state.unwrap();
+    assert!(
+        state == "killed" || state == "exited" || state == "failed",
+        "expected terminal state, got: {state}"
+    );
+
+    assert!(
+        v.get("observed_within_ms").is_some(),
+        "observed_within_ms must be present: {v}"
+    );
+}
+
+#[test]
+fn kill_no_wait_returns_legacy_shape() {
+    let h = TestHarness::new();
+
+    let run_v = h.run(&["run", "sleep", "60"]);
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    let v = h.run(&["kill", "--no-wait", "--signal", "KILL", &job_id]);
+    assert_envelope(&v, "kill", true);
+    assert_eq!(v["job_id"].as_str().unwrap_or(""), job_id);
+
+    assert!(
+        v.get("state").is_none() || v["state"].is_null(),
+        "state must be absent in --no-wait mode: {v}"
+    );
+    assert!(
+        v.get("exit_code").is_none() || v["exit_code"].is_null(),
+        "exit_code must be absent in --no-wait mode: {v}"
+    );
+    assert!(
+        v.get("observed_within_ms").is_none() || v["observed_within_ms"].is_null(),
+        "observed_within_ms must be absent in --no-wait mode: {v}"
+    );
+}
+
 // ── full.log ───────────────────────────────────────────────────────────────────
 
 #[test]
