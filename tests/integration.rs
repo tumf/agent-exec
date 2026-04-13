@@ -222,6 +222,17 @@ fn run_returns_json_with_job_id() {
     assert_envelope(&v, "run", true);
     let job_id = v["job_id"].as_str().expect("job_id missing");
     assert!(!job_id.is_empty(), "job_id is empty");
+    assert_eq!(
+        job_id.len(),
+        32,
+        "job_id must be fixed-length hex: {job_id}"
+    );
+    assert!(
+        job_id
+            .chars()
+            .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
+        "job_id must be lowercase hex: {job_id}"
+    );
     assert!(v.get("stdout").is_some(), "stdout missing: {v}");
     assert!(v.get("stderr").is_some(), "stderr missing: {v}");
 }
@@ -1417,11 +1428,19 @@ fn list_returns_jobs_sorted_by_started_at_desc() {
     let jobs = v["jobs"].as_array().expect("jobs missing");
     assert!(jobs.len() >= 2, "expected at least 2 jobs; got: {v}");
 
-    // First job in the list must be the most recent one (job2).
+    // Jobs must be sorted by started_at desc, then job_id desc.
+    let first_started = jobs[0]["started_at"].as_str().unwrap_or("");
+    let second_started = jobs[1]["started_at"].as_str().unwrap_or("");
     let first_id = jobs[0]["job_id"].as_str().unwrap_or("");
-    assert_eq!(
-        first_id, job2_id,
-        "expected most recent job first; got: {v}"
+    let second_id = jobs[1]["job_id"].as_str().unwrap_or("");
+    assert!(
+        first_started > second_started
+            || (first_started == second_started && first_id >= second_id),
+        "jobs must be sorted by started_at/job_id desc; got: {v}"
+    );
+    assert!(
+        jobs.iter().any(|j| j["job_id"].as_str() == Some(&job2_id)),
+        "most recently created job must be present in list: {v}"
     );
 
     // Verify required fields exist in each job summary.
@@ -5327,6 +5346,80 @@ fn prefix_lookup_resolves() {
         full_id,
         "job_id in response must be the resolved full ID"
     );
+}
+
+#[test]
+fn list_includes_short_job_id() {
+    let h = TestHarness::new();
+    let run_v = h.run(&["run", "echo", "short-id"]);
+    let full_id = run_v["job_id"].as_str().expect("job_id missing");
+
+    let list_v = h.run(&["list", "--all"]);
+    assert_envelope(&list_v, "list", true);
+    let jobs = list_v["jobs"].as_array().expect("jobs missing");
+    let entry = jobs
+        .iter()
+        .find(|j| j["job_id"].as_str() == Some(full_id))
+        .expect("job summary missing");
+
+    let short = entry["short_job_id"]
+        .as_str()
+        .expect("short_job_id missing");
+    assert_eq!(short.len(), 7, "short_job_id must be 7 chars");
+    assert_eq!(short, &full_id[..7], "short_job_id must be job_id prefix");
+}
+
+#[test]
+fn prefix_lookup_works_with_mixed_hash_and_legacy_ids() {
+    let h = TestHarness::new();
+
+    let hash_run = h.run(&["run", "echo", "hash-job"]);
+    let hash_id = hash_run["job_id"]
+        .as_str()
+        .expect("hash job_id")
+        .to_string();
+
+    let legacy_run = h.run(&["run", "echo", "legacy-job"]);
+    let legacy_original = legacy_run["job_id"]
+        .as_str()
+        .expect("legacy job_id")
+        .to_string();
+    let legacy_id = "01JQXK3M8E5PQRSTVWYZ12ABCD";
+
+    let root = std::path::Path::new(h.root());
+    let from = root.join(&legacy_original);
+    let to = root.join(legacy_id);
+    std::fs::rename(&from, &to).expect("rename job dir to legacy id");
+
+    let meta_path = to.join("meta.json");
+    let mut meta: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&meta_path).expect("read meta.json"))
+            .expect("parse meta.json");
+    meta["job"]["id"] = serde_json::Value::String(legacy_id.to_string());
+    std::fs::write(
+        &meta_path,
+        serde_json::to_vec_pretty(&meta).expect("serialize meta"),
+    )
+    .expect("write meta.json");
+
+    let state_path = to.join("state.json");
+    let mut state: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&state_path).expect("read state.json"))
+            .expect("parse state.json");
+    state["job"]["id"] = serde_json::Value::String(legacy_id.to_string());
+    std::fs::write(
+        &state_path,
+        serde_json::to_vec_pretty(&state).expect("serialize state"),
+    )
+    .expect("write state.json");
+
+    let hash_status = h.run(&["status", &hash_id[..10]]);
+    assert_envelope(&hash_status, "status", true);
+    assert_eq!(hash_status["job_id"].as_str().unwrap_or(""), hash_id);
+
+    let legacy_status = h.run(&["status", "01JQXK3M"]);
+    assert_envelope(&legacy_status, "status", true);
+    assert_eq!(legacy_status["job_id"].as_str().unwrap_or(""), legacy_id);
 }
 
 #[test]

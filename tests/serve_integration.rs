@@ -36,7 +36,7 @@ fn free_port() -> u16 {
 struct ServeProcess {
     child: Child,
     port: u16,
-    _root: tempfile::TempDir,
+    root: tempfile::TempDir,
 }
 
 impl ServeProcess {
@@ -66,15 +66,15 @@ impl ServeProcess {
             thread::sleep(Duration::from_millis(50));
         }
 
-        ServeProcess {
-            child,
-            port,
-            _root: root,
-        }
+        ServeProcess { child, port, root }
     }
 
     fn url(&self, path: &str) -> String {
         format!("http://127.0.0.1:{}{path}", self.port)
+    }
+
+    fn root_path(&self) -> &std::path::Path {
+        self.root.path()
     }
 }
 
@@ -154,8 +154,48 @@ fn test_exec_returns_job_id() {
     let (status, json) = post_json(&srv.url("/exec"), r#"{"command":["echo","hello"]}"#);
     assert_eq!(status, 200, "POST /exec failed: {json}");
     assert_eq!(json["ok"], true);
-    assert!(json.get("job_id").is_some(), "missing job_id in: {json}");
+    let job_id = json["job_id"].as_str().expect("missing job_id");
+    assert_eq!(
+        job_id.len(),
+        32,
+        "job_id must be fixed-length hex: {job_id}"
+    );
+    assert!(
+        job_id
+            .chars()
+            .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
+        "job_id must be lowercase hex: {job_id}"
+    );
     assert_common_fields(&json);
+}
+
+#[test]
+fn test_status_tail_wait_kill_accept_prefix_and_return_canonical_id() {
+    let srv = ServeProcess::start();
+    let (_, exec_json) = post_json(&srv.url("/exec"), r#"{"command":["sleep","60"]}"#);
+    let job_id = exec_json["job_id"]
+        .as_str()
+        .expect("job_id in exec response");
+    let prefix = &job_id[..10];
+
+    let (status_status, status_json) = get_json(&srv.url(&format!("/status/{prefix}")));
+    assert_eq!(
+        status_status, 200,
+        "GET /status by prefix failed: {status_json}"
+    );
+    assert_eq!(status_json["job_id"].as_str().unwrap_or(""), job_id);
+
+    let (tail_status, tail_json) = get_json(&srv.url(&format!("/tail/{prefix}")));
+    assert_eq!(tail_status, 200, "GET /tail by prefix failed: {tail_json}");
+    assert_eq!(tail_json["job_id"].as_str().unwrap_or(""), job_id);
+
+    let (wait_status, wait_json) = get_json(&srv.url(&format!("/wait/{prefix}")));
+    assert_eq!(wait_status, 200, "GET /wait by prefix failed: {wait_json}");
+    assert_eq!(wait_json["job_id"].as_str().unwrap_or(""), job_id);
+
+    let (kill_status, kill_json) = post_json(&srv.url(&format!("/kill/{prefix}")), r#"{}"#);
+    assert_eq!(kill_status, 200, "POST /kill by prefix failed: {kill_json}");
+    assert_eq!(kill_json["job_id"].as_str().unwrap_or(""), job_id);
 }
 
 #[test]
@@ -235,6 +275,21 @@ fn test_status_not_found() {
     assert_eq!(status, 404, "expected 404 for nonexistent job: {json}");
     assert_eq!(json["ok"], false);
     assert_eq!(json["error"]["code"], "job_not_found");
+    assert_common_fields(&json);
+}
+
+#[test]
+fn test_status_ambiguous_prefix_returns_400() {
+    let srv = ServeProcess::start();
+    let first = "01abcdef000000000000000000000001";
+    let second = "01abcdef000000000000000000000002";
+    std::fs::create_dir_all(srv.root_path().join(first)).expect("create first job dir");
+    std::fs::create_dir_all(srv.root_path().join(second)).expect("create second job dir");
+
+    let (status, json) = get_json(&srv.url("/status/01abcdef"));
+    assert_eq!(status, 400, "expected 400 for ambiguous prefix: {json}");
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["error"]["code"], "ambiguous_job_id");
     assert_common_fields(&json);
 }
 

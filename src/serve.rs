@@ -18,7 +18,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::jobstore::{JobDir, JobNotFound, resolve_root};
+use crate::jobstore::{JobDir, JobNotFound, generate_job_id, resolve_root};
 use crate::schema::{
     JobMeta, JobMetaJob, KillData, Response, RunData, SCHEMA_VERSION, StatusData, TailData,
     WaitData,
@@ -86,6 +86,15 @@ fn err_resp(status: StatusCode, code: &str, message: &str) -> AxumResponse {
 fn map_err_to_response(e: anyhow::Error) -> AxumResponse {
     if e.downcast_ref::<JobNotFound>().is_some() {
         err_resp(StatusCode::NOT_FOUND, "job_not_found", &format!("{e:#}"))
+    } else if e
+        .downcast_ref::<crate::jobstore::AmbiguousJobId>()
+        .is_some()
+    {
+        err_resp(
+            StatusCode::BAD_REQUEST,
+            "ambiguous_job_id",
+            &format!("{e:#}"),
+        )
     } else if e
         .downcast_ref::<crate::jobstore::InvalidJobState>()
         .is_some()
@@ -215,7 +224,7 @@ fn run_exec_inner(
     std::fs::create_dir_all(&resolved_root)
         .map_err(|e| anyhow::anyhow!("create jobs root: {e}"))?;
 
-    let job_id = ulid::Ulid::new().to_string();
+    let job_id = generate_job_id(&resolved_root)?;
     let created_at = now_rfc3339_pub();
     let effective_cwd = resolve_effective_cwd(cwd);
     let shell_wrapper = crate::config::default_shell_wrapper();
@@ -319,7 +328,7 @@ async fn status_handler(
         let response = Response::new(
             "status",
             StatusData {
-                job_id: id,
+                job_id: job_dir.job_id.clone(),
                 state: st.status().as_str().to_string(),
                 exit_code: st.exit_code(),
                 created_at: meta.created_at,
@@ -356,7 +365,7 @@ async fn tail_handler(State(state): State<Arc<AppState>>, Path(id): Path<String>
         let response = Response::new(
             "tail",
             TailData {
-                job_id: id,
+                job_id: job_dir.job_id.clone(),
                 stdout: stdout.tail,
                 stderr: stderr.tail,
                 encoding: "utf-8-lossy".to_string(),
@@ -397,7 +406,7 @@ async fn wait_handler(State(state): State<Arc<AppState>>, Path(id): Path<String>
                 let response = Response::new(
                     "wait",
                     WaitData {
-                        job_id: id,
+                        job_id: job_dir.job_id.clone(),
                         state: st.status().as_str().to_string(),
                         exit_code: st.exit_code(),
                     },
@@ -466,7 +475,7 @@ fn kill_inner(job_id: &str, root: Option<&str>) -> Result<serde_json::Value> {
     let response = Response::new(
         "kill",
         KillData {
-            job_id: job_id.to_string(),
+            job_id: job_dir.job_id.clone(),
             signal: signal.to_string(),
         },
     );

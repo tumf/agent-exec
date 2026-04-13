@@ -11,9 +11,8 @@ use std::io::IsTerminal;
 use std::path::Path;
 use std::process::Command;
 use tracing::{debug, info, warn};
-use ulid::Ulid;
 
-use crate::jobstore::{JobDir, resolve_root};
+use crate::jobstore::{JobDir, generate_job_id, resolve_root};
 use crate::schema::{
     JobMeta, JobMetaJob, JobState, JobStateJob, JobStateResult, JobStatus, Response, RunData,
 };
@@ -401,7 +400,7 @@ pub fn execute(opts: RunOpts) -> Result<()> {
     std::fs::create_dir_all(&root)
         .with_context(|| format!("create jobs root {}", root.display()))?;
 
-    let job_id = Ulid::new().to_string();
+    let job_id = generate_job_id(&root)?;
     let created_at = now_rfc3339();
 
     // Extract only the key names from KEY=VALUE env var strings (values are not persisted).

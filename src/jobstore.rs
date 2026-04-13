@@ -8,7 +8,8 @@
 
 use anyhow::{Context, Result};
 use directories::BaseDirs;
-use std::path::PathBuf;
+use rand::RngCore;
+use std::path::{Path, PathBuf};
 
 use crate::schema::{JobMeta, JobState, JobStatus};
 
@@ -65,6 +66,31 @@ impl std::fmt::Display for InvalidJobState {
 impl std::error::Error for InvalidJobState {}
 
 /// Resolve the jobs root directory following the priority chain.
+const JOB_ID_HEX_BYTES: usize = 16;
+const JOB_ID_LENGTH: usize = JOB_ID_HEX_BYTES * 2;
+pub const SHORT_JOB_ID_LENGTH: usize = 7;
+
+/// Generate a new hash-like job ID (`[0-9a-f]`, fixed-length) that is unique under `root`.
+///
+/// The generator retries on directory-name collisions.
+pub fn generate_job_id(root: &Path) -> Result<String> {
+    loop {
+        let mut bytes = [0u8; JOB_ID_HEX_BYTES];
+        rand::thread_rng().fill_bytes(&mut bytes);
+        let candidate = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        debug_assert_eq!(candidate.len(), JOB_ID_LENGTH);
+
+        if !root.join(&candidate).exists() {
+            return Ok(candidate);
+        }
+    }
+}
+
+/// Human-facing short job ID for list-like displays.
+pub fn short_job_id(job_id: &str) -> String {
+    job_id.chars().take(SHORT_JOB_ID_LENGTH).collect()
+}
+
 pub fn resolve_root(cli_root: Option<&str>) -> PathBuf {
     // 1. CLI flag
     if let Some(root) = cli_root {
@@ -804,5 +830,55 @@ mod tests {
         };
         let msg = err.to_string();
         assert!(msg.contains("... and 3 more"), "must truncate: {msg}");
+    }
+
+    #[test]
+    fn generate_job_id_returns_fixed_length_hex() {
+        let tmp = tempfile::tempdir().unwrap();
+        let id = generate_job_id(tmp.path()).expect("generate job id");
+        assert_eq!(id.len(), JOB_ID_LENGTH, "unexpected job id length");
+        assert!(
+            id.chars()
+                .all(|c| c.is_ascii_hexdigit() && c.is_ascii_lowercase() || c.is_ascii_digit()),
+            "job id must be lowercase hex: {id}"
+        );
+    }
+
+    #[test]
+    fn generate_job_id_retries_when_collision_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        // Prime the root with many IDs to make collisions on first try highly likely
+        // only if generator does not check existence. This verifies returned ID is unique.
+        for _ in 0..64 {
+            let id = generate_job_id(root).expect("seed id");
+            std::fs::create_dir(root.join(id)).expect("create seeded dir");
+        }
+
+        let id = generate_job_id(root).expect("generate non-colliding id");
+        assert!(
+            !root.join(&id).exists(),
+            "generated id must not collide with existing directory"
+        );
+    }
+
+    #[test]
+    fn job_dir_open_unique_prefix_with_mixed_legacy_and_hash_ids() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let legacy_ulid = "01JQXK3M8E5PQRSTVWYZ12ABCD";
+        let hash_id = "deadbeefcafebabe1234567890abcdef";
+
+        let meta_legacy = make_meta(legacy_ulid, root);
+        let meta_hash = make_meta(hash_id, root);
+        JobDir::create(root, legacy_ulid, &meta_legacy).unwrap();
+        JobDir::create(root, hash_id, &meta_hash).unwrap();
+
+        let resolved_legacy = JobDir::open(root, "01JQXK3M").unwrap();
+        assert_eq!(resolved_legacy.job_id, legacy_ulid);
+
+        let resolved_hash = JobDir::open(root, "deadbee").unwrap();
+        assert_eq!(resolved_hash.job_id, hash_id);
     }
 }
