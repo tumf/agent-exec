@@ -37,14 +37,14 @@ pub struct AmbiguousJobId {
 impl std::fmt::Display for AmbiguousJobId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "ambiguous job ID prefix '{}': matches ", self.prefix)?;
-        if self.candidates.len() <= 5 {
+        if self.candidates.len() <= 20 {
             write!(f, "{}", self.candidates.join(", "))
         } else {
             write!(
                 f,
                 "{}, ... and {} more",
-                self.candidates[..5].join(", "),
-                self.candidates.len() - 5
+                self.candidates[..20].join(", "),
+                self.candidates.len() - 20
             )
         }
     }
@@ -805,7 +805,7 @@ mod tests {
     }
 
     #[test]
-    fn ambiguous_job_id_display_up_to_5_candidates() {
+    fn ambiguous_job_id_display_up_to_20_candidates() {
         let err = AmbiguousJobId {
             prefix: "01J".to_string(),
             candidates: vec![
@@ -817,11 +817,15 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("01J"), "must include prefix: {msg}");
         assert!(msg.contains("01JAAA"), "must list candidates: {msg}");
+        assert!(
+            !msg.contains("more"),
+            "3 candidates should not truncate: {msg}"
+        );
     }
 
     #[test]
-    fn ambiguous_job_id_display_truncates_beyond_5() {
-        let candidates: Vec<String> = (1..=8)
+    fn ambiguous_job_id_display_truncates_beyond_20() {
+        let candidates: Vec<String> = (1..=25)
             .map(|i| format!("01JCANDIDATE{i:02}0000000000"))
             .collect();
         let err = AmbiguousJobId {
@@ -829,7 +833,7 @@ mod tests {
             candidates,
         };
         let msg = err.to_string();
-        assert!(msg.contains("... and 3 more"), "must truncate: {msg}");
+        assert!(msg.contains("... and 5 more"), "must truncate: {msg}");
     }
 
     #[test]

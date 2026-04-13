@@ -22,7 +22,6 @@ use std::sync::Arc;
 use crate::jobstore::{JobDir, JobNotFound, generate_job_id, resolve_root};
 use crate::schema::{
     JobMeta, JobMetaJob, KillData, Response, RunData, SCHEMA_VERSION, StatusData, TailData,
-    WaitData,
 };
 
 /// Options for the `serve` sub-command.
@@ -203,15 +202,15 @@ fn err_resp(status: StatusCode, code: &str, message: &str) -> AxumResponse {
 fn map_err_to_response(e: anyhow::Error) -> AxumResponse {
     if e.downcast_ref::<JobNotFound>().is_some() {
         err_resp(StatusCode::NOT_FOUND, "job_not_found", &format!("{e:#}"))
-    } else if e
-        .downcast_ref::<crate::jobstore::AmbiguousJobId>()
-        .is_some()
-    {
-        err_resp(
-            StatusCode::BAD_REQUEST,
-            "ambiguous_job_id",
-            &format!("{e:#}"),
-        )
+    } else if let Some(amb) = e.downcast_ref::<crate::jobstore::AmbiguousJobId>() {
+        let truncated = amb.candidates.len() > 20;
+        let candidates: Vec<&str> = amb.candidates.iter().take(20).map(|s| s.as_str()).collect();
+        let mut json = error_json("ambiguous_job_id", &format!("{e:#}"));
+        json["error"]["details"] = serde_json::json!({
+            "candidates": candidates,
+            "truncated": truncated,
+        });
+        (StatusCode::BAD_REQUEST, Json(json)).into_response()
     } else if e
         .downcast_ref::<crate::jobstore::InvalidJobState>()
         .is_some()
@@ -536,14 +535,7 @@ async fn wait_handler(State(state): State<Arc<AppState>>, Path(id): Path<String>
         loop {
             let st = job_dir.read_state()?;
             if !st.status().is_non_terminal() {
-                let response = Response::new(
-                    "wait",
-                    WaitData {
-                        job_id: job_dir.job_id.clone(),
-                        state: st.status().as_str().to_string(),
-                        exit_code: st.exit_code(),
-                    },
-                );
+                let response = Response::new("wait", crate::wait::build_wait_data(&job_dir, &st));
                 return Ok::<_, anyhow::Error>(serde_json::to_value(&response)?);
             }
             std::thread::sleep(poll);
