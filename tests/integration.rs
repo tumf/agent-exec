@@ -694,6 +694,60 @@ fn kill_signal_non_listed_value_accepted_by_clap() {
     assert_ne!(code, 0, "expected non-zero exit code for unknown job id");
 }
 
+#[test]
+fn kill_observes_terminal_state() {
+    let h = TestHarness::new();
+
+    let run_v = h.run(&["run", "sleep", "60"]);
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    let v = h.run(&["kill", "--signal", "KILL", &job_id]);
+    assert_envelope(&v, "kill", true);
+    assert_eq!(v["job_id"].as_str().unwrap_or(""), job_id);
+
+    let state = v.get("state").and_then(|s| s.as_str());
+    assert!(state.is_some(), "state field must be present: {v}");
+    let state = state.unwrap();
+    assert!(
+        state == "killed" || state == "exited" || state == "failed",
+        "expected terminal state, got: {state}"
+    );
+
+    assert!(
+        v.get("observed_within_ms").is_some(),
+        "observed_within_ms must be present: {v}"
+    );
+}
+
+#[test]
+fn kill_no_wait_returns_legacy_shape() {
+    let h = TestHarness::new();
+
+    let run_v = h.run(&["run", "sleep", "60"]);
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    let v = h.run(&["kill", "--no-wait", "--signal", "KILL", &job_id]);
+    assert_envelope(&v, "kill", true);
+    assert_eq!(v["job_id"].as_str().unwrap_or(""), job_id);
+
+    assert!(
+        v.get("state").is_none() || v["state"].is_null(),
+        "state must be absent in --no-wait mode: {v}"
+    );
+    assert!(
+        v.get("exit_code").is_none() || v["exit_code"].is_null(),
+        "exit_code must be absent in --no-wait mode: {v}"
+    );
+    assert!(
+        v.get("observed_within_ms").is_none() || v["observed_within_ms"].is_null(),
+        "observed_within_ms must be absent in --no-wait mode: {v}"
+    );
+}
+
 // ── full.log ───────────────────────────────────────────────────────────────────
 
 #[test]
@@ -1475,6 +1529,95 @@ fn list_limit_truncates_result() {
     assert!(
         v["truncated"].as_bool().unwrap_or(false),
         "truncated must be true when result is truncated; got: {v}"
+    );
+}
+
+/// Spec: default `list` (no --limit) returns at most 50 jobs and sets truncated=true
+/// when more than 50 exist.
+#[test]
+fn list_default_limit_truncates_at_50() {
+    let h = TestHarness::new();
+    let cwd = std::env::current_dir()
+        .expect("current_dir")
+        .to_str()
+        .expect("cwd utf-8")
+        .to_string();
+
+    for i in 0..60 {
+        let job_id = format!("job-{i:04}");
+        let job_dir = std::path::Path::new(h.root()).join(&job_id);
+        std::fs::create_dir_all(&job_dir).expect("create job dir");
+        let meta = serde_json::json!({
+            "job": { "id": job_id },
+            "schema_version": "0.1",
+            "command": ["echo", "hi"],
+            "created_at": format!("2026-01-01T00:{i:02}:00Z"),
+            "root": h.root(),
+            "env_keys": [],
+            "cwd": cwd,
+            "tags": [],
+            "inherit_env": true,
+        });
+        std::fs::write(job_dir.join("meta.json"), meta.to_string()).expect("write meta.json");
+    }
+
+    let v = h.run(&["list", "--all"]);
+    assert_envelope(&v, "list", true);
+
+    let jobs = v["jobs"].as_array().expect("jobs missing");
+    assert_eq!(
+        jobs.len(),
+        50,
+        "default limit should return 50 jobs; got: {}",
+        jobs.len()
+    );
+    assert!(
+        v["truncated"].as_bool().unwrap_or(false),
+        "truncated must be true when >50 jobs exist; got: {v}"
+    );
+}
+
+/// Spec: `--limit 0` disables truncation and returns all jobs.
+#[test]
+fn list_limit_zero_returns_all() {
+    let h = TestHarness::new();
+    let cwd = std::env::current_dir()
+        .expect("current_dir")
+        .to_str()
+        .expect("cwd utf-8")
+        .to_string();
+
+    for i in 0..60 {
+        let job_id = format!("job-{i:04}");
+        let job_dir = std::path::Path::new(h.root()).join(&job_id);
+        std::fs::create_dir_all(&job_dir).expect("create job dir");
+        let meta = serde_json::json!({
+            "job": { "id": job_id },
+            "schema_version": "0.1",
+            "command": ["echo", "hi"],
+            "created_at": format!("2026-01-01T00:{i:02}:00Z"),
+            "root": h.root(),
+            "env_keys": [],
+            "cwd": cwd,
+            "tags": [],
+            "inherit_env": true,
+        });
+        std::fs::write(job_dir.join("meta.json"), meta.to_string()).expect("write meta.json");
+    }
+
+    let v = h.run(&["list", "--all", "--limit", "0"]);
+    assert_envelope(&v, "list", true);
+
+    let jobs = v["jobs"].as_array().expect("jobs missing");
+    assert_eq!(
+        jobs.len(),
+        60,
+        "--limit 0 should return all 60 jobs; got: {}",
+        jobs.len()
+    );
+    assert!(
+        !v["truncated"].as_bool().unwrap_or(true),
+        "truncated must be false with --limit 0; got: {v}"
     );
 }
 
@@ -5516,6 +5659,29 @@ fn ambiguous_prefix_returns_error() {
     assert!(
         !v["error"]["retryable"].as_bool().unwrap_or(true),
         "retryable must be false: {v}"
+    );
+
+    let details = &v["error"]["details"];
+    assert!(!details.is_null(), "error.details must be present: {v}");
+    let candidates = details["candidates"]
+        .as_array()
+        .expect("details.candidates must be an array");
+    assert!(
+        candidates.len() >= 2,
+        "candidates must contain at least 2 entries: {v}"
+    );
+    assert!(
+        candidates.iter().any(|c| c.as_str() == Some(&id1)),
+        "candidates must include id1: {v}"
+    );
+    assert!(
+        candidates.iter().any(|c| c.as_str() == Some(&id2)),
+        "candidates must include id2: {v}"
+    );
+    assert_eq!(
+        details["truncated"].as_bool(),
+        Some(false),
+        "truncated must be false for 2 candidates: {v}"
     );
 }
 

@@ -8,7 +8,7 @@
 use anyhow::Result;
 use axum::{
     Json, Router,
-    extract::{Path, Request, State},
+    extract::{Path, Query, Request, State},
     http::StatusCode,
     middleware::{self, Next},
     response::{IntoResponse, Response as AxumResponse},
@@ -20,9 +20,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use crate::jobstore::{JobDir, JobNotFound, generate_job_id, resolve_root};
-use crate::schema::{
-    JobMeta, JobMetaJob, KillData, Response, RunData, SCHEMA_VERSION, StatusData, TailData,
-};
+use crate::schema::{JobMeta, JobMetaJob, Response, RunData, SCHEMA_VERSION, StatusData, TailData};
 
 /// Options for the `serve` sub-command.
 pub struct ServeOpts {
@@ -202,15 +200,15 @@ fn err_resp(status: StatusCode, code: &str, message: &str) -> AxumResponse {
 fn map_err_to_response(e: anyhow::Error) -> AxumResponse {
     if e.downcast_ref::<JobNotFound>().is_some() {
         err_resp(StatusCode::NOT_FOUND, "job_not_found", &format!("{e:#}"))
-    } else if e
-        .downcast_ref::<crate::jobstore::AmbiguousJobId>()
-        .is_some()
-    {
-        err_resp(
-            StatusCode::BAD_REQUEST,
-            "ambiguous_job_id",
-            &format!("{e:#}"),
-        )
+    } else if let Some(amb) = e.downcast_ref::<crate::jobstore::AmbiguousJobId>() {
+        let truncated = amb.candidates.len() > 20;
+        let candidates: Vec<&str> = amb.candidates.iter().take(20).map(|s| s.as_str()).collect();
+        let mut json = error_json("ambiguous_job_id", &format!("{e:#}"));
+        json["error"]["details"] = serde_json::json!({
+            "candidates": candidates,
+            "truncated": truncated,
+        });
+        (StatusCode::BAD_REQUEST, Json(json)).into_response()
     } else if e
         .downcast_ref::<crate::jobstore::InvalidJobState>()
         .is_some()
@@ -556,9 +554,30 @@ async fn wait_handler(State(state): State<Arc<AppState>>, Path(id): Path<String>
 
 // ---- POST /kill/:id ----
 
-async fn kill_handler(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> AxumResponse {
+#[derive(Deserialize)]
+struct KillQuery {
+    #[serde(default)]
+    no_wait: Option<bool>,
+}
+
+async fn kill_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(query): Query<KillQuery>,
+) -> AxumResponse {
     let root_opt = state.root.clone();
-    let result = tokio::task::spawn_blocking(move || kill_inner(&id, root_opt.as_deref())).await;
+    let no_wait = query.no_wait.unwrap_or(false);
+    let result = tokio::task::spawn_blocking(move || {
+        let data = crate::kill::execute_inner(crate::kill::KillOpts {
+            job_id: &id,
+            root: root_opt.as_deref(),
+            signal: "TERM",
+            no_wait,
+        })?;
+        let response = Response::new("kill", data);
+        Ok::<_, anyhow::Error>(serde_json::to_value(&response)?)
+    })
+    .await;
 
     match result {
         Ok(Ok(val)) => (StatusCode::OK, Json(val)).into_response(),
@@ -569,58 +588,6 @@ async fn kill_handler(State(state): State<Arc<AppState>>, Path(id): Path<String>
             &format!("task error: {e}"),
         ),
     }
-}
-
-/// Core logic for POST /kill/:id: send SIGTERM to the job process.
-fn kill_inner(job_id: &str, root: Option<&str>) -> Result<serde_json::Value> {
-    use crate::schema::JobStatus;
-
-    let resolved_root = resolve_root(root);
-    let job_dir = JobDir::open(&resolved_root, job_id)?;
-    let st = job_dir.read_state()?;
-
-    let signal = "TERM";
-
-    if *st.status() == JobStatus::Created {
-        return Err(anyhow::Error::new(crate::jobstore::InvalidJobState(
-            format!(
-                "job {} is in 'created' state and has not been started; cannot send signal",
-                job_id
-            ),
-        )));
-    }
-
-    if *st.status() == JobStatus::Running
-        && let Some(pid) = st.pid
-    {
-        send_term(pid);
-    }
-    // If already in a terminal state, it's a no-op (signal ignored gracefully).
-
-    let response = Response::new(
-        "kill",
-        KillData {
-            job_id: job_dir.job_id.clone(),
-            signal: signal.to_string(),
-        },
-    );
-    Ok(serde_json::to_value(&response)?)
-}
-
-/// Send SIGTERM to the process group, falling back to the single process.
-#[cfg(unix)]
-fn send_term(pid: u32) {
-    let pgid = -(pid as libc::pid_t);
-    let ret = unsafe { libc::kill(pgid, libc::SIGTERM) };
-    if ret != 0 {
-        // Fallback: try single-process kill.
-        unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
-    }
-}
-
-#[cfg(not(unix))]
-fn send_term(_pid: u32) {
-    // Windows: not implemented for serve (Windows kill support is in kill.rs).
 }
 
 #[cfg(test)]

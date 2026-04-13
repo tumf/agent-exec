@@ -422,6 +422,10 @@ enum Command {
         #[arg(long, default_value = "TERM", value_parser = SignalValueParser)]
         signal: String,
 
+        /// Skip post-signal observation; return immediately with legacy shape.
+        #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue)]
+        no_wait: bool,
+
         /// Job ID.
         #[arg(add = ArgValueCompleter::new(agent_exec::completions::complete_running_jobs))]
         job_id: String,
@@ -462,7 +466,7 @@ enum Command {
     /// List all jobs under the root directory.
     List {
         /// Maximum number of jobs to return (0 = no limit).
-        #[arg(long, default_value = "0")]
+        #[arg(long, default_value = "50")]
         limit: u64,
 
         /// Filter jobs by state: created|running|exited|killed|failed|unknown.
@@ -705,8 +709,16 @@ fn main() {
         // "invalid_tag" is not retryable: the tag value is malformed.
         // "internal_error" is not retryable by default; a transient I/O error
         // would need its own code+retryable=true if we ever surface it.
-        if e.downcast_ref::<AmbiguousJobId>().is_some() {
-            ErrorResponse::new("ambiguous_job_id", format!("{e:#}"), false).print();
+        if let Some(amb) = e.downcast_ref::<AmbiguousJobId>() {
+            let truncated = amb.candidates.len() > 20;
+            let candidates: Vec<&str> =
+                amb.candidates.iter().take(20).map(|s| s.as_str()).collect();
+            ErrorResponse::new("ambiguous_job_id", format!("{e:#}"), false)
+                .with_details(serde_json::json!({
+                    "candidates": candidates,
+                    "truncated": truncated,
+                }))
+                .print();
         } else if e.downcast_ref::<JobNotFound>().is_some() {
             ErrorResponse::new("job_not_found", format!("{e:#}"), false).print();
         } else if e.downcast_ref::<UnknownSourceScheme>().is_some() {
@@ -979,11 +991,16 @@ fn run(cli: Cli) -> Result<()> {
             })?;
         }
 
-        Command::Kill { signal, job_id } => {
+        Command::Kill {
+            signal,
+            no_wait,
+            job_id,
+        } => {
             agent_exec::kill::execute(agent_exec::kill::KillOpts {
                 job_id: &job_id,
                 root: root.as_deref(),
                 signal: &signal,
+                no_wait,
             })?;
         }
 
@@ -1147,4 +1164,28 @@ fn run(cli: Cli) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn list_default_limit_is_50() {
+        let cli = Cli::parse_from(["agent-exec", "list"]);
+        match cli.command {
+            Command::List { limit, .. } => assert_eq!(limit, 50),
+            other => panic!("expected List, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn list_explicit_zero_means_no_limit() {
+        let cli = Cli::parse_from(["agent-exec", "list", "--limit", "0"]);
+        match cli.command {
+            Command::List { limit, .. } => assert_eq!(limit, 0),
+            other => panic!("expected List, got {other:?}"),
+        }
+    }
 }

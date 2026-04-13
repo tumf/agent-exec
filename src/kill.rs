@@ -28,6 +28,8 @@ pub struct KillOpts<'a> {
     pub root: Option<&'a str>,
     /// Signal name: TERM | INT | KILL (default: TERM).
     pub signal: &'a str,
+    /// Skip post-signal observation and return immediately (legacy shape).
+    pub no_wait: bool,
 }
 
 impl<'a> Default for KillOpts<'a> {
@@ -36,19 +38,27 @@ impl<'a> Default for KillOpts<'a> {
             job_id: "",
             root: None,
             signal: "TERM",
+            no_wait: false,
         }
     }
 }
 
-/// Execute `kill`: send signal and emit JSON.
+/// Execute `kill`: send signal, optionally observe post-signal state, and emit JSON.
 pub fn execute(opts: KillOpts) -> Result<()> {
+    let data = execute_inner(opts)?;
+    let response = Response::new("kill", data);
+    response.print();
+    Ok(())
+}
+
+/// Core kill logic returning `KillData`. Shared by CLI and HTTP handler.
+pub fn execute_inner(opts: KillOpts) -> Result<KillData> {
     let root = resolve_root(opts.root);
     let job_dir = JobDir::open(&root, opts.job_id)?;
 
     let state = job_dir.read_state()?;
     let signal_upper = opts.signal.to_uppercase();
 
-    // Reject kill on created jobs: there is no process to signal.
     if *state.status() == JobStatus::Created {
         return Err(anyhow::Error::new(InvalidJobState(format!(
             "job {} is in 'created' state and has not been started; cannot send signal",
@@ -57,21 +67,29 @@ pub fn execute(opts: KillOpts) -> Result<()> {
     }
 
     if *state.status() != JobStatus::Running {
-        // Already stopped — no-op but still emit JSON.
-        let response = Response::new(
-            "kill",
-            KillData {
-                job_id: job_dir.job_id.clone(),
-                signal: signal_upper,
+        return Ok(KillData {
+            job_id: job_dir.job_id.clone(),
+            signal: signal_upper,
+            state: if opts.no_wait {
+                None
+            } else {
+                Some(state.status().as_str().to_string())
             },
-        );
-        response.print();
-        return Ok(());
+            exit_code: if opts.no_wait {
+                None
+            } else {
+                state.exit_code()
+            },
+            terminated_signal: if opts.no_wait {
+                None
+            } else {
+                state.result.signal.clone()
+            },
+            observed_within_ms: if opts.no_wait { None } else { Some(0) },
+        });
     }
 
     if let Some(pid) = state.pid {
-        // On Windows, pass the job name from state.json so kill can use the
-        // named Job Object created by the supervisor for reliable tree termination.
         #[cfg(windows)]
         send_signal(pid, &signal_upper, state.windows_job_name.as_deref())?;
         #[cfg(not(windows))]
@@ -79,7 +97,6 @@ pub fn execute(opts: KillOpts) -> Result<()> {
 
         info!(job_id = %job_dir.job_id, pid, signal = %signal_upper, "signal sent");
 
-        // Mark state as killed.
         let now = crate::run::now_rfc3339_pub();
         let new_state = JobState {
             job: JobStateJob {
@@ -100,15 +117,73 @@ pub fn execute(opts: KillOpts) -> Result<()> {
         job_dir.write_state(&new_state)?;
     }
 
-    let response = Response::new(
-        "kill",
-        KillData {
+    if opts.no_wait {
+        return Ok(KillData {
             job_id: job_dir.job_id.clone(),
             signal: signal_upper,
-        },
-    );
-    response.print();
-    Ok(())
+            state: None,
+            exit_code: None,
+            terminated_signal: None,
+            observed_within_ms: None,
+        });
+    }
+
+    let obs = observe_post_signal(&job_dir, std::time::Duration::from_secs(3));
+
+    Ok(KillData {
+        job_id: job_dir.job_id.clone(),
+        signal: signal_upper,
+        state: Some(obs.state),
+        exit_code: obs.exit_code,
+        terminated_signal: obs.terminated_signal,
+        observed_within_ms: Some(obs.observed_within_ms),
+    })
+}
+
+struct PostSignalObservation {
+    state: String,
+    exit_code: Option<i32>,
+    terminated_signal: Option<String>,
+    observed_within_ms: u64,
+}
+
+fn observe_post_signal(job_dir: &JobDir, budget: std::time::Duration) -> PostSignalObservation {
+    let start = std::time::Instant::now();
+    let deadline = start + budget;
+    let poll_interval = std::time::Duration::from_millis(100);
+
+    loop {
+        if let Ok(st) = job_dir.read_state()
+            && !st.status().is_non_terminal()
+        {
+            return PostSignalObservation {
+                state: st.status().as_str().to_string(),
+                exit_code: st.exit_code(),
+                terminated_signal: st.result.signal.clone(),
+                observed_within_ms: start.elapsed().as_millis() as u64,
+            };
+        }
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(poll_interval);
+    }
+
+    if let Ok(st) = job_dir.read_state() {
+        PostSignalObservation {
+            state: st.status().as_str().to_string(),
+            exit_code: st.exit_code(),
+            terminated_signal: st.result.signal.clone(),
+            observed_within_ms: start.elapsed().as_millis() as u64,
+        }
+    } else {
+        PostSignalObservation {
+            state: "running".to_string(),
+            exit_code: None,
+            terminated_signal: None,
+            observed_within_ms: start.elapsed().as_millis() as u64,
+        }
+    }
 }
 
 #[cfg(unix)]
