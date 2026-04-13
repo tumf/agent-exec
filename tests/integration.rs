@@ -642,10 +642,12 @@ fn run_stdin_dash_with_tty_like_stdin_fails_fast() {
         .expect("run script tty wrapper");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let json_start = stdout
-        .rfind("{\"schema_version\"")
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{stdout}\n{stderr}");
+    let json_start = combined
+        .find('{')
         .expect("tty wrapper output should include JSON error envelope");
-    let json = &stdout[json_start..];
+    let json = combined[json_start..].trim();
     let v: serde_json::Value = serde_json::from_str(json).expect("parse tty failure JSON");
 
     assert!(
