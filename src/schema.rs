@@ -220,6 +220,12 @@ pub struct WaitData {
     pub state: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stdout_total_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stderr_total_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
 }
 
 /// Response for `kill` command.
@@ -811,6 +817,75 @@ mod tests {
         assert!(json.get("signal").is_none(), "signal should be omitted");
         assert_eq!(json["duration_ms"], 500);
         assert_eq!(json["exit_code"], 7);
+    }
+
+    #[test]
+    fn wait_data_progress_hints_present_when_set() {
+        let data = WaitData {
+            job_id: "j1".into(),
+            state: "running".into(),
+            exit_code: None,
+            stdout_total_bytes: Some(1024),
+            stderr_total_bytes: Some(256),
+            updated_at: Some("2025-01-01T00:00:00Z".into()),
+        };
+        let json = serde_json::to_value(&data).unwrap();
+        assert_eq!(json["stdout_total_bytes"], 1024);
+        assert_eq!(json["stderr_total_bytes"], 256);
+        assert_eq!(json["updated_at"], "2025-01-01T00:00:00Z");
+        assert!(json.get("exit_code").is_none());
+    }
+
+    #[test]
+    fn wait_data_progress_hints_omitted_when_none() {
+        let data = WaitData {
+            job_id: "j2".into(),
+            state: "running".into(),
+            exit_code: None,
+            stdout_total_bytes: None,
+            stderr_total_bytes: None,
+            updated_at: None,
+        };
+        let json = serde_json::to_value(&data).unwrap();
+        assert!(json.get("stdout_total_bytes").is_none());
+        assert!(json.get("stderr_total_bytes").is_none());
+        assert!(json.get("updated_at").is_none());
+    }
+
+    #[test]
+    fn wait_data_terminal_with_progress_hints() {
+        let data = WaitData {
+            job_id: "j3".into(),
+            state: "exited".into(),
+            exit_code: Some(0),
+            stdout_total_bytes: Some(512),
+            stderr_total_bytes: Some(0),
+            updated_at: Some("2025-01-01T00:00:02Z".into()),
+        };
+        let json = serde_json::to_value(&data).unwrap();
+        assert_eq!(json["exit_code"], 0);
+        assert_eq!(json["stdout_total_bytes"], 512);
+        assert_eq!(json["updated_at"], "2025-01-01T00:00:02Z");
+    }
+
+    #[test]
+    fn wait_data_roundtrip() {
+        let data = WaitData {
+            job_id: "j4".into(),
+            state: "exited".into(),
+            exit_code: Some(1),
+            stdout_total_bytes: Some(100),
+            stderr_total_bytes: Some(200),
+            updated_at: Some("2025-06-01T12:00:00Z".into()),
+        };
+        let serialized = serde_json::to_string(&data).unwrap();
+        let deserialized: WaitData = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(deserialized.stdout_total_bytes, Some(100));
+        assert_eq!(deserialized.stderr_total_bytes, Some(200));
+        assert_eq!(
+            deserialized.updated_at.as_deref(),
+            Some("2025-06-01T12:00:00Z")
+        );
     }
 
     #[test]

@@ -5997,3 +5997,64 @@ fn run_inline_omits_completion_fields_for_long_jobs() {
         "duration_ms should be absent/null for non-terminal job: {v}"
     );
 }
+
+// ── wait progress hints ───────────────────────────────────────────────────────
+
+#[test]
+fn wait_timeout_returns_progress_hints() {
+    let h = TestHarness::new();
+    let run_v = h.run(&["run", "--", "sh", "-c", "sleep 30"]);
+    assert_envelope(&run_v, "run", true);
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+
+    let wait_v = h.run(&["wait", "--until", "1", &job_id]);
+    assert_envelope(&wait_v, "wait", true);
+    assert_eq!(wait_v["state"].as_str().unwrap_or(""), "running");
+    assert!(
+        wait_v.get("exit_code").is_none() || wait_v["exit_code"].is_null(),
+        "exit_code should be absent for running job: {wait_v}"
+    );
+    assert!(
+        wait_v.get("stdout_total_bytes").is_some() && !wait_v["stdout_total_bytes"].is_null(),
+        "stdout_total_bytes should be present: {wait_v}"
+    );
+    assert!(
+        wait_v.get("stderr_total_bytes").is_some() && !wait_v["stderr_total_bytes"].is_null(),
+        "stderr_total_bytes should be present: {wait_v}"
+    );
+    assert!(
+        wait_v.get("updated_at").is_some() && wait_v["updated_at"].is_string(),
+        "updated_at should be present as string: {wait_v}"
+    );
+
+    // Clean up
+    let _ = h.run(&["kill", &job_id]);
+}
+
+#[test]
+fn wait_terminal_returns_progress_hints() {
+    let h = TestHarness::new();
+    let run_v = h.run(&["run", "--", "echo", "progress_hints_test"]);
+    assert_envelope(&run_v, "run", true);
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+
+    let wait_v = wait_until_terminal(&h, &job_id);
+    assert_eq!(wait_v["state"].as_str().unwrap_or(""), "exited");
+    assert_eq!(wait_v["exit_code"].as_i64(), Some(0));
+    assert!(
+        wait_v.get("stdout_total_bytes").is_some() && !wait_v["stdout_total_bytes"].is_null(),
+        "stdout_total_bytes should be present: {wait_v}"
+    );
+    assert!(
+        wait_v["stdout_total_bytes"].as_u64().unwrap_or(0) > 0,
+        "stdout_total_bytes should be > 0 for echo output: {wait_v}"
+    );
+    assert!(
+        wait_v.get("stderr_total_bytes").is_some() && !wait_v["stderr_total_bytes"].is_null(),
+        "stderr_total_bytes should be present: {wait_v}"
+    );
+    assert!(
+        wait_v.get("updated_at").is_some() && wait_v["updated_at"].is_string(),
+        "updated_at should be present as string: {wait_v}"
+    );
+}
