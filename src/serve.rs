@@ -21,7 +21,6 @@ use std::sync::Arc;
 use crate::jobstore::{JobDir, JobNotFound, generate_job_id, resolve_root};
 use crate::schema::{
     JobMeta, JobMetaJob, KillData, Response, RunData, SCHEMA_VERSION, StatusData, TailData,
-    WaitData,
 };
 
 /// Options for the `serve` sub-command.
@@ -405,14 +404,7 @@ async fn wait_handler(State(state): State<Arc<AppState>>, Path(id): Path<String>
         loop {
             let st = job_dir.read_state()?;
             if !st.status().is_non_terminal() {
-                let response = Response::new(
-                    "wait",
-                    WaitData {
-                        job_id: job_dir.job_id.clone(),
-                        state: st.status().as_str().to_string(),
-                        exit_code: st.exit_code(),
-                    },
-                );
+                let response = Response::new("wait", crate::wait::build_wait_data(&job_dir, &st));
                 return Ok::<_, anyhow::Error>(serde_json::to_value(&response)?);
             }
             std::thread::sleep(poll);
