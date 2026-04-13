@@ -209,7 +209,7 @@ And `waited_ms` は短時間である
 
 ### Requirement: run のジョブ生成と初回 inline output
 
-`run` はジョブを起動し、既定では `--wait --until 10` 相当の待機予算内で観測できた stdout / stderr を初回レスポンスに含めなければならない（MUST）。`--no-wait` は `--wait --until 0` のエイリアスであり、追加待機なしの launch-only 返却を明示的に選べなければならない（MUST）。
+`run` はジョブを起動し、既定では bare `--wait`（`--wait true` と同義）と `--until 10` 相当の待機予算内で観測できた stdout / stderr を初回レスポンスに含めなければならない（MUST）。`--no-wait` は `--wait false --until 0` のエイリアスであり、追加待機なしの launch-only 返却を明示的に選べなければならない（MUST）。
 
 `run` の出力は top-level の `stdout`, `stderr`, `stdout_range`, `stderr_range`, `stdout_total_bytes`, `stderr_total_bytes`, `encoding` で表現しなければならない（MUST）。range は raw byte offset の `[begin, end]` 配列で、意味は half-open interval `[begin, end)` とする（MUST）。
 

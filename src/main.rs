@@ -6,6 +6,8 @@ use anyhow::{Context, Result};
 use clap::builder::ValueHint;
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{CompleteEnv, Shell, engine::ArgValueCompleter};
+use std::ffi::OsString;
+
 use tracing_subscriber::EnvFilter;
 
 use agent_exec::jobstore::{AmbiguousJobId, InvalidJobState, JobNotFound};
@@ -202,7 +204,14 @@ enum Command {
         root: Option<String>,
 
         /// Wait for inline output observation before returning.
-        #[arg(long, default_value = "true", action = clap::ArgAction::Set)]
+        /// Bare `--wait` is treated as `true`; `--wait true|false` remains supported.
+        #[arg(
+            long,
+            default_value_t = true,
+            default_missing_value = "true",
+            num_args = 0..=1,
+            action = clap::ArgAction::Set
+        )]
         wait: bool,
 
         /// Maximum wait time in seconds for inline observation.
@@ -320,7 +329,14 @@ enum Command {
         shell_wrapper: Option<String>,
 
         /// Wait for inline output observation before returning.
-        #[arg(long, default_value = "true", action = clap::ArgAction::Set)]
+        /// Bare `--wait` is treated as `true`; `--wait true|false` remains supported.
+        #[arg(
+            long,
+            default_value_t = true,
+            default_missing_value = "true",
+            num_args = 0..=1,
+            action = clap::ArgAction::Set
+        )]
         wait: bool,
 
         /// Maximum wait time in seconds for inline observation.
@@ -640,11 +656,12 @@ enum NotifySubcommand {
 
 fn main() {
     // Handle dynamic completion requests (invoked by the shell with COMPLETE=<shell>).
-    // This must run before Cli::parse() so completion candidates are returned
-    // without any JSON output or tracing initialisation.
+    // This must run before argument normalization and clap parsing so completion candidates
+    // are returned without any JSON output or tracing initialisation.
     CompleteEnv::with_factory(Cli::command).complete();
 
-    let cli = Cli::parse();
+    let normalized_args = normalize_wait_flags(std::env::args_os());
+    let cli = Cli::parse_from(normalized_args);
 
     // Set output format before any subcommand runs (including error paths).
     agent_exec::schema::set_yaml_output(cli.yaml);
@@ -689,6 +706,66 @@ fn main() {
         }
         std::process::exit(1);
     }
+}
+
+fn normalize_wait_flags<I>(args: I) -> Vec<OsString>
+where
+    I: IntoIterator<Item = OsString>,
+{
+    let mut normalized = Vec::new();
+    let mut iter = args.into_iter().peekable();
+    let mut wait_alias_enabled = false;
+    let mut wait_alias_phase_ended = false;
+
+    while let Some(arg) = iter.next() {
+        let arg_text = arg.to_string_lossy();
+
+        if arg_text == "--" {
+            normalized.push(arg);
+            normalized.extend(iter);
+            break;
+        }
+
+        if arg_text == "run" || arg_text == "start" {
+            wait_alias_enabled = true;
+            wait_alias_phase_ended = false;
+            normalized.push(arg);
+            continue;
+        }
+
+        if wait_alias_enabled && !wait_alias_phase_ended && arg_text == "--wait" {
+            let should_insert_true = match iter.peek() {
+                Some(next) if next.to_string_lossy() == "--" => true,
+                Some(next) if next.to_string_lossy().starts_with('-') => true,
+                Some(next) => {
+                    let value = next.to_string_lossy();
+                    !(value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("false"))
+                }
+                None => true,
+            };
+
+            normalized.push(arg);
+            if should_insert_true {
+                normalized.push(OsString::from("true"));
+            }
+            continue;
+        }
+
+        // For `run` / `start`, the first non-option token begins positional parsing
+        // (`COMMAND...` / `JOB_ID`). Do not rewrite any later tokens, which belong to
+        // the child command argv for `run`.
+        if wait_alias_enabled
+            && !wait_alias_phase_ended
+            && !arg_text.starts_with('-')
+            && !arg_text.is_empty()
+        {
+            wait_alias_phase_ended = true;
+        }
+
+        normalized.push(arg);
+    }
+
+    normalized
 }
 
 fn run(cli: Cli) -> Result<()> {
