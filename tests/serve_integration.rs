@@ -36,7 +36,7 @@ fn free_port() -> u16 {
 struct ServeProcess {
     child: Child,
     port: u16,
-    _root: tempfile::TempDir,
+    root: tempfile::TempDir,
 }
 
 impl ServeProcess {
@@ -66,15 +66,15 @@ impl ServeProcess {
             thread::sleep(Duration::from_millis(50));
         }
 
-        ServeProcess {
-            child,
-            port,
-            _root: root,
-        }
+        ServeProcess { child, port, root }
     }
 
     fn url(&self, path: &str) -> String {
         format!("http://127.0.0.1:{}{path}", self.port)
+    }
+
+    fn root_path(&self) -> &std::path::Path {
+        self.root.path()
     }
 }
 
@@ -275,6 +275,21 @@ fn test_status_not_found() {
     assert_eq!(status, 404, "expected 404 for nonexistent job: {json}");
     assert_eq!(json["ok"], false);
     assert_eq!(json["error"]["code"], "job_not_found");
+    assert_common_fields(&json);
+}
+
+#[test]
+fn test_status_ambiguous_prefix_returns_400() {
+    let srv = ServeProcess::start();
+    let first = "01abcdef000000000000000000000001";
+    let second = "01abcdef000000000000000000000002";
+    std::fs::create_dir_all(srv.root_path().join(first)).expect("create first job dir");
+    std::fs::create_dir_all(srv.root_path().join(second)).expect("create second job dir");
+
+    let (status, json) = get_json(&srv.url("/status/01abcdef"));
+    assert_eq!(status, 400, "expected 400 for ambiguous prefix: {json}");
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["error"]["code"], "ambiguous_job_id");
     assert_common_fields(&json);
 }
 

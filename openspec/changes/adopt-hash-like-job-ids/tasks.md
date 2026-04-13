@@ -11,3 +11,9 @@
 
 - 必要であれば shell completion の help 表示に `short_job_id` を併記する追加改善
 - 既存 README の job ID 説明文を、proposal 実装と同時に見直すか別 change として分離する判断
+
+## Acceptance #1 Failure Follow-up
+
+- [x] `tests/integration.rs` の rustfmt 差分を解消し、`cargo fmt --all -- --check` と pre-commit 相当の hook を通す
+- [x] `serve` で曖昧 prefix を `HTTP 400` / `error.code="ambiguous_job_id"` に正しく変換する
+- [x] `tests/serve_integration.rs` に曖昧 prefix の失敗ケースを追加し、task 5 の受け入れ証跡を補強する

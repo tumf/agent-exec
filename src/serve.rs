@@ -87,6 +87,15 @@ fn map_err_to_response(e: anyhow::Error) -> AxumResponse {
     if e.downcast_ref::<JobNotFound>().is_some() {
         err_resp(StatusCode::NOT_FOUND, "job_not_found", &format!("{e:#}"))
     } else if e
+        .downcast_ref::<crate::jobstore::AmbiguousJobId>()
+        .is_some()
+    {
+        err_resp(
+            StatusCode::BAD_REQUEST,
+            "ambiguous_job_id",
+            &format!("{e:#}"),
+        )
+    } else if e
         .downcast_ref::<crate::jobstore::InvalidJobState>()
         .is_some()
     {
