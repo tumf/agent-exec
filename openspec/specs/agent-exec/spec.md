@@ -70,16 +70,6 @@ Given Windows 環境で `agent-exec kill <job_id> --signal TERM` を実行する
 When コマンドが成功する
 Then JSON の `ok=true` が返り、対象ジョブのプロセスツリーが終了する
 
-### Requirement: list の JSON ペイロード
-
-`list` は `root`, `jobs`, `truncated`, `skipped` を含む JSON を返さなければならない（MUST）。`jobs` の各要素は少なくとも `job_id`, `state`, `started_at` を含み、`exit_code` と `finished_at` と `updated_at` は存在する場合にのみ含めてよい（MAY）。
-
-#### Scenario: list が必須フィールドを返す
-Given `agent-exec list` を実行する
-When コマンドが完了する
-Then JSON に `root`, `jobs`, `truncated`, `skipped` が含まれる
-And `jobs` の各要素は `job_id`, `state`, `started_at` を含む
-
 ### Requirement: list の並び順と制約
 
 `list` は `started_at` の降順で `jobs` を返さなければならない（MUST）。`--limit` が指定された場合は上限件数まで返し、超過した場合は `truncated=true` を返さなければならない（MUST）。
@@ -323,6 +313,32 @@ When `agent-exec status <ulid-job-id>` を実行する
 Then コマンドはその job を解決して状態を返す
 And 新形式 job の導入によって既存 ULID job の参照は壊れない
 
+
+### Requirement: list の JSON ペイロード
+
+`list` は `root`, `jobs`, `truncated`, `skipped` を含む JSON を返さなければならない（MUST）。`jobs` の各要素は少なくとも `job_id`, `short_job_id`, `state`, `started_at` を含まなければならない（MUST）。
+
+state.json が読める場合、各エントリは `updated_at` を必ず含めなければならない（MUST）。ジョブが終端状態（succeeded / failed / killed / timeout）の場合、`finished_at` と `exit_code` を必ず含めなければならない（MUST）。state.json がレース条件で未作成・破損している場合に限り、これらは省略してよい（MAY）。
+
+#### Scenario: list が必須フィールドを返す
+
+Given `agent-exec list` を実行する
+When コマンドが完了する
+Then JSON に `root`, `jobs`, `truncated`, `skipped` が含まれる
+And `jobs` の各要素は `job_id`, `short_job_id`, `state`, `started_at` を含む
+
+#### Scenario: list includes progress for running jobs
+
+**Given**: a running job whose state.json is readable
+**When**: `agent-exec list` is executed
+**Then**: the job entry includes `updated_at`
+**And**: `finished_at` and `exit_code` are absent
+
+#### Scenario: list includes terminal fields for finished jobs
+
+**Given**: a finished job
+**When**: `agent-exec list` is executed
+**Then**: the job entry includes `updated_at`, `finished_at`, and `exit_code`
 
 ### Requirement: list の件数制限と truncated フラグ
 
