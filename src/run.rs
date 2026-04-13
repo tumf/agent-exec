@@ -30,6 +30,8 @@ pub struct InlineObservation {
     pub state: String,
     pub exit_code: Option<i32>,
     pub finished_at: Option<String>,
+    pub signal: Option<String>,
+    pub duration_ms: Option<u64>,
 }
 use crate::tag::dedup_tags;
 
@@ -628,6 +630,8 @@ pub fn execute(opts: RunOpts) -> Result<()> {
             encoding: observation.encoding,
             exit_code: observation.exit_code,
             finished_at: observation.finished_at,
+            signal: observation.signal,
+            duration_ms: observation.duration_ms,
         },
     );
     response.print();
@@ -734,6 +738,8 @@ pub fn observe_inline_output(
         encoding: "utf-8-lossy".to_string(),
         state: state.status().as_str().to_string(),
         exit_code: state.exit_code(),
+        signal: state.signal().map(|s| s.to_string()),
+        duration_ms: state.duration_ms(),
         finished_at: state.finished_at,
     })
 }

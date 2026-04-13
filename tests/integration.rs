@@ -5878,6 +5878,49 @@ fn stdin_bin_created_with_0o600_permissions() {
     );
 }
 
+// ── enrich-run-inline-completion: signal / duration_ms in run inline ─────────
+
+#[test]
+fn run_inline_returns_exit_code_and_duration_ms_on_short_exit() {
+    let h = TestHarness::new();
+    let v = h.run(&["run", "--", "sh", "-c", "exit 7"]);
+    assert_envelope(&v, "run", true);
+    assert_eq!(v["exit_code"], 7, "exit_code should be 7: {v}");
+    assert!(
+        v.get("finished_at").is_some() && !v["finished_at"].is_null(),
+        "finished_at must be present: {v}"
+    );
+    assert!(
+        v.get("duration_ms").is_some() && !v["duration_ms"].is_null(),
+        "duration_ms must be present for terminal job: {v}"
+    );
+    assert!(
+        v["duration_ms"].as_u64().is_some(),
+        "duration_ms must be a non-negative integer: {v}"
+    );
+    assert!(
+        v.get("signal").is_none() || v["signal"].is_null(),
+        "signal should be absent for normal exit: {v}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn run_inline_includes_signal_on_signal_terminated_exit() {
+    let h = TestHarness::new();
+    let v = h.run(&["run", "--", "sh", "-c", "kill -TERM $$"]);
+    assert_envelope(&v, "run", true);
+    assert!(
+        v.get("signal").is_some() && !v["signal"].is_null(),
+        "signal must be present for signal-terminated job: {v}"
+    );
+    let sig = v["signal"].as_str().unwrap();
+    assert!(
+        sig.contains("TERM") || sig == "15",
+        "signal should indicate SIGTERM: {sig}"
+    );
+}
+
 #[test]
 fn stdin_too_large_rejects_oversized_input() {
     let h = TestHarness::new();
@@ -5903,4 +5946,31 @@ fn stdin_too_large_rejects_oversized_input() {
     let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("stdout should be JSON");
     assert_eq!(v["ok"].as_bool(), Some(false));
     assert_eq!(v["error"]["code"].as_str(), Some("stdin_too_large"));
+}
+
+#[test]
+fn run_inline_omits_completion_fields_for_long_jobs() {
+    let h = TestHarness::new();
+    let v = h.run(&["run", "--until", "1", "--", "sh", "-c", "sleep 30"]);
+    assert_envelope(&v, "run", true);
+    assert_eq!(
+        v["state"], "running",
+        "state should be running for long job: {v}"
+    );
+    assert!(
+        v.get("exit_code").is_none() || v["exit_code"].is_null(),
+        "exit_code should be absent/null for non-terminal job: {v}"
+    );
+    assert!(
+        v.get("finished_at").is_none() || v["finished_at"].is_null(),
+        "finished_at should be absent/null for non-terminal job: {v}"
+    );
+    assert!(
+        v.get("signal").is_none() || v["signal"].is_null(),
+        "signal should be absent/null for non-terminal job: {v}"
+    );
+    assert!(
+        v.get("duration_ms").is_none() || v["duration_ms"].is_null(),
+        "duration_ms should be absent/null for non-terminal job: {v}"
+    );
 }

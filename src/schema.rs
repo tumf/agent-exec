@@ -160,6 +160,12 @@ pub struct RunData {
     /// Finished-at timestamp when terminal.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<String>,
+    /// POSIX signal name when terminated by signal (e.g. "SIGTERM").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signal: Option<String>,
+    /// Wall-clock milliseconds from started_at to finished_at.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
 }
 
 /// Response for `status` command.
@@ -719,5 +725,97 @@ impl JobStatus {
     /// Returns true when the status is a non-terminal state (created or running).
     pub fn is_non_terminal(&self) -> bool {
         matches!(self, JobStatus::Created | JobStatus::Running)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_run_data(
+        exit_code: Option<i32>,
+        finished_at: Option<&str>,
+        signal: Option<&str>,
+        duration_ms: Option<u64>,
+    ) -> RunData {
+        RunData {
+            job_id: "abc123".into(),
+            state: "exited".into(),
+            tags: vec![],
+            env_vars: vec![],
+            stdout_log_path: "/tmp/stdout.log".into(),
+            stderr_log_path: "/tmp/stderr.log".into(),
+            elapsed_ms: 50,
+            waited_ms: 40,
+            stdout: "".into(),
+            stderr: "".into(),
+            stdout_range: [0, 0],
+            stderr_range: [0, 0],
+            stdout_total_bytes: 0,
+            stderr_total_bytes: 0,
+            encoding: "utf-8-lossy".into(),
+            exit_code,
+            finished_at: finished_at.map(|s| s.to_string()),
+            signal: signal.map(|s| s.to_string()),
+            duration_ms,
+        }
+    }
+
+    #[test]
+    fn run_data_signal_and_duration_present_when_set() {
+        let data = sample_run_data(
+            Some(0),
+            Some("2025-01-01T00:00:01Z"),
+            Some("SIGTERM"),
+            Some(1000),
+        );
+        let json = serde_json::to_value(&data).unwrap();
+        assert_eq!(json["signal"], "SIGTERM");
+        assert_eq!(json["duration_ms"], 1000);
+    }
+
+    #[test]
+    fn run_data_signal_and_duration_omitted_when_none() {
+        let data = sample_run_data(None, None, None, None);
+        let json = serde_json::to_value(&data).unwrap();
+        assert!(
+            json.get("signal").is_none(),
+            "signal should be omitted: {json}"
+        );
+        assert!(
+            json.get("duration_ms").is_none(),
+            "duration_ms should be omitted: {json}"
+        );
+        assert!(
+            json.get("exit_code").is_none(),
+            "exit_code should be omitted: {json}"
+        );
+        assert!(
+            json.get("finished_at").is_none(),
+            "finished_at should be omitted: {json}"
+        );
+    }
+
+    #[test]
+    fn run_data_signal_omitted_duration_present() {
+        let data = sample_run_data(Some(7), Some("2025-01-01T00:00:01Z"), None, Some(500));
+        let json = serde_json::to_value(&data).unwrap();
+        assert!(json.get("signal").is_none(), "signal should be omitted");
+        assert_eq!(json["duration_ms"], 500);
+        assert_eq!(json["exit_code"], 7);
+    }
+
+    #[test]
+    fn run_data_roundtrip_with_all_fields() {
+        let data = sample_run_data(
+            Some(1),
+            Some("2025-01-01T00:00:02Z"),
+            Some("SIGKILL"),
+            Some(2000),
+        );
+        let serialized = serde_json::to_string(&data).unwrap();
+        let deserialized: RunData = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(deserialized.signal.as_deref(), Some("SIGKILL"));
+        assert_eq!(deserialized.duration_ms, Some(2000));
     }
 }
