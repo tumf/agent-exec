@@ -422,6 +422,10 @@ enum Command {
         #[arg(long, default_value = "TERM", value_parser = SignalValueParser)]
         signal: String,
 
+        /// Skip post-signal observation; return immediately with legacy shape.
+        #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue)]
+        no_wait: bool,
+
         /// Job ID.
         #[arg(add = ArgValueCompleter::new(agent_exec::completions::complete_running_jobs))]
         job_id: String,
@@ -985,11 +989,16 @@ fn run(cli: Cli) -> Result<()> {
             })?;
         }
 
-        Command::Kill { signal, job_id } => {
+        Command::Kill {
+            signal,
+            no_wait,
+            job_id,
+        } => {
             agent_exec::kill::execute(agent_exec::kill::KillOpts {
                 job_id: &job_id,
                 root: root.as_deref(),
                 signal: &signal,
+                no_wait,
             })?;
         }
 
