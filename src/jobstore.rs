@@ -52,6 +52,25 @@ impl std::fmt::Display for AmbiguousJobId {
 
 impl std::error::Error for AmbiguousJobId {}
 
+/// Sentinel error type when job ID generation exhausts all retry attempts.
+/// Used by callers to emit `error.code = "io_error"` instead of `internal_error`.
+#[derive(Debug)]
+pub struct JobIdCollisionExhausted {
+    pub attempts: usize,
+}
+
+impl std::fmt::Display for JobIdCollisionExhausted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "job ID generation failed: {} consecutive collisions",
+            self.attempts
+        )
+    }
+}
+
+impl std::error::Error for JobIdCollisionExhausted {}
+
 /// Sentinel error type for invalid job state transitions.
 /// Used by callers to emit `error.code = "invalid_state"` instead of `internal_error`.
 #[derive(Debug)]
@@ -70,13 +89,19 @@ const JOB_ID_HEX_BYTES: usize = 16;
 const JOB_ID_LENGTH: usize = JOB_ID_HEX_BYTES * 2;
 pub const SHORT_JOB_ID_LENGTH: usize = 7;
 
+const MAX_JOB_ID_ATTEMPTS: usize = 16;
+
 /// Generate a new hash-like job ID (`[0-9a-f]`, fixed-length) that is unique under `root`.
 ///
-/// The generator retries on directory-name collisions.
+/// The generator retries on directory-name collisions up to 16 times.
 pub fn generate_job_id(root: &Path) -> Result<String> {
-    loop {
+    generate_job_id_with_rng(root, &mut rand::thread_rng())
+}
+
+fn generate_job_id_with_rng(root: &Path, rng: &mut impl RngCore) -> Result<String> {
+    for _ in 0..MAX_JOB_ID_ATTEMPTS {
         let mut bytes = [0u8; JOB_ID_HEX_BYTES];
-        rand::thread_rng().fill_bytes(&mut bytes);
+        rng.fill_bytes(&mut bytes);
         let candidate = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
         debug_assert_eq!(candidate.len(), JOB_ID_LENGTH);
 
@@ -84,6 +109,9 @@ pub fn generate_job_id(root: &Path) -> Result<String> {
             return Ok(candidate);
         }
     }
+    Err(anyhow::Error::new(JobIdCollisionExhausted {
+        attempts: MAX_JOB_ID_ATTEMPTS,
+    }))
 }
 
 /// Human-facing short job ID for list-like displays.
@@ -865,6 +893,42 @@ mod tests {
             !root.join(&id).exists(),
             "generated id must not collide with existing directory"
         );
+    }
+
+    /// A deterministic RNG that always produces the same bytes.
+    struct FixedRng([u8; JOB_ID_HEX_BYTES]);
+
+    impl rand::RngCore for FixedRng {
+        fn next_u32(&mut self) -> u32 {
+            unimplemented!()
+        }
+        fn next_u64(&mut self) -> u64 {
+            unimplemented!()
+        }
+        fn fill_bytes(&mut self, dest: &mut [u8]) {
+            dest.copy_from_slice(&self.0[..dest.len()]);
+        }
+        fn try_fill_bytes(&mut self, dest: &mut [u8]) -> std::result::Result<(), rand::Error> {
+            self.fill_bytes(dest);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn generate_job_id_fails_after_16_collisions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        let fixed_bytes = [0xABu8; JOB_ID_HEX_BYTES];
+        let colliding_id: String = fixed_bytes.iter().map(|b| format!("{b:02x}")).collect();
+        std::fs::create_dir(root.join(&colliding_id)).unwrap();
+
+        let mut rng = FixedRng(fixed_bytes);
+        let err = generate_job_id_with_rng(root, &mut rng).unwrap_err();
+        let exhausted = err
+            .downcast_ref::<JobIdCollisionExhausted>()
+            .expect("expected JobIdCollisionExhausted");
+        assert_eq!(exhausted.attempts, MAX_JOB_ID_ATTEMPTS);
     }
 
     #[test]
