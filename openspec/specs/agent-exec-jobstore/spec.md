@@ -144,3 +144,45 @@ Unix 系プラットフォームでは `stdin.bin` のパーミッションは `
 **Given**: a 65 MiB input via `--stdin-file ./big.bin`
 **When**: `agent-exec run --stdin-file ./big.bin -- cat` is executed with default `--stdin-max-bytes`
 **Then**: the command fails with `error.code="stdin_too_large"` before launching the workload
+
+## Requirements
+
+### Requirement: job_id の生成仕様
+
+新規生成する `job_id` は 32 文字の小文字 16 進数文字列でなければならない（MUST）。エントロピー源は OS CSPRNG（128 bit 以上）でなければならない（MUST）。`short_job_id` はこの `job_id` の先頭 7 文字でなければならない（MUST）。
+
+衝突検出（同名ディレクトリが既に存在する）時は最大 16 回まで再生成を試行しなければならない（MUST）。16 回連続で衝突した場合は `error.code="io_error"` の構造化エラーを返さなければならない（MUST）。無制限 loop をしてはならない（MUST NOT）。
+
+#### Scenario: generated job_id is 32-char lowercase hex
+
+**Given**: `agent-exec run -- echo hi` is executed
+**When**: the JSON response is returned
+**Then**: `job_id` matches `^[0-9a-f]{32}$`
+
+#### Scenario: 16 consecutive collisions return io_error
+
+**Given**: a fake RNG produces the same 16 bytes on 16 consecutive draws
+**And**: a directory with that `job_id` already exists
+**When**: `generate_job_id` is called
+**Then**: the call returns an error mapped to `error.code="io_error"`
+
+## Requirements
+
+### Requirement: ULID/hex 併存時の読み取り互換
+
+新規に生成する `job_id` は 32 文字小文字 hex でなければならない（MUST）。ただし過去に ULID 形式（Crockford base32 26 文字）で生成された既存ディレクトリは読み取り可能でなければならない（MUST）。
+
+`JobDir::open` は指定された prefix を文字列として解釈し、`0-9a-zA-Z` の範囲で一致するすべての job ディレクトリを候補とする（MUST）。hex と ULID のどちらに一致するかで暗黙の優先順位を付けてはならない（MUST NOT）。prefix が 2 件以上にマッチする場合は `ambiguous_job_id` エラーを返し、候補にはマッチした hex / ULID を両方含めなければならない（MUST）。
+
+#### Scenario: ULID-format legacy job is readable
+
+**Given**: a legacy job directory whose `job_id` is 26-char Crockford base32
+**When**: `agent-exec status <legacy-id>` is executed
+**Then**: HTTP 200 / exit 0 with the job's state is returned
+
+#### Scenario: prefix matching both hex and ULID returns ambiguous
+
+**Given**: a hex job `01abc...` and a ULID job `01ABC...` (case-insensitive overlap)
+**When**: `agent-exec status 01` is executed
+**Then**: `error.code="ambiguous_job_id"` is returned
+**And**: `error.details.candidates` contains both job ids
