@@ -128,7 +128,10 @@ struct ExecRequest {
     command: Option<Vec<String>>,
     cwd: Option<String>,
     env: Option<HashMap<String, String>>,
-    timeout_ms: Option<u64>,
+    timeout: Option<f64>,
+    wait: Option<bool>,
+    until: Option<u64>,
+    max_bytes: Option<u64>,
 }
 
 async fn exec_handler(State(state): State<Arc<AppState>>, request: Request) -> AxumResponse {
@@ -182,16 +185,22 @@ async fn exec_handler(State(state): State<Arc<AppState>>, request: Request) -> A
         .map(|(k, v)| format!("{k}={v}"))
         .collect();
     let cwd = req.cwd;
-    let timeout_ms = req.timeout_ms.unwrap_or(0);
+    let timeout_ms = req.timeout.map(|s| (s * 1000.0) as u64).unwrap_or(0);
+    let wait = req.wait.unwrap_or(true);
+    let until = req.until.unwrap_or(10);
+    let max_bytes = req.max_bytes.unwrap_or(65536);
 
     let result = tokio::task::spawn_blocking(move || {
-        run_exec_inner(
-            root_opt.as_deref(),
+        run_exec_inner(ExecParams {
+            root: root_opt,
             command,
-            cwd.as_deref(),
+            cwd,
             env_vars,
             timeout_ms,
-        )
+            wait,
+            until,
+            max_bytes,
+        })
     })
     .await;
 
@@ -206,30 +215,35 @@ async fn exec_handler(State(state): State<Arc<AppState>>, request: Request) -> A
     }
 }
 
-/// Core logic for POST /exec: create and launch a job, return RunData as JSON value.
-fn run_exec_inner(
-    root: Option<&str>,
+struct ExecParams {
+    root: Option<String>,
     command: Vec<String>,
-    cwd: Option<&str>,
+    cwd: Option<String>,
     env_vars: Vec<String>,
     timeout_ms: u64,
-) -> Result<serde_json::Value> {
+    wait: bool,
+    until: u64,
+    max_bytes: u64,
+}
+
+fn run_exec_inner(p: ExecParams) -> Result<serde_json::Value> {
     use crate::run::{
         SpawnSupervisorParams, now_rfc3339_pub, observe_inline_output, pre_create_log_files,
         resolve_effective_cwd, spawn_supervisor_process,
     };
 
     let elapsed_start = std::time::Instant::now();
-    let resolved_root = resolve_root(root);
+    let resolved_root = resolve_root(p.root.as_deref());
     std::fs::create_dir_all(&resolved_root)
         .map_err(|e| anyhow::anyhow!("create jobs root: {e}"))?;
 
     let job_id = generate_job_id(&resolved_root)?;
     let created_at = now_rfc3339_pub();
-    let effective_cwd = resolve_effective_cwd(cwd);
+    let effective_cwd = resolve_effective_cwd(p.cwd.as_deref());
     let shell_wrapper = crate::config::default_shell_wrapper();
 
-    let env_keys: Vec<String> = env_vars
+    let env_keys: Vec<String> = p
+        .env_vars
         .iter()
         .map(|kv| kv.split('=').next().unwrap_or(kv).to_string())
         .collect();
@@ -237,18 +251,18 @@ fn run_exec_inner(
     let meta = JobMeta {
         job: JobMetaJob { id: job_id.clone() },
         schema_version: SCHEMA_VERSION.to_string(),
-        command: command.clone(),
+        command: p.command.clone(),
         created_at,
         root: resolved_root.display().to_string(),
         env_keys,
-        env_vars: env_vars.clone(),
+        env_vars: p.env_vars.clone(),
         env_vars_runtime: vec![],
         mask: vec![],
         cwd: Some(effective_cwd),
         notification: None,
         inherit_env: true,
         env_files: vec![],
-        timeout_ms,
+        timeout_ms: p.timeout_ms,
         kill_after_ms: 0,
         progress_every_ms: 0,
         shell_wrapper: Some(shell_wrapper.clone()),
@@ -265,10 +279,10 @@ fn run_exec_inner(
             job_id: job_id.clone(),
             root: resolved_root.clone(),
             full_log_path: job_dir.full_log_path().display().to_string(),
-            timeout_ms,
+            timeout_ms: p.timeout_ms,
             kill_after_ms: 0,
-            cwd: cwd.map(|s| s.to_string()),
-            env_vars: env_vars.clone(),
+            cwd: p.cwd.clone(),
+            env_vars: p.env_vars.clone(),
             env_files: vec![],
             inherit_env: true,
             stdin_file: None,
@@ -276,14 +290,14 @@ fn run_exec_inner(
             notify_command: None,
             notify_file: None,
             shell_wrapper: shell_wrapper.clone(),
-            command: command.clone(),
+            command: p.command.clone(),
         },
     )?;
 
     let stdout_log_path = job_dir.stdout_path().display().to_string();
     let stderr_log_path = job_dir.stderr_path().display().to_string();
 
-    let observation = observe_inline_output(&job_dir, true, 10, false, 65536)?;
+    let observation = observe_inline_output(&job_dir, p.wait, p.until, false, p.max_bytes)?;
 
     let elapsed_ms = elapsed_start.elapsed().as_millis() as u64;
 
@@ -498,4 +512,40 @@ fn send_term(pid: u32) {
 #[cfg(not(unix))]
 fn send_term(_pid: u32) {
     // Windows: not implemented for serve (Windows kill support is in kill.rs).
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exec_request_deserializes_new_fields() {
+        let json =
+            r#"{"command":["echo","hi"],"wait":false,"until":5,"max_bytes":1024,"timeout":30.5}"#;
+        let req: ExecRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.wait, Some(false));
+        assert_eq!(req.until, Some(5));
+        assert_eq!(req.max_bytes, Some(1024));
+        assert!((req.timeout.unwrap() - 30.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn exec_request_defaults_when_omitted() {
+        let json = r#"{"command":["echo","hi"]}"#;
+        let req: ExecRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.wait, None);
+        assert_eq!(req.until, None);
+        assert_eq!(req.max_bytes, None);
+        assert_eq!(req.timeout, None);
+    }
+
+    #[test]
+    fn exec_request_rejects_timeout_ms() {
+        let json = r#"{"command":["echo","hi"],"timeout_ms":1000}"#;
+        let result = serde_json::from_str::<ExecRequest>(json);
+        assert!(
+            result.is_err(),
+            "timeout_ms should be rejected as unknown field"
+        );
+    }
 }
