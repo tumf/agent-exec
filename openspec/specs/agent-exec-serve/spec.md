@@ -155,3 +155,84 @@ Then HTTP 200 かつ対応する job の状態を含む JSON が返る
 Given 同じ先頭 prefix を共有する 2 件の job が存在する
 When `GET /status/<shared-prefix>` をリクエストする
 Then HTTP 400 かつ `error.code="ambiguous_job_id"` を含む JSON が返る
+
+## Requirements
+
+### Requirement: 非 loopback bind の明示ガード
+
+`agent-exec serve` の bind アドレスが loopback（`127.0.0.0/8` または `::1`）以外の場合、`--insecure` フラグを明示指定しない限り起動を拒否しなければならない（MUST）。拒否時は stderr に警告を出し、stdout に `{ok:false,error:{code:"serve_unsafe_bind"}}` を書いて exit code 1 で終了しなければならない（MUST）。
+
+非 loopback bind を選択する場合は、`AGENT_EXEC_SERVE_TOKEN` 環境変数の設定を必須とする（MUST）。未設定時は `serve_unsafe_bind` と同様に起動拒否しなければならない（MUST）。
+
+#### Scenario: non-loopback bind without --insecure is rejected
+
+**Given**: a user executes `agent-exec serve --bind 0.0.0.0:19263`
+**When**: the server attempts to start
+**Then**: the process exits with code 1
+**And**: stdout contains `error.code="serve_unsafe_bind"`
+
+#### Scenario: non-loopback bind without token is rejected even with --insecure
+
+**Given**: a user executes `agent-exec serve --bind 0.0.0.0:19263 --insecure`
+**And**: `AGENT_EXEC_SERVE_TOKEN` is unset
+**When**: the server attempts to start
+**Then**: the process exits with code 1
+
+### Requirement: Bearer トークン認証
+
+`AGENT_EXEC_SERVE_TOKEN` 環境変数が設定されている場合、mutating エンドポイント（`POST /exec`・`POST /kill/:id`）は `Authorization: Bearer <token>` ヘッダを検証しなければならない（MUST）。ヘッダ欠落・値不一致は HTTP 401 と `error.code="unauthorized"` を返さなければならない（MUST）。
+
+読み取り専用エンドポイント（`GET /health`・`GET /status/:id`・`GET /tail/:id`・`GET /wait/:id`）はトークン検証を要求しない（MAY）。
+
+#### Scenario: POST /exec requires Bearer token when set
+
+**Given**: `AGENT_EXEC_SERVE_TOKEN=secret` で serve が起動している
+**When**: `POST /exec` に `Authorization` ヘッダ無しで送る
+**Then**: HTTP 401 と `error.code="unauthorized"` が返る
+
+#### Scenario: POST /exec accepts matching token
+
+**Given**: `AGENT_EXEC_SERVE_TOKEN=secret` で serve が起動している
+**When**: `POST /exec` を `Authorization: Bearer secret` 付きで送る
+**Then**: HTTP 200 が返る
+
+### Requirement: CORS の明示的 allow-origin
+
+serve は既定で `Access-Control-Allow-Origin` を含むどの CORS ヘッダも返してはならない（MUST NOT）。`--allow-origin <ORIGIN>` が指定された場合に限り、当該 origin に対してのみ CORS ヘッダを返す（MUST）。wildcard `*` は受け付けてはならない（MUST NOT）。
+
+#### Scenario: CORS headers are absent by default
+
+**Given**: `agent-exec serve` が既定設定で起動している
+**When**: `OPTIONS /exec` を preflight として送る
+**Then**: `Access-Control-Allow-Origin` ヘッダは含まれない
+
+#### Scenario: explicit allow-origin emits CORS header
+
+**Given**: `agent-exec serve --allow-origin https://example.com` で起動している
+**When**: `Origin: https://example.com` ヘッダ付きで `POST /exec` を送る
+**Then**: レスポンスに `Access-Control-Allow-Origin: https://example.com` が含まれる
+
+### Requirement: POST /exec によるジョブ起動
+
+`POST /exec` はリクエストボディの `command` フィールド（必須、string 配列）と任意の `cwd`・`env`・`timeout`（秒）・`wait`（bool、既定 true）・`until`（秒、既定 10）・`max_bytes`（u64、既定 65536）を受け取り、CLI `run` と同じ inline 観測契約でジョブを起動して返さなければならない（MUST）。旧 `timeout_ms` は受け付けてはならない（MUST NOT）。`wait`/`until`/`max_bytes` はクライアントが上書きできなければならない（MUST）。
+
+`POST /exec` のレスポンスは CLI `run` と同じ inline output field（`stdout`/`stderr` と range/total bytes、および終端フィールド）を返さなければならない（MUST）。新規 job の `job_id` は hash-like 小文字 hex ID でなければならない（MUST）。
+
+#### Scenario: POST /exec accepts until override
+
+**Given**: `agent-exec serve` が起動している
+**When**: `POST /exec` に `{"command":["sh","-c","exit 7"],"until":1}` を送る
+**Then**: HTTP 200 かつ `exit_code=7` を含む JSON が約 1 秒で返る
+
+#### Scenario: POST /exec accepts wait=false
+
+**Given**: `agent-exec serve` が起動している
+**When**: `POST /exec` に `{"command":["sleep","60"],"wait":false}` を送る
+**Then**: HTTP 200 が即座に返る
+**And**: `stdout` は空または省略される
+
+#### Scenario: POST /exec rejects legacy timeout_ms
+
+**Given**: `agent-exec serve` が起動している
+**When**: `POST /exec` に `{"command":["echo","hi"],"timeout_ms":1000}` を送る
+**Then**: HTTP 400 が返る

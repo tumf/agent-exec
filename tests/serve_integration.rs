@@ -39,21 +39,52 @@ struct ServeProcess {
     root: tempfile::TempDir,
 }
 
-impl ServeProcess {
-    fn start() -> Self {
+struct ServeProcessBuilder {
+    token: Option<String>,
+    allow_origin: Option<String>,
+    extra_args: Vec<String>,
+}
+
+impl ServeProcessBuilder {
+    fn new() -> Self {
+        Self {
+            token: None,
+            allow_origin: None,
+            extra_args: vec![],
+        }
+    }
+
+    fn token(mut self, t: &str) -> Self {
+        self.token = Some(t.to_string());
+        self
+    }
+
+    fn allow_origin(mut self, origin: &str) -> Self {
+        self.allow_origin = Some(origin.to_string());
+        self
+    }
+
+    fn start(self) -> ServeProcess {
         let root = tempfile::tempdir().expect("create tempdir");
         let port = free_port();
         let bind = format!("127.0.0.1:{port}");
 
-        let child = Command::new(binary())
-            .args(["serve", "--bind", &bind])
-            .env("AGENT_EXEC_ROOT", root.path())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn serve process");
+        let mut cmd = Command::new(binary());
+        cmd.args(["serve", "--bind", &bind]);
+        if let Some(ref origin) = self.allow_origin {
+            cmd.args(["--allow-origin", origin]);
+        }
+        for arg in &self.extra_args {
+            cmd.arg(arg);
+        }
+        cmd.env("AGENT_EXEC_ROOT", root.path());
+        if let Some(ref token) = self.token {
+            cmd.env("AGENT_EXEC_SERVE_TOKEN", token);
+        }
+        cmd.stdout(Stdio::null()).stderr(Stdio::null());
 
-        // Wait for the server to accept connections (up to 10 s).
+        let child = cmd.spawn().expect("spawn serve process");
+
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         loop {
             if std::net::TcpStream::connect(format!("127.0.0.1:{port}")).is_ok() {
@@ -67,6 +98,12 @@ impl ServeProcess {
         }
 
         ServeProcess { child, port, root }
+    }
+}
+
+impl ServeProcess {
+    fn start() -> Self {
+        ServeProcessBuilder::new().start()
     }
 
     fn url(&self, path: &str) -> String {
@@ -107,24 +144,69 @@ fn get_json(url: &str) -> (u16, serde_json::Value) {
 }
 
 fn post_json(url: &str, body: &str) -> (u16, serde_json::Value) {
+    post_json_with_auth(url, body, None)
+}
+
+fn post_json_with_auth(url: &str, body: &str, auth: Option<&str>) -> (u16, serde_json::Value) {
+    let auth_header = auth.map(|token| format!("Authorization: Bearer {token}"));
     let mut args = vec![
-        "-s",
-        "-w",
-        "\n%{http_code}",
-        "-X",
-        "POST",
-        "-H",
-        "Content-Type: application/json",
+        "-s".to_string(),
+        "-w".to_string(),
+        "\n%{http_code}".to_string(),
+        "-X".to_string(),
+        "POST".to_string(),
+        "-H".to_string(),
+        "Content-Type: application/json".to_string(),
     ];
-    if !body.is_empty() {
-        args.extend_from_slice(&["-d", body]);
+    if let Some(ref h) = auth_header {
+        args.push("-H".to_string());
+        args.push(h.clone());
     }
-    args.push(url);
+    if !body.is_empty() {
+        args.push("-d".to_string());
+        args.push(body.to_string());
+    }
+    args.push(url.to_string());
     let output = Command::new("curl")
         .args(&args)
         .output()
         .expect("curl POST");
     parse_curl_output(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn options_request(url: &str, origin: Option<&str>) -> (u16, Vec<(String, String)>) {
+    let mut args = vec![
+        "-s".to_string(),
+        "-w".to_string(),
+        "\n%{http_code}".to_string(),
+        "-X".to_string(),
+        "OPTIONS".to_string(),
+        "-D".to_string(),
+        "-".to_string(),
+    ];
+    if let Some(o) = origin {
+        args.push("-H".to_string());
+        args.push(format!("Origin: {o}"));
+        args.push("-H".to_string());
+        args.push("Access-Control-Request-Method: POST".to_string());
+    }
+    args.push(url.to_string());
+    let output = Command::new("curl")
+        .args(&args)
+        .output()
+        .expect("curl OPTIONS");
+    let raw = String::from_utf8_lossy(&output.stdout).to_string();
+    let status_line = raw.trim_end().lines().last().unwrap_or("0");
+    let status: u16 = status_line.trim().parse().unwrap_or(0);
+    let headers: Vec<(String, String)> = raw
+        .lines()
+        .filter(|l| l.contains(':'))
+        .filter_map(|l| {
+            let (k, v) = l.split_once(':')?;
+            Some((k.trim().to_lowercase(), v.trim().to_string()))
+        })
+        .collect();
+    (status, headers)
 }
 
 fn assert_common_fields(json: &serde_json::Value) {
@@ -317,14 +399,186 @@ fn test_exec_missing_command_returns_400() {
 }
 
 #[test]
-fn test_exec_rejects_wait_field() {
+fn test_exec_until_override() {
+    let srv = ServeProcess::start();
+    let start = std::time::Instant::now();
+    let (status, json) = post_json(
+        &srv.url("/exec"),
+        r#"{"command":["sh","-c","exit 7"],"until":1}"#,
+    );
+    let elapsed = start.elapsed();
+    assert_eq!(status, 200, "POST /exec with until=1 failed: {json}");
+    assert_eq!(json["exit_code"], 7);
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "until=1 should return quickly, took {elapsed:?}"
+    );
+}
+
+#[test]
+fn test_exec_wait_false() {
+    let srv = ServeProcess::start();
+    let start = std::time::Instant::now();
+    let (status, json) = post_json(
+        &srv.url("/exec"),
+        r#"{"command":["sleep","60"],"wait":false}"#,
+    );
+    let elapsed = start.elapsed();
+    assert_eq!(status, 200, "POST /exec with wait=false failed: {json}");
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "wait=false should return immediately, took {elapsed:?}"
+    );
+    let stdout = json["stdout"].as_str().unwrap_or("");
+    assert!(stdout.is_empty(), "stdout should be empty for wait=false");
+}
+
+#[test]
+fn test_exec_max_bytes() {
     let srv = ServeProcess::start();
     let (status, json) = post_json(
         &srv.url("/exec"),
-        r#"{"command":["echo","hi"],"wait":true}"#,
+        r#"{"command":["sh","-c","dd if=/dev/zero bs=4096 count=1 2>/dev/null | tr '\\0' 'A'"],"max_bytes":1024}"#,
     );
-    assert_eq!(status, 400, "expected 400 for unknown wait field: {json}");
+    assert_eq!(status, 200, "POST /exec with max_bytes failed: {json}");
+    let stdout = json["stdout"].as_str().unwrap_or("");
+    assert!(
+        stdout.len() <= 1024,
+        "stdout should be at most 1024 bytes, got {}",
+        stdout.len()
+    );
+}
+
+#[test]
+fn test_exec_rejects_timeout_ms() {
+    let srv = ServeProcess::start();
+    let (status, json) = post_json(
+        &srv.url("/exec"),
+        r#"{"command":["echo","hi"],"timeout_ms":1000}"#,
+    );
+    assert_eq!(status, 400, "expected 400 for timeout_ms field: {json}");
     assert_eq!(json["ok"], false);
     assert_eq!(json["error"]["code"], "invalid_request");
     assert_common_fields(&json);
+}
+
+// ---- Security integration tests ----
+
+#[test]
+fn test_non_loopback_bind_without_insecure_is_rejected() {
+    let root = tempfile::tempdir().expect("create tempdir");
+    let port = free_port();
+    let bind = format!("0.0.0.0:{port}");
+
+    let output = Command::new(binary())
+        .args(["serve", "--bind", &bind])
+        .env("AGENT_EXEC_ROOT", root.path())
+        .output()
+        .expect("run serve");
+
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit for non-loopback without --insecure"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("serve_unsafe_bind"),
+        "stdout should contain serve_unsafe_bind error: {stdout}"
+    );
+}
+
+#[test]
+fn test_non_loopback_bind_insecure_without_token_is_rejected() {
+    let root = tempfile::tempdir().expect("create tempdir");
+    let port = free_port();
+    let bind = format!("0.0.0.0:{port}");
+
+    let output = Command::new(binary())
+        .args(["serve", "--bind", &bind, "--insecure"])
+        .env("AGENT_EXEC_ROOT", root.path())
+        .env_remove("AGENT_EXEC_SERVE_TOKEN")
+        .output()
+        .expect("run serve");
+
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit for non-loopback --insecure without token"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("serve_unsafe_bind"),
+        "stdout should contain serve_unsafe_bind error: {stdout}"
+    );
+}
+
+#[test]
+fn test_auth_token_required_returns_401() {
+    let srv = ServeProcessBuilder::new().token("testsecret").start();
+
+    let (status, json) = post_json(&srv.url("/exec"), r#"{"command":["echo","hi"]}"#);
+    assert_eq!(status, 401, "expected 401 without token: {json}");
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["error"]["code"], "unauthorized");
+}
+
+#[test]
+fn test_auth_token_accepted() {
+    let srv = ServeProcessBuilder::new().token("testsecret").start();
+
+    let (status, json) = post_json_with_auth(
+        &srv.url("/exec"),
+        r#"{"command":["echo","hi"]}"#,
+        Some("testsecret"),
+    );
+    assert_eq!(status, 200, "expected 200 with valid token: {json}");
+    assert_eq!(json["ok"], true);
+}
+
+#[test]
+fn test_auth_wrong_token_returns_401() {
+    let srv = ServeProcessBuilder::new().token("testsecret").start();
+
+    let (status, json) = post_json_with_auth(
+        &srv.url("/exec"),
+        r#"{"command":["echo","hi"]}"#,
+        Some("wrongtoken"),
+    );
+    assert_eq!(status, 401, "expected 401 with wrong token: {json}");
+    assert_eq!(json["error"]["code"], "unauthorized");
+}
+
+#[test]
+fn test_auth_readonly_endpoints_no_token_required() {
+    let srv = ServeProcessBuilder::new().token("testsecret").start();
+
+    let (status, _) = get_json(&srv.url("/health"));
+    assert_eq!(status, 200, "GET /health should not require auth");
+}
+
+#[test]
+fn test_cors_absent_by_default() {
+    let srv = ServeProcess::start();
+    let (_, headers) = options_request(&srv.url("/exec"), Some("https://evil.com"));
+    let has_acao = headers
+        .iter()
+        .any(|(k, _)| k == "access-control-allow-origin");
+    assert!(!has_acao, "CORS header should not be present by default");
+}
+
+#[test]
+fn test_cors_with_allow_origin() {
+    let srv = ServeProcessBuilder::new()
+        .allow_origin("https://example.com")
+        .start();
+
+    let (_, headers) = options_request(&srv.url("/exec"), Some("https://example.com"));
+    let acao = headers
+        .iter()
+        .find(|(k, _)| k == "access-control-allow-origin")
+        .map(|(_, v)| v.as_str());
+    assert_eq!(
+        acao,
+        Some("https://example.com"),
+        "expected CORS header for allowed origin, got headers: {headers:?}"
+    );
 }
