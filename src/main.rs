@@ -715,6 +715,7 @@ where
     let mut normalized = Vec::new();
     let mut iter = args.into_iter().peekable();
     let mut wait_alias_enabled = false;
+    let mut wait_alias_phase_ended = false;
 
     while let Some(arg) = iter.next() {
         let arg_text = arg.to_string_lossy();
@@ -727,11 +728,12 @@ where
 
         if arg_text == "run" || arg_text == "start" {
             wait_alias_enabled = true;
+            wait_alias_phase_ended = false;
             normalized.push(arg);
             continue;
         }
 
-        if wait_alias_enabled && arg_text == "--wait" {
+        if wait_alias_enabled && !wait_alias_phase_ended && arg_text == "--wait" {
             let should_insert_true = match iter.peek() {
                 Some(next) if next.to_string_lossy() == "--" => true,
                 Some(next) if next.to_string_lossy().starts_with('-') => true,
@@ -747,6 +749,17 @@ where
                 normalized.push(OsString::from("true"));
             }
             continue;
+        }
+
+        // For `run` / `start`, the first non-option token begins positional parsing
+        // (`COMMAND...` / `JOB_ID`). Do not rewrite any later tokens, which belong to
+        // the child command argv for `run`.
+        if wait_alias_enabled
+            && !wait_alias_phase_ended
+            && !arg_text.starts_with('-')
+            && !arg_text.is_empty()
+        {
+            wait_alias_phase_ended = true;
         }
 
         normalized.push(arg);

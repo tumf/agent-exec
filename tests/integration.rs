@@ -1627,6 +1627,21 @@ fn run_accepts_wait_bool_forms_for_backward_compatibility() {
 }
 
 #[test]
+fn run_preserves_child_bare_wait_argument() {
+    let h = TestHarness::new();
+    let v = h.run(&[
+        "run",
+        "python3",
+        "-c",
+        "import sys; print(sys.argv[1])",
+        "--wait",
+    ]);
+    assert_envelope(&v, "run", true);
+    let stdout = v["stdout"].as_str().expect("stdout missing");
+    assert_eq!(stdout.trim(), "--wait", "child argv must remain unchanged");
+}
+
+#[test]
 fn start_accepts_wait_flag() {
     let h = TestHarness::new();
     let create_v = h.run(&["create", "--", "echo", "start_wait_enabled"]);
