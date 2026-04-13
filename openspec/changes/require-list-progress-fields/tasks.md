@@ -5,10 +5,10 @@
 
 ## Acceptance #1 Failure Follow-up
 
-- [ ] Resolve duplicate "Requirement: list の JSON ペイロード" in canonical spec (lines 73 and 287) — ensure delta targets the correct instance
-- [ ] Fix delta to preserve `root`, `truncated`, `skipped` envelope fields from canonical requirement text
-- [ ] Fix delta to preserve `short_job_id` in required job entry fields
-- [ ] Remove `started_at` → `created_at` rename from delta (out of scope) or split into separate change
+- [x] Resolve duplicate "Requirement: list の JSON ペイロード" in canonical spec (lines 73 and 287) — ensure delta targets the correct instance
+- [x] Fix delta to preserve `root`, `truncated`, `skipped` envelope fields from canonical requirement text
+- [x] Fix delta to preserve `short_job_id` in required job entry fields
+- [x] Remove `started_at` → `created_at` rename from delta (out of scope) or split into separate change
 
 ## Future Work
 
