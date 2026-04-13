@@ -424,6 +424,8 @@ fn run_exec_inner(
             encoding: observation.encoding,
             exit_code: observation.exit_code,
             finished_at: observation.finished_at,
+            signal: observation.signal,
+            duration_ms: observation.duration_ms,
         },
     );
 

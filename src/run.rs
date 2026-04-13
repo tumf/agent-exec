@@ -30,6 +30,8 @@ pub struct InlineObservation {
     pub state: String,
     pub exit_code: Option<i32>,
     pub finished_at: Option<String>,
+    pub signal: Option<String>,
+    pub duration_ms: Option<u64>,
 }
 use crate::tag::dedup_tags;
 
@@ -71,6 +73,8 @@ pub struct RunOpts<'a> {
     pub mask: Vec<String>,
     /// Optional stdin source definition persisted in meta and materialized into stdin.bin.
     pub stdin: Option<StdinSource>,
+    /// Maximum bytes allowed for materialized stdin.bin (default: 64 MiB).
+    pub stdin_max_bytes: u64,
     /// User-defined tags for this job (deduplicated preserving first-seen order).
     pub tags: Vec<String>,
     /// Override full.log path; None = use job dir.
@@ -114,6 +118,7 @@ impl<'a> Default for RunOpts<'a> {
             inherit_env: true,
             mask: vec![],
             stdin: None,
+            stdin_max_bytes: DEFAULT_STDIN_MAX_BYTES,
             tags: vec![],
             log: None,
             progress_every_ms: 0,
@@ -186,34 +191,96 @@ pub fn validate_stdin_source(stdin: Option<&StdinSource>) -> Result<()> {
     Ok(())
 }
 
-fn materialize_stdin(job_dir: &JobDir, stdin: Option<&StdinSource>) -> Result<Option<String>> {
+fn create_stdin_file(path: &std::path::Path) -> Result<std::fs::File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)
+            .with_context(|| format!("create materialized stdin {}", path.display()))
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::File::create(path)
+            .with_context(|| format!("create materialized stdin {}", path.display()))
+    }
+}
+
+struct LimitedWriter<W> {
+    inner: W,
+    written: u64,
+    limit: u64,
+}
+
+impl<W: std::io::Write> std::io::Write for LimitedWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if self.written + buf.len() as u64 > self.limit {
+            return Err(std::io::Error::other("stdin_too_large"));
+        }
+        let n = self.inner.write(buf)?;
+        self.written += n as u64;
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+fn materialize_stdin(
+    job_dir: &JobDir,
+    stdin: Option<&StdinSource>,
+    max_bytes: u64,
+) -> Result<Option<String>> {
     let Some(source) = stdin else {
         return Ok(None);
     };
 
     let target_name = "stdin.bin".to_string();
     let target_path = job_dir.path.join(&target_name);
-    let mut target = std::fs::File::create(&target_path)
-        .with_context(|| format!("create materialized stdin {}", target_path.display()))?;
+    let file = create_stdin_file(&target_path)?;
+    let mut target = LimitedWriter {
+        inner: file,
+        written: 0,
+        limit: max_bytes,
+    };
 
-    match source {
+    let copy_result = match source {
         StdinSource::CallerStdin => {
             let mut stdin = std::io::stdin();
-            std::io::copy(&mut stdin, &mut target)
-                .context("materialize caller stdin to stdin.bin")?;
+            std::io::copy(&mut stdin, &mut target).context("materialize caller stdin to stdin.bin")
         }
         StdinSource::Inline(value) => {
             use std::io::Write;
             target
                 .write_all(value.as_bytes())
-                .context("write inline stdin to stdin.bin")?;
+                .map(|_| 0u64)
+                .context("write inline stdin to stdin.bin")
         }
         StdinSource::File(path) => {
             let mut input = std::fs::File::open(path)
                 .with_context(|| format!("open --stdin-file source {}", path))?;
             std::io::copy(&mut input, &mut target)
-                .with_context(|| format!("copy --stdin-file source {} to stdin.bin", path))?;
+                .with_context(|| format!("copy --stdin-file source {} to stdin.bin", path))
         }
+    };
+
+    if let Err(e) = copy_result {
+        let _ = std::fs::remove_file(&target_path);
+        let is_too_large = e
+            .chain()
+            .any(|cause| cause.to_string().contains("stdin_too_large"));
+        if is_too_large {
+            return Err(anyhow::anyhow!(StdinTooLarge(format!(
+                "stdin_too_large: input exceeds {} byte limit",
+                max_bytes
+            ))));
+        }
+        return Err(e);
     }
 
     Ok(Some(target_name))
@@ -241,6 +308,17 @@ impl std::fmt::Display for StdinRequired {
 
 impl std::error::Error for StdinRequired {}
 
+#[derive(Debug)]
+pub struct StdinTooLarge(pub String);
+
+impl std::fmt::Display for StdinTooLarge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for StdinTooLarge {}
+
 pub fn open_child_stdin(job_dir: &JobDir, stdin_file: Option<&str>) -> Result<std::process::Stdio> {
     if let Some(path) = resolve_stdin_path(job_dir, stdin_file) {
         let file = std::fs::File::open(&path)
@@ -251,11 +329,14 @@ pub fn open_child_stdin(job_dir: &JobDir, stdin_file: Option<&str>) -> Result<st
     }
 }
 
+pub const DEFAULT_STDIN_MAX_BYTES: u64 = 64 * 1024 * 1024; // 64 MiB
+
 pub fn materialize_stdin_for_job(
     job_dir: &JobDir,
     stdin: Option<&StdinSource>,
+    max_bytes: u64,
 ) -> Result<Option<String>> {
-    materialize_stdin(job_dir, stdin)
+    materialize_stdin(job_dir, stdin, max_bytes)
 }
 
 /// Spawn the supervisor process and write the initial running state to `state.json`.
@@ -471,7 +552,8 @@ pub fn execute(opts: RunOpts) -> Result<()> {
     validate_stdin_source(opts.stdin.as_ref())?;
 
     let job_dir = JobDir::create(&root, &job_id, &meta)?;
-    let stdin_file = materialize_stdin_for_job(&job_dir, opts.stdin.as_ref())?;
+    let stdin_file =
+        materialize_stdin_for_job(&job_dir, opts.stdin.as_ref(), opts.stdin_max_bytes)?;
     if stdin_file.is_some() {
         let mut meta_with_stdin = meta.clone();
         meta_with_stdin.stdin_file = stdin_file.clone();
@@ -548,6 +630,8 @@ pub fn execute(opts: RunOpts) -> Result<()> {
             encoding: observation.encoding,
             exit_code: observation.exit_code,
             finished_at: observation.finished_at,
+            signal: observation.signal,
+            duration_ms: observation.duration_ms,
         },
     );
     response.print();
@@ -654,6 +738,8 @@ pub fn observe_inline_output(
         encoding: "utf-8-lossy".to_string(),
         state: state.status().as_str().to_string(),
         exit_code: state.exit_code(),
+        signal: state.signal().map(|s| s.to_string()),
+        duration_ms: state.duration_ms(),
         finished_at: state.finished_at,
     })
 }
