@@ -1,8 +1,7 @@
 ## Specification Tasks
 
-- [ ] Promote `specs/agent-exec-contract/spec.md` delta — schema_version ポリシー
-  - Expected canonical result: canonical spec に semver MAJOR.MINOR ルール・bump 基準・forward-compat 要件が記載される
-- [ ] Review scenarios (MINOR addition / MAJOR breaking)
+- [x] Promote `specs/agent-exec-contract/spec.md` delta — schema_version ポリシー (canonical spec に semver MAJOR.MINOR ルール・bump 基準・forward-compat 要件が記載される)
+- [x] Review scenarios (MINOR addition / MAJOR breaking)
 
 ## Future Work
 
