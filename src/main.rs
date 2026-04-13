@@ -515,13 +515,21 @@ enum Command {
     /// Start an HTTP server exposing job operations as REST endpoints.
     Serve {
         /// Bind address (host:port). Defaults to 127.0.0.1:19263 (localhost only).
-        /// Use 0.0.0.0:19263 to expose on all interfaces (requires network access control).
+        /// Use 0.0.0.0:19263 to expose on all interfaces (requires --insecure).
         #[arg(long, default_value = "127.0.0.1:19263")]
         bind: String,
 
         /// Override port only (alternative to --bind when only the port should differ).
         #[arg(long, conflicts_with = "bind")]
         port: Option<u16>,
+
+        /// Allow binding to non-loopback addresses (dangerous: exposes RCE endpoint).
+        #[arg(long)]
+        insecure: bool,
+
+        /// Set allowed CORS origin. Wildcard '*' is rejected.
+        #[arg(long)]
+        allow_origin: Option<String>,
     },
 
     /// [Internal] Supervise a child process — not for direct use.
@@ -987,7 +995,12 @@ fn run(cli: Cli) -> Result<()> {
             })?;
         }
 
-        Command::Serve { bind, port } => {
+        Command::Serve {
+            bind,
+            port,
+            insecure,
+            allow_origin,
+        } => {
             let effective_bind = if let Some(p) = port {
                 format!("127.0.0.1:{p}")
             } else {
@@ -996,6 +1009,8 @@ fn run(cli: Cli) -> Result<()> {
             agent_exec::serve::execute(agent_exec::serve::ServeOpts {
                 bind: effective_bind,
                 root: root.clone(),
+                insecure,
+                allow_origin,
             })?;
         }
 
