@@ -35,6 +35,25 @@ impl<'a> Default for WaitOpts<'a> {
     }
 }
 
+fn log_file_size(path: &std::path::Path) -> Option<u64> {
+    std::fs::metadata(path).ok().map(|m| m.len())
+}
+
+pub fn build_wait_data(job_dir: &JobDir, state: &crate::schema::JobState) -> WaitData {
+    let stdout_total_bytes = log_file_size(&job_dir.stdout_path());
+    let stderr_total_bytes = log_file_size(&job_dir.stderr_path());
+    let updated_at = Some(state.updated_at.clone());
+
+    WaitData {
+        job_id: job_dir.job_id.clone(),
+        state: state.status().as_str().to_string(),
+        exit_code: state.exit_code(),
+        stdout_total_bytes,
+        stderr_total_bytes,
+        updated_at,
+    }
+}
+
 /// Execute `wait`: poll until done, then emit JSON.
 pub fn execute(opts: WaitOpts) -> Result<()> {
     let root = resolve_root(opts.root);
@@ -52,14 +71,7 @@ pub fn execute(opts: WaitOpts) -> Result<()> {
         debug!(job_id = %opts.job_id, state = ?state.status(), "wait poll");
 
         if !state.status().is_non_terminal() {
-            let response = Response::new(
-                "wait",
-                WaitData {
-                    job_id: job_dir.job_id.clone(),
-                    state: state.status().as_str().to_string(),
-                    exit_code: state.exit_code(),
-                },
-            );
+            let response = Response::new("wait", build_wait_data(&job_dir, &state));
             response.print();
             return Ok(());
         }
@@ -67,15 +79,9 @@ pub fn execute(opts: WaitOpts) -> Result<()> {
         if let Some(dl) = deadline
             && std::time::Instant::now() >= dl
         {
-            // Timed out — still in a non-terminal state (created or running).
-            let response = Response::new(
-                "wait",
-                WaitData {
-                    job_id: job_dir.job_id.clone(),
-                    state: state.status().as_str().to_string(),
-                    exit_code: None,
-                },
-            );
+            let mut data = build_wait_data(&job_dir, &state);
+            data.exit_code = None;
+            let response = Response::new("wait", data);
             response.print();
             return Ok(());
         }
