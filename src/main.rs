@@ -148,6 +148,10 @@ enum Command {
         #[arg(long, value_name = "PATH", value_hint = ValueHint::FilePath, conflicts_with = "stdin")]
         stdin_file: Option<String>,
 
+        /// Maximum bytes allowed for materialized stdin.bin (default: 64 MiB).
+        #[arg(long, value_name = "BYTES", default_value_t = agent_exec::run::DEFAULT_STDIN_MAX_BYTES)]
+        stdin_max_bytes: u64,
+
         /// Interval (seconds) at which state.json.updated_at is refreshed; 0 = disabled.
         #[arg(long, default_value = "0")]
         progress_every: u64,
@@ -276,6 +280,10 @@ enum Command {
         /// Read stdin content from file and materialize it into the job directory.
         #[arg(long, value_name = "PATH", value_hint = ValueHint::FilePath, conflicts_with = "stdin")]
         stdin_file: Option<String>,
+
+        /// Maximum bytes allowed for materialized stdin.bin (default: 64 MiB).
+        #[arg(long, value_name = "BYTES", default_value_t = agent_exec::run::DEFAULT_STDIN_MAX_BYTES)]
+        stdin_max_bytes: u64,
 
         /// Assign a tag to this job (may be repeated; duplicates are deduplicated).
         #[arg(long = "tag", value_name = "TAG", value_parser = parse_stored_tag)]
@@ -701,6 +709,8 @@ fn main() {
             ErrorResponse::new("invalid_state", format!("{e:#}"), false).print();
         } else if e.downcast_ref::<agent_exec::run::StdinRequired>().is_some() {
             ErrorResponse::new("stdin_required", format!("{e:#}"), false).print();
+        } else if e.downcast_ref::<agent_exec::run::StdinTooLarge>().is_some() {
+            ErrorResponse::new("stdin_too_large", format!("{e:#}"), false).print();
         } else {
             ErrorResponse::new("internal_error", format!("{e:#}"), false).print();
         }
@@ -783,6 +793,7 @@ fn run(cli: Cli) -> Result<()> {
             mask,
             stdin,
             stdin_file,
+            stdin_max_bytes,
             progress_every,
             notify_command,
             notify_file,
@@ -813,6 +824,7 @@ fn run(cli: Cli) -> Result<()> {
                 inherit_env: should_inherit,
                 mask,
                 stdin: resolved_stdin,
+                stdin_max_bytes,
                 progress_every_ms: progress_every.saturating_mul(1000),
                 notify_command,
                 notify_file,
@@ -869,6 +881,7 @@ fn run(cli: Cli) -> Result<()> {
             output_file,
             stdin,
             stdin_file,
+            stdin_max_bytes,
             config,
             shell_wrapper,
             wait,
@@ -906,6 +919,7 @@ fn run(cli: Cli) -> Result<()> {
                 inherit_env: should_inherit,
                 mask,
                 stdin: resolved_stdin,
+                stdin_max_bytes,
                 tags,
                 log: log.as_deref(),
                 progress_every_ms: progress_every.saturating_mul(1000),

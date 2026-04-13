@@ -45,6 +45,8 @@ pub struct CreateOpts<'a> {
     pub mask: Vec<String>,
     /// Optional stdin source definition persisted and materialized for start.
     pub stdin: Option<crate::run::StdinSource>,
+    /// Maximum bytes allowed for materialized stdin.bin.
+    pub stdin_max_bytes: u64,
     /// Interval (ms) for state.json updated_at refresh; 0 = disabled.
     pub progress_every_ms: u64,
     /// Shell command string for command notification sink.
@@ -145,7 +147,8 @@ pub fn execute(opts: CreateOpts) -> Result<()> {
     };
 
     let job_dir = JobDir::create(&root, &job_id, &meta)?;
-    let stdin_file = materialize_stdin_for_job(&job_dir, stdin_source.as_ref())?;
+    let stdin_file =
+        materialize_stdin_for_job(&job_dir, stdin_source.as_ref(), opts.stdin_max_bytes)?;
     if stdin_file.is_some() {
         let mut meta_with_stdin = meta.clone();
         meta_with_stdin.stdin_file = stdin_file;
