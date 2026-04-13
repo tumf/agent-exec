@@ -399,13 +399,64 @@ fn test_exec_missing_command_returns_400() {
 }
 
 #[test]
-fn test_exec_rejects_wait_field() {
+fn test_exec_until_override() {
+    let srv = ServeProcess::start();
+    let start = std::time::Instant::now();
+    let (status, json) = post_json(
+        &srv.url("/exec"),
+        r#"{"command":["sh","-c","exit 7"],"until":1}"#,
+    );
+    let elapsed = start.elapsed();
+    assert_eq!(status, 200, "POST /exec with until=1 failed: {json}");
+    assert_eq!(json["exit_code"], 7);
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "until=1 should return quickly, took {elapsed:?}"
+    );
+}
+
+#[test]
+fn test_exec_wait_false() {
+    let srv = ServeProcess::start();
+    let start = std::time::Instant::now();
+    let (status, json) = post_json(
+        &srv.url("/exec"),
+        r#"{"command":["sleep","60"],"wait":false}"#,
+    );
+    let elapsed = start.elapsed();
+    assert_eq!(status, 200, "POST /exec with wait=false failed: {json}");
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "wait=false should return immediately, took {elapsed:?}"
+    );
+    let stdout = json["stdout"].as_str().unwrap_or("");
+    assert!(stdout.is_empty(), "stdout should be empty for wait=false");
+}
+
+#[test]
+fn test_exec_max_bytes() {
     let srv = ServeProcess::start();
     let (status, json) = post_json(
         &srv.url("/exec"),
-        r#"{"command":["echo","hi"],"wait":true}"#,
+        r#"{"command":["sh","-c","dd if=/dev/zero bs=4096 count=1 2>/dev/null | tr '\\0' 'A'"],"max_bytes":1024}"#,
     );
-    assert_eq!(status, 400, "expected 400 for unknown wait field: {json}");
+    assert_eq!(status, 200, "POST /exec with max_bytes failed: {json}");
+    let stdout = json["stdout"].as_str().unwrap_or("");
+    assert!(
+        stdout.len() <= 1024,
+        "stdout should be at most 1024 bytes, got {}",
+        stdout.len()
+    );
+}
+
+#[test]
+fn test_exec_rejects_timeout_ms() {
+    let srv = ServeProcess::start();
+    let (status, json) = post_json(
+        &srv.url("/exec"),
+        r#"{"command":["echo","hi"],"timeout_ms":1000}"#,
+    );
+    assert_eq!(status, 400, "expected 400 for timeout_ms field: {json}");
     assert_eq!(json["ok"], false);
     assert_eq!(json["error"]["code"], "invalid_request");
     assert_common_fields(&json);
