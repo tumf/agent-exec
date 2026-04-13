@@ -1,9 +1,14 @@
 {
-  // Conflux Configuration - Project-specific overrides
+    // Conflux Configuration - Project-specific overrides
+    "analyze_command": "claude --dangerously-skip-permissions --verbose --output-format stream-json -p {prompt}",
+    "apply_command": "claude --dangerously-skip-permissions --verbose --output-format stream-json -p '{prompt}'",
+    "archive_command": "claude --dangerously-skip-permissions --verbose --output-format stream-json -p '{prompt}'",
+    "acceptance_command": "claude --dangerously-skip-permissions --verbose --output-format stream-json -p '{prompt}'",
+    "resolve_command": "claude --dangerously-skip-permissions --verbose --output-format stream-json -p {prompt}",
 
-  // Lifecycle hooks
-  "hooks": {
-    // Rebuild indexes after merge completion
-    "on_merged": "make bump-patch && make index"
-  }
+    // Lifecycle hooks
+    "hooks": {
+        // Rebuild indexes after merge completion
+        "on_merged": "make bump-patch && make index",
+    },
 }
