@@ -6,14 +6,16 @@
 use anyhow::Result;
 
 use crate::schema::{InstallSkillsData, InstalledSkillSummary, Response};
-use crate::skills::{LockEntry, LockFile, Source, install, now_rfc3339, resolve_agents_dir};
+use crate::skills::{LockEntry, LockFile, Source, install, now_rfc3339, resolve_root_dir};
 
 /// Options for the `install-skills` subcommand.
 pub struct InstallSkillsOpts<'a> {
     /// Source specification (e.g. `"self"` or `"local:/path/to/skill"`).
     pub source: &'a str,
-    /// If true, install into `~/.agents/`; otherwise install into `./.agents/`.
+    /// If true, install into the home directory; otherwise into cwd.
     pub global: bool,
+    /// If true, use `.claude` root instead of `.agents`.
+    pub claude: bool,
 }
 
 /// Execute the `install-skills` command.
@@ -21,17 +23,13 @@ pub struct InstallSkillsOpts<'a> {
 /// Prints a single JSON response to stdout on success.
 /// Returns an error on failure (caller maps to `ErrorResponse`).
 pub fn execute(opts: InstallSkillsOpts<'_>) -> Result<()> {
-    // Parse the source.
     let source = Source::parse(opts.source)?;
 
-    // Resolve the `.agents/` directory.
-    let agents_dir = resolve_agents_dir(opts.global)?;
+    let root_dir = resolve_root_dir(opts.global, opts.claude)?;
 
-    // Install the skill.
-    let installed = install(&source, &agents_dir)?;
+    let installed = install(&source, &root_dir)?;
 
-    // Read and update the lock file.
-    let lock_path = agents_dir.join(".skill-lock.json");
+    let lock_path = root_dir.join(".skill-lock.json");
     let mut lock = LockFile::read(&lock_path)?;
     let entry = LockEntry {
         name: installed.name.clone(),

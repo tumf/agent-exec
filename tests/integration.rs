@@ -2413,6 +2413,157 @@ fn install_skills_unknown_source_scheme_returns_error() {
     );
 }
 
+/// `install-skills --claude` installs into `.claude/skills/` and writes
+/// `.claude/.skill-lock.json`.
+#[test]
+fn install_skills_claude_local_succeeds() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let claude_dir = tmp.path().join(".claude");
+
+    let bin = binary();
+    let output = std::process::Command::new(&bin)
+        .args(["install-skills", "--source", "self", "--claude"])
+        .current_dir(tmp.path())
+        .output()
+        .expect("run binary");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "command failed (stderr: {stderr})");
+
+    let v: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("stdout must be valid JSON");
+
+    assert_envelope(&v, "install_skills", true);
+
+    let skills = v["skills"].as_array().expect("skills must be an array");
+    assert_eq!(skills[0]["name"].as_str().unwrap_or(""), "agent-exec");
+
+    let skill_path = skills[0]["path"]
+        .as_str()
+        .expect("skills[0].path must be present");
+    assert!(
+        skill_path.contains(".claude/skills/agent-exec"),
+        "skills[0].path must be under .claude/skills/; got: {skill_path}"
+    );
+
+    let lock_file_path = v["lock_file_path"]
+        .as_str()
+        .expect("lock_file_path must be present");
+    assert!(
+        lock_file_path.contains(".claude/.skill-lock.json"),
+        "lock_file_path must be under .claude/; got: {lock_file_path}"
+    );
+
+    let skill_dir = claude_dir.join("skills").join("agent-exec");
+    assert!(
+        skill_dir.exists(),
+        "skill directory must exist at {}",
+        skill_dir.display()
+    );
+    assert!(
+        skill_dir.join("SKILL.md").exists(),
+        "SKILL.md must exist inside the installed skill directory"
+    );
+
+    let lock_path = claude_dir.join(".skill-lock.json");
+    assert!(
+        lock_path.exists(),
+        "lock file must exist at {}",
+        lock_path.display()
+    );
+
+    let lock_content = std::fs::read_to_string(&lock_path).expect("read lock file");
+    let lock: serde_json::Value =
+        serde_json::from_str(&lock_content).expect("lock file must be valid JSON");
+    let lock_skills = lock["skills"]
+        .as_array()
+        .expect("lock skills must be an array");
+    assert!(!lock_skills.is_empty(), "lock skills must not be empty");
+    assert_eq!(lock_skills[0]["name"].as_str().unwrap_or(""), "agent-exec");
+}
+
+/// `install-skills --claude --global` installs into `~/.claude/skills/`.
+/// We simulate HOME with a tempdir to avoid touching the real home.
+#[test]
+fn install_skills_claude_global_succeeds() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+
+    let bin = binary();
+    let output = std::process::Command::new(&bin)
+        .args(["install-skills", "--source", "self", "--claude", "--global"])
+        .env("HOME", tmp.path())
+        .current_dir(tmp.path())
+        .output()
+        .expect("run binary");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "command failed (stderr: {stderr})");
+
+    let v: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("stdout must be valid JSON");
+
+    assert_envelope(&v, "install_skills", true);
+
+    let skills = v["skills"].as_array().expect("skills must be an array");
+    let skill_path = skills[0]["path"]
+        .as_str()
+        .expect("skills[0].path must be present");
+    assert!(
+        skill_path.contains(".claude/skills/agent-exec"),
+        "skills[0].path must be under .claude/skills/; got: {skill_path}"
+    );
+
+    let lock_file_path = v["lock_file_path"]
+        .as_str()
+        .expect("lock_file_path must be present");
+    assert!(
+        lock_file_path.contains(".claude/.skill-lock.json"),
+        "lock_file_path must be under .claude/; got: {lock_file_path}"
+    );
+
+    let global_skill_dir = tmp.path().join(".claude").join("skills").join("agent-exec");
+    assert!(
+        global_skill_dir.exists(),
+        "global skill directory must exist at {}",
+        global_skill_dir.display()
+    );
+}
+
+/// `install-skills` without `--claude` still uses `.agents/` (backward compat).
+#[test]
+fn install_skills_without_claude_uses_agents() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+
+    let bin = binary();
+    let output = std::process::Command::new(&bin)
+        .args(["install-skills", "--source", "self"])
+        .current_dir(tmp.path())
+        .output()
+        .expect("run binary");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "command failed");
+
+    let v: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("stdout must be valid JSON");
+
+    let skill_path = v["skills"][0]["path"].as_str().expect("path present");
+    assert!(
+        skill_path.contains(".agents/skills/agent-exec"),
+        "without --claude, path must use .agents/; got: {skill_path}"
+    );
+
+    let lock_file_path = v["lock_file_path"]
+        .as_str()
+        .expect("lock_file_path present");
+    assert!(
+        lock_file_path.contains(".agents/.skill-lock.json"),
+        "without --claude, lock_file_path must use .agents/; got: {lock_file_path}"
+    );
+}
+
 // ── notify file sink ────────────────────────────────────────────────────────────
 
 /// File sink: completion event is appended as NDJSON to the specified file.
