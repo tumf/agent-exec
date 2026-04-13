@@ -1,10 +1,10 @@
 ## Implementation Tasks
 
-- [ ] Task 1: `generate_job_id` の衝突 loop に 16 回の上限を導入、超過時 `anyhow::bail!` で `io_error`
+- [x] Task 1: `generate_job_id` の衝突 loop に 16 回の上限を導入、超過時 `anyhow::bail!` で `io_error`
   - verification: unit — `src/jobstore.rs`
-- [ ] Task 2: `main.rs` のエラーマッピングで `io_error` code を返す
+- [x] Task 2: `main.rs` のエラーマッピングで `io_error` code を返す
   - verification: unit
-- [ ] Task 3: unit test: 乱数を差し替えて 16 連続衝突をシミュレートし失敗することを確認
+- [x] Task 3: unit test: 乱数を差し替えて 16 連続衝突をシミュレートし失敗することを確認
   - verification: unit
 
 ## Specification Tasks

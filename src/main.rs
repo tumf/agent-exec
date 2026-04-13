@@ -10,7 +10,7 @@ use std::ffi::OsString;
 
 use tracing_subscriber::EnvFilter;
 
-use agent_exec::jobstore::{AmbiguousJobId, InvalidJobState, JobNotFound};
+use agent_exec::jobstore::{AmbiguousJobId, InvalidJobState, JobIdCollisionExhausted, JobNotFound};
 use agent_exec::schema::ErrorResponse;
 use agent_exec::skills::UnknownSourceScheme;
 use agent_exec::tag::InvalidTag;
@@ -715,6 +715,8 @@ fn main() {
             ErrorResponse::new("invalid_tag", format!("{e:#}"), false).print();
         } else if e.downcast_ref::<InvalidJobState>().is_some() {
             ErrorResponse::new("invalid_state", format!("{e:#}"), false).print();
+        } else if e.downcast_ref::<JobIdCollisionExhausted>().is_some() {
+            ErrorResponse::new("io_error", format!("{e:#}"), false).print();
         } else if e.downcast_ref::<agent_exec::run::StdinRequired>().is_some() {
             ErrorResponse::new("stdin_required", format!("{e:#}"), false).print();
         } else if e.downcast_ref::<agent_exec::run::StdinTooLarge>().is_some() {
