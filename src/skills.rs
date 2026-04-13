@@ -289,21 +289,27 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Resolve the `.agents/` directory.
+/// Resolve the root directory for skill installation.
 ///
-/// If `global` is true, returns `~/.agents/`.
-/// Otherwise returns `<cwd>/.agents/`.
-pub fn resolve_agents_dir(global: bool) -> Result<PathBuf> {
+/// The root name is `.agents` by default, or `.claude` when `claude` is true.
+/// If `global` is true, the root is under the home directory; otherwise under cwd.
+pub fn resolve_root_dir(global: bool, claude: bool) -> Result<PathBuf> {
+    let root_name = if claude { ".claude" } else { ".agents" };
     if global {
         let home = directories::UserDirs::new()
             .ok_or_else(|| anyhow::anyhow!("cannot determine home directory"))?
             .home_dir()
             .to_path_buf();
-        Ok(home.join(".agents"))
+        Ok(home.join(root_name))
     } else {
         let cwd = std::env::current_dir().context("get current directory")?;
-        Ok(cwd.join(".agents"))
+        Ok(cwd.join(root_name))
     }
+}
+
+/// Resolve the `.agents/` directory (backward-compatible alias).
+pub fn resolve_agents_dir(global: bool) -> Result<PathBuf> {
+    resolve_root_dir(global, false)
 }
 
 /// Get the timestamp in RFC 3339 format.

@@ -493,16 +493,20 @@ enum Command {
         subcommand: TagSubcommand,
     },
 
-    /// Install agent skills into .agents/skills/.
+    /// Install agent skills into .agents/skills/ or .claude/skills/.
     #[command(name = "install-skills")]
     InstallSkills {
         /// Source specification: "self" (built-in) or "local:<path>".
         #[arg(long, default_value = "self")]
         source: String,
 
-        /// Install into ~/.agents/ instead of ./.agents/.
+        /// Install into the home directory instead of the current directory.
         #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue)]
         global: bool,
+
+        /// Use .claude/ root instead of .agents/.
+        #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue)]
+        claude: bool,
     },
 
     /// Manage job notification configuration.
@@ -1057,10 +1061,15 @@ fn run(cli: Cli) -> Result<()> {
             clap_complete::generate(Shell::from(shell), &mut cmd, name, &mut std::io::stdout());
         }
 
-        Command::InstallSkills { source, global } => {
+        Command::InstallSkills {
+            source,
+            global,
+            claude,
+        } => {
             agent_exec::install_skills::execute(agent_exec::install_skills::InstallSkillsOpts {
                 source: &source,
                 global,
+                claude,
             })?;
         }
 
