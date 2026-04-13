@@ -462,7 +462,7 @@ enum Command {
     /// List all jobs under the root directory.
     List {
         /// Maximum number of jobs to return (0 = no limit).
-        #[arg(long, default_value = "0")]
+        #[arg(long, default_value = "50")]
         limit: u64,
 
         /// Filter jobs by state: created|running|exited|killed|failed|unknown.
@@ -1153,4 +1153,28 @@ fn run(cli: Cli) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn list_default_limit_is_50() {
+        let cli = Cli::parse_from(["agent-exec", "list"]);
+        match cli.command {
+            Command::List { limit, .. } => assert_eq!(limit, 50),
+            other => panic!("expected List, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn list_explicit_zero_means_no_limit() {
+        let cli = Cli::parse_from(["agent-exec", "list", "--limit", "0"]);
+        match cli.command {
+            Command::List { limit, .. } => assert_eq!(limit, 0),
+            other => panic!("expected List, got {other:?}"),
+        }
+    }
 }
