@@ -1,8 +1,7 @@
 ## Specification Tasks
 
-- [ ] Promote `specs/agent-exec-serve/spec.md` delta — 重複 prefix 解決 Requirement を削除し参照に置換
-  - Expected canonical result: `agent-exec-serve/spec.md` から独立した prefix 解決 Requirement が消え、`agent-exec` 側が canonical になる
-- [ ] Promote `specs/agent-exec/spec.md` delta — canonical prefix 解決 Requirement を保持・明示化
+- [x] Promote `specs/agent-exec-serve/spec.md` delta — 重複 prefix 解決 Requirement を削除し参照に置換 (Expected: `agent-exec-serve/spec.md` から独立した prefix 解決 Requirement が消え、`agent-exec` 側が canonical になる)
+- [x] Promote `specs/agent-exec/spec.md` delta — canonical prefix 解決 Requirement を保持・明示化
 
 ## Future Work
 
