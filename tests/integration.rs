@@ -1532,6 +1532,95 @@ fn list_limit_truncates_result() {
     );
 }
 
+/// Spec: default `list` (no --limit) returns at most 50 jobs and sets truncated=true
+/// when more than 50 exist.
+#[test]
+fn list_default_limit_truncates_at_50() {
+    let h = TestHarness::new();
+    let cwd = std::env::current_dir()
+        .expect("current_dir")
+        .to_str()
+        .expect("cwd utf-8")
+        .to_string();
+
+    for i in 0..60 {
+        let job_id = format!("job-{i:04}");
+        let job_dir = std::path::Path::new(h.root()).join(&job_id);
+        std::fs::create_dir_all(&job_dir).expect("create job dir");
+        let meta = serde_json::json!({
+            "job": { "id": job_id },
+            "schema_version": "0.1",
+            "command": ["echo", "hi"],
+            "created_at": format!("2026-01-01T00:{i:02}:00Z"),
+            "root": h.root(),
+            "env_keys": [],
+            "cwd": cwd,
+            "tags": [],
+            "inherit_env": true,
+        });
+        std::fs::write(job_dir.join("meta.json"), meta.to_string()).expect("write meta.json");
+    }
+
+    let v = h.run(&["list", "--all"]);
+    assert_envelope(&v, "list", true);
+
+    let jobs = v["jobs"].as_array().expect("jobs missing");
+    assert_eq!(
+        jobs.len(),
+        50,
+        "default limit should return 50 jobs; got: {}",
+        jobs.len()
+    );
+    assert!(
+        v["truncated"].as_bool().unwrap_or(false),
+        "truncated must be true when >50 jobs exist; got: {v}"
+    );
+}
+
+/// Spec: `--limit 0` disables truncation and returns all jobs.
+#[test]
+fn list_limit_zero_returns_all() {
+    let h = TestHarness::new();
+    let cwd = std::env::current_dir()
+        .expect("current_dir")
+        .to_str()
+        .expect("cwd utf-8")
+        .to_string();
+
+    for i in 0..60 {
+        let job_id = format!("job-{i:04}");
+        let job_dir = std::path::Path::new(h.root()).join(&job_id);
+        std::fs::create_dir_all(&job_dir).expect("create job dir");
+        let meta = serde_json::json!({
+            "job": { "id": job_id },
+            "schema_version": "0.1",
+            "command": ["echo", "hi"],
+            "created_at": format!("2026-01-01T00:{i:02}:00Z"),
+            "root": h.root(),
+            "env_keys": [],
+            "cwd": cwd,
+            "tags": [],
+            "inherit_env": true,
+        });
+        std::fs::write(job_dir.join("meta.json"), meta.to_string()).expect("write meta.json");
+    }
+
+    let v = h.run(&["list", "--all", "--limit", "0"]);
+    assert_envelope(&v, "list", true);
+
+    let jobs = v["jobs"].as_array().expect("jobs missing");
+    assert_eq!(
+        jobs.len(),
+        60,
+        "--limit 0 should return all 60 jobs; got: {}",
+        jobs.len()
+    );
+    assert!(
+        !v["truncated"].as_bool().unwrap_or(true),
+        "truncated must be false with --limit 0; got: {v}"
+    );
+}
+
 /// Spec: `list` root field contains the resolved root path.
 #[test]
 fn list_response_contains_root_field() {
