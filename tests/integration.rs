@@ -5851,6 +5851,33 @@ fn test_dynamic_completion_with_root_arg_returns_jobs_from_that_path() {
     );
 }
 
+// ---------- stdin.bin security: permissions and size limit ----------
+
+#[cfg(unix)]
+#[test]
+fn stdin_bin_created_with_0o600_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let h = TestHarness::new();
+    let v = h.run(&["create", "--stdin", "secret", "--", "cat"]);
+    assert_envelope(&v, "create", true);
+    let job_id = v["job_id"].as_str().expect("job_id missing");
+
+    let stdin_path = std::path::Path::new(h.root())
+        .join(job_id)
+        .join("stdin.bin");
+    assert!(stdin_path.exists(), "stdin.bin must exist");
+    let mode = std::fs::metadata(&stdin_path)
+        .expect("metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(
+        mode, 0o600,
+        "stdin.bin permissions should be 0o600, got {mode:#o}"
+    );
+}
+
 // ── enrich-run-inline-completion: signal / duration_ms in run inline ─────────
 
 #[test]
@@ -5892,6 +5919,33 @@ fn run_inline_includes_signal_on_signal_terminated_exit() {
         sig.contains("TERM") || sig == "15",
         "signal should indicate SIGTERM: {sig}"
     );
+}
+
+#[test]
+fn stdin_too_large_rejects_oversized_input() {
+    let h = TestHarness::new();
+    let src_path = std::path::Path::new(h.root()).join("big.bin");
+    // Create a file just over the limit (use a small --stdin-max-bytes for speed).
+    let limit: usize = 1024;
+    std::fs::write(&src_path, vec![0u8; limit + 1]).expect("write big file");
+
+    let output = run_raw_with_root_and_stdin(
+        &[
+            "run",
+            "--stdin-file",
+            src_path.to_str().expect("utf8"),
+            "--stdin-max-bytes",
+            &limit.to_string(),
+            "--",
+            "cat",
+        ],
+        Some(h.root()),
+        None,
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("stdout should be JSON");
+    assert_eq!(v["ok"].as_bool(), Some(false));
+    assert_eq!(v["error"]["code"].as_str(), Some("stdin_too_large"));
 }
 
 #[test]

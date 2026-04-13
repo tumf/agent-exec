@@ -1,6 +1,6 @@
 [package]
 name = "agent-exec"
-version = "0.1.29"
+version = "0.1.31"
 edition = "2024"
 
 # crates.io metadata
@@ -40,6 +40,8 @@ serde_json = "1"
 serde_yaml = "0.9"
 directories = "5"
 toml = { version = "0.8", default-features = false, features = ["parse"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors"] }
 tokio = { version = "1", features = ["full"] }
 ulid = "1"
 libc = "0.2"
