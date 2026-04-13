@@ -4,18 +4,19 @@
 //! Endpoints mirror the existing CLI subcommands.
 //!
 //! Default bind address: `127.0.0.1:19263` (localhost only).
-//! Use `--bind 0.0.0.0:19263` to expose externally (requires network access control).
 
 use anyhow::Result;
 use axum::{
     Json, Router,
     extract::{Path, Request, State},
     http::StatusCode,
+    middleware::{self, Next},
     response::{IntoResponse, Response as AxumResponse},
     routing::{get, post},
 };
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use crate::jobstore::{JobDir, JobNotFound, generate_job_id, resolve_root};
@@ -28,40 +29,156 @@ use crate::schema::{
 pub struct ServeOpts {
     pub bind: String,
     pub root: Option<String>,
+    pub insecure: bool,
+    pub allow_origin: Option<String>,
 }
 
 #[derive(Clone)]
 struct AppState {
     root: Option<String>,
+    token: Option<String>,
+    allow_origin: Option<String>,
+}
+
+/// Returns true if the address is a loopback address.
+pub fn is_loopback(addr: &std::net::SocketAddr) -> bool {
+    match addr.ip() {
+        IpAddr::V4(v4) => v4.is_loopback(),
+        IpAddr::V6(v6) => v6.is_loopback(),
+    }
 }
 
 /// Execute `serve`: start the HTTP server and block until shutdown.
 pub fn execute(opts: ServeOpts) -> Result<()> {
-    let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async_main(opts))
-}
-
-async fn async_main(opts: ServeOpts) -> Result<()> {
-    let state = Arc::new(AppState { root: opts.root });
-
-    let router = Router::new()
-        .route("/health", get(health_handler))
-        .route("/exec", post(exec_handler))
-        .route("/status/{id}", get(status_handler))
-        .route("/tail/{id}", get(tail_handler))
-        .route("/wait/{id}", get(wait_handler))
-        .route("/kill/{id}", post(kill_handler))
-        .with_state(state);
-
     let addr: std::net::SocketAddr = opts
         .bind
         .parse()
         .map_err(|e| anyhow::anyhow!("invalid bind address '{}': {e}", opts.bind))?;
 
+    if !is_loopback(&addr) {
+        if !opts.insecure {
+            let err = error_json(
+                "serve_unsafe_bind",
+                &format!("refusing to bind to non-loopback address {addr} without --insecure"),
+            );
+            eprintln!("Error: non-loopback bind address {addr} requires --insecure flag");
+            println!("{}", serde_json::to_string(&err).unwrap());
+            std::process::exit(1);
+        }
+
+        let token = std::env::var("AGENT_EXEC_SERVE_TOKEN").ok();
+        if token.as_ref().is_none_or(|t| t.is_empty()) {
+            let err = error_json(
+                "serve_unsafe_bind",
+                &format!(
+                    "refusing to bind to non-loopback address {addr} without AGENT_EXEC_SERVE_TOKEN"
+                ),
+            );
+            eprintln!(
+                "Error: non-loopback bind address {addr} requires AGENT_EXEC_SERVE_TOKEN to be set"
+            );
+            println!("{}", serde_json::to_string(&err).unwrap());
+            std::process::exit(1);
+        }
+    }
+
+    if let Some(ref origin) = opts.allow_origin
+        && origin == "*"
+    {
+        let err = error_json("invalid_config", "wildcard '*' origin is not allowed");
+        eprintln!("Error: --allow-origin '*' is not permitted");
+        println!("{}", serde_json::to_string(&err).unwrap());
+        std::process::exit(1);
+    }
+
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async_main(opts, addr))
+}
+
+async fn async_main(opts: ServeOpts, addr: std::net::SocketAddr) -> Result<()> {
+    let token = std::env::var("AGENT_EXEC_SERVE_TOKEN")
+        .ok()
+        .filter(|t| !t.is_empty());
+
+    let state = Arc::new(AppState {
+        root: opts.root,
+        token,
+        allow_origin: opts.allow_origin,
+    });
+
+    let mutating_routes = Router::new()
+        .route("/exec", post(exec_handler))
+        .route("/kill/{id}", post(kill_handler))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ));
+
+    let readonly_routes = Router::new()
+        .route("/health", get(health_handler))
+        .route("/status/{id}", get(status_handler))
+        .route("/tail/{id}", get(tail_handler))
+        .route("/wait/{id}", get(wait_handler));
+
+    let mut router = Router::new()
+        .merge(mutating_routes)
+        .merge(readonly_routes)
+        .with_state(state.clone());
+
+    if let Some(ref origin) = state.allow_origin {
+        use tower_http::cors::CorsLayer;
+        let cors = CorsLayer::new()
+            .allow_origin(
+                origin
+                    .parse::<axum::http::HeaderValue>()
+                    .map_err(|e| anyhow::anyhow!("invalid origin '{}': {e}", origin))?,
+            )
+            .allow_methods([
+                axum::http::Method::GET,
+                axum::http::Method::POST,
+                axum::http::Method::OPTIONS,
+            ])
+            .allow_headers([
+                axum::http::header::AUTHORIZATION,
+                axum::http::header::CONTENT_TYPE,
+            ]);
+        router = router.layer(cors);
+    }
+
     tracing::info!("serve listening on {addr}");
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, router).await?;
     Ok(())
+}
+
+// ---- Auth middleware ----
+
+async fn auth_middleware(
+    State(state): State<Arc<AppState>>,
+    request: Request,
+    next: Next,
+) -> AxumResponse {
+    if let Some(ref expected) = state.token {
+        let auth_header = request
+            .headers()
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok());
+
+        let valid = match auth_header {
+            Some(h) if h.starts_with("Bearer ") => &h[7..] == expected.as_str(),
+            _ => false,
+        };
+
+        if !valid {
+            return err_resp(
+                StatusCode::UNAUTHORIZED,
+                "unauthorized",
+                "missing or invalid Bearer token",
+            );
+        }
+    }
+
+    next.run(request).await
 }
 
 // ---- Shared error/response helpers ----
@@ -498,4 +615,120 @@ fn send_term(pid: u32) {
 #[cfg(not(unix))]
 fn send_term(_pid: u32) {
     // Windows: not implemented for serve (Windows kill support is in kill.rs).
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tower::ServiceExt as _;
+
+    #[test]
+    fn test_is_loopback_ipv4_localhost() {
+        let addr: std::net::SocketAddr = "127.0.0.1:8080".parse().unwrap();
+        assert!(is_loopback(&addr));
+    }
+
+    #[test]
+    fn test_is_loopback_ipv4_127_range() {
+        let addr: std::net::SocketAddr = "127.0.0.2:8080".parse().unwrap();
+        assert!(is_loopback(&addr));
+    }
+
+    #[test]
+    fn test_is_loopback_ipv6() {
+        let addr: std::net::SocketAddr = "[::1]:8080".parse().unwrap();
+        assert!(is_loopback(&addr));
+    }
+
+    #[test]
+    fn test_not_loopback_wildcard() {
+        let addr: std::net::SocketAddr = "0.0.0.0:8080".parse().unwrap();
+        assert!(!is_loopback(&addr));
+    }
+
+    #[test]
+    fn test_not_loopback_external() {
+        let addr: std::net::SocketAddr = "192.168.1.1:8080".parse().unwrap();
+        assert!(!is_loopback(&addr));
+    }
+
+    #[test]
+    fn test_not_loopback_ipv6_all() {
+        let addr: std::net::SocketAddr = "[::]:8080".parse().unwrap();
+        assert!(!is_loopback(&addr));
+    }
+
+    #[test]
+    fn test_error_json_structure() {
+        let val = error_json("test_code", "test message");
+        assert_eq!(val["ok"], false);
+        assert_eq!(val["error"]["code"], "test_code");
+        assert_eq!(val["error"]["message"], "test message");
+        assert_eq!(val["type"], "error");
+    }
+
+    fn test_app(token: Option<&str>) -> Router {
+        let state = Arc::new(AppState {
+            root: None,
+            token: token.map(|t| t.to_string()),
+            allow_origin: None,
+        });
+        Router::new()
+            .route("/test", get(|| async { "ok" }))
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                auth_middleware,
+            ))
+            .with_state(state)
+    }
+
+    fn req(uri: &str, auth: Option<&str>) -> axum::http::Request<axum::body::Body> {
+        let mut b = axum::http::Request::builder().uri(uri);
+        if let Some(a) = auth {
+            b = b.header("Authorization", a);
+        }
+        b.body(axum::body::Body::empty()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_auth_middleware_no_token_configured() {
+        let resp = test_app(None).oneshot(req("/test", None)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_auth_middleware_valid_token() {
+        let resp = test_app(Some("secret123"))
+            .oneshot(req("/test", Some("Bearer secret123")))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_auth_middleware_missing_token() {
+        let resp = test_app(Some("secret123"))
+            .oneshot(req("/test", None))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_auth_middleware_wrong_token() {
+        let resp = test_app(Some("secret123"))
+            .oneshot(req("/test", Some("Bearer wrong")))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_auth_middleware_non_bearer_scheme() {
+        let resp = test_app(Some("secret123"))
+            .oneshot(req("/test", Some("Basic secret123")))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
 }
