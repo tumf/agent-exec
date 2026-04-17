@@ -1,19 +1,19 @@
 ---
 name: agent-exec
-description: Run and manage non-interactive background jobs with the `agent-exec` CLI. Use when Claude needs to run a command in the background, return a job id immediately, poll or wait for completion, tail logs, inspect or kill jobs, list jobs by state or working directory, install the built-in skill, or trigger job-finished notifications via `job.finished` events.
+description: Run and manage non-interactive background jobs with the `agent-exec` CLI. Use when shell work must keep the harness responsive, reliably return control, or stay observable as a job. Prefer the default `run` flow; use `--no-wait` or `wait --forever` only when those exceptions are explicitly needed.
 ---
 
 # agent-exec
 
 Use `agent-exec` when a command should run as a managed job instead of an inline shell process.
 
-Choose it when work should outlive the current turn, return a job id immediately, be polled later, or trigger a completion hook. Keep using a normal shell command for short, blocking tasks that should finish in one response.
+Choose it when work should outlive the current turn, should be observable as a job, or must avoid blocking the harness thread. Start with the default `agent-exec run` flow. Keep using a normal shell command for short, blocking tasks that should finish in one response.
 
 ## Follow these rules
 
 - Keep stdout machine-readable. `agent-exec` prints one JSON object to stdout; diagnostic logs belong on stderr.
 - Prefer `agent-exec run` for long-running or pollable work, then use `status`, `tail`, `wait`, `kill`, or `list` as needed.
-- `run` は既定で bare `--wait`（`--wait true` と同義）として最大 10 秒待機し、inline output（`stdout`/`stderr` + range）を返す。即時返却が必要な場合は `--no-wait` を使う。
+- Treat default `run` as the standard path; do not default to `--no-wait` or `wait --forever` unless those exceptions are explicitly required.
 - Use `--mask KEY` for secrets passed via `--env`; masked values appear as `***` in JSON and persisted metadata.
 - Use `--notify-command` or `--notify-file` when another process must react to job completion.
 
@@ -54,7 +54,7 @@ Use these options most often:
 Default behavior for `run`:
 
 - waits up to 10 seconds by default (bare `--wait`, equivalent to `--wait true`) and returns inline output (`stdout`/`stderr`, ranges, total bytes)
-- use `--no-wait` (equivalent to `--wait false --until 0`) for immediate return; use `wait` for guaranteed terminal state
+- use `--no-wait` (equivalent to `--wait false --until 0`) only when immediate return is explicitly needed; use `wait` for guaranteed terminal state
 - does not enforce a runtime limit unless `--timeout` is set
 - runs in the caller's current working directory unless `--cwd` is set
 - inherits the caller's environment unless `--no-inherit-env` is set
@@ -81,7 +81,11 @@ Use these commands after `run`:
 - `agent-exec kill [--signal TERM|INT|KILL] <JOB_ID>`: request termination (default signal: `TERM`)
 - `agent-exec notify set <JOB_ID> --command <COMMAND>`: attach or replace the completion callback after the job has already started
 
-Use `wait` when the caller needs a terminal outcome before proceeding. Use `status` when the job should continue running while the caller does other work.
+Use `wait` when the caller needs a terminal outcome before proceeding.
+
+Use `wait --forever` only when blocking until completion is explicitly required.
+
+Use `status` when the job should continue running while the caller does other work.
 
 ## List jobs
 
