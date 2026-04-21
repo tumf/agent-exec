@@ -1,136 +1,49 @@
 ---
 name: agent-exec
-description: Run and manage non-interactive background jobs with the `agent-exec` CLI. Use when shell work must keep the harness responsive, reliably return control, or stay observable as a job. Prefer the default `run` flow; use `--no-wait` or `wait --forever` only when those exceptions are explicitly needed.
+description: Use `agent-exec` whenever shell work may run longer than a safe inline Bash call, may produce more output than you want in context, or should remain observable as a managed job. Start with plain `agent-exec run -- <command>` and rely on its default behavior; do not add custom wait or timeout flags unless there is a concrete reason. This skill is especially relevant when the user wants to run builds, tests, servers, data jobs, or any command whose duration or output size is uncertain.
 ---
 
 # agent-exec
 
-Use `agent-exec` when a command should run as a managed job instead of an inline shell process.
+Use `agent-exec` as the default harness-friendly way to run shell work whose duration or output size is not trivial.
 
-Choose it when work should outlive the current turn, should be observable as a job, or must avoid blocking the harness thread. Start with the default `agent-exec run` flow. Keep using a normal shell command for short, blocking tasks that should finish in one response.
+Start with plain `agent-exec run -- <command>`. In normal use, do not try to outsmart it with extra flags. The defaults are the point: they are chosen so the harness gets control back predictably, sees common startup failures early, and avoids flooding context with command output.
 
-## Follow these rules
+Use a normal inline shell command only when the task is clearly short, blocking, and safe to finish within one response.
 
-- Keep stdout machine-readable. `agent-exec` prints one JSON object to stdout; diagnostic logs belong on stderr.
-- Prefer `agent-exec run` for long-running or pollable work, then use `status`, `tail`, `wait`, `kill`, or `list` as needed.
-- Treat default `run` as the standard path; do not default to `--no-wait` or `wait --forever` unless those exceptions are explicitly required.
-- Use `--mask KEY` for secrets passed via `--env`; masked values appear as `***` in JSON and persisted metadata.
-- Use `--notify-command` or `--notify-file` when another process must react to job completion.
+## Why use it by default
 
-Read `references/cli-contract.md` when you need the exact response envelope, exit-code behavior, or `run`/`list` contract details.
+- It returns within a bounded default wait window instead of letting an uncertain command consume the whole harness timeout.
+- It waits just enough to surface common early failures, which often removes the extra round trip of `run` and then immediately `status` or `tail`.
+- It returns only a partial inline view of stdout and stderr, so large output does not dominate context.
+- It persists full logs and returns machine-readable JSON, so follow-up inspection is reliable.
 
-Read `references/completion-events.md` when you need the `job.finished` payload shape, sink behavior, or `completion_event.json` semantics.
+## Default posture
 
-Read `references/openclaw.md` when a job completion should be routed back into an OpenClaw chat, user flow, or agent session.
+- For typical use, run `agent-exec run -- <command>` and stop there.
+- Do not add wait-related flags unless you have a concrete reason.
+- Do not optimize around output volume yourself; inspect the returned log paths when you need the full output.
+- Treat the JSON response as the interface. Avoid wrapping it with extra stdout text.
 
-Read `references/hermes.md` when a job completion should notify a Hermes Agent session (e.g. deliver interpreted results to Telegram via `hermes notify`).
+## Exceptions
 
-## Typical workflow
+- Use `--no-wait` only for fire-and-forget cases where immediate return matters more than seeing startup output.
+- Use `wait --forever` or similar explicit blocking only when you deliberately want to stay attached until completion.
+- Use custom timing, notification, masking, or shell-wrapper options only when the task actually needs them.
 
-1. Start the job with `agent-exec run`.
-2. Capture the returned `job_id`.
-3. Use `status` or `wait` for lifecycle state.
-4. Use `tail` to inspect output without breaking the JSON-only contract.
-5. Use `kill` when the job should stop early.
+## Read more only when needed
 
-## Run a job
+- Read `references/cli-contract.md` for the response schema, exit codes, and default `run` behavior.
+- Read `references/completion-events.md` for `stdout_log_path`, `stderr_log_path`, and notification sink behavior.
+- Read `references/openclaw.md` when job completion should re-enter an OpenClaw workflow.
+- Read `references/hermes.md` when job completion should notify a Hermes Agent session.
 
-```bash
-agent-exec run [OPTIONS] -- <COMMAND> [ARGS...]
-```
-
-Use these options most often:
-
-- `--timeout <seconds>` / `--kill-after <seconds>`: enforce termination deadlines (defaults: `0`, `0`)
-- `--progress-every <seconds>`: refresh `state.json.updated_at` while running (default: `0`, disabled)
-- `--cwd <dir>`: run from a specific directory (default: the caller's current working directory)
-- `--env KEY=VALUE` / `--env-file <file>`: set environment variables
-- `--no-inherit-env`: avoid inheriting the current process environment (default behavior is to inherit it)
-- `--notify-command <COMMAND>`: run a shell command on completion via the configured shell wrapper (default wrapper: `sh -lc` on Unix, `cmd /C` on Windows); event JSON is sent to stdin
-- `--notify-file <PATH>`: append one NDJSON `job.finished` event per completed job
-- `--config <PATH>`: load shell wrapper settings from a specific `config.toml`
-- `--shell-wrapper <PROG FLAGS>`: override the shell wrapper for this invocation (e.g. `"bash -lc"`); applies to both command-string execution and `--notify-command`
-
-Default behavior for `run`:
-
-- waits up to 10 seconds by default (bare `--wait`, equivalent to `--wait true`) and returns inline output (`stdout`/`stderr`, ranges, total bytes)
-- use `--no-wait` (equivalent to `--wait false --until 0`) only when immediate return is explicitly needed; use `wait` for guaranteed terminal state
-- does not enforce a runtime limit unless `--timeout` is set
-- runs in the caller's current working directory unless `--cwd` is set
-- inherits the caller's environment unless `--no-inherit-env` is set
-
-Pass a plain shell command string to `--notify-command`. The command sink also receives:
-
-- `AGENT_EXEC_EVENT_PATH`
-- `AGENT_EXEC_JOB_ID`
-- `AGENT_EXEC_EVENT_TYPE`
-
-Choose the sink based on who needs the event next:
-
-- Use `--notify-command` when a small, fast, direct action should happen immediately after completion, such as posting to a chat, calling a webhook helper, or routing the event back to a launcher session.
-- Use `--notify-file` when another durable worker should consume events later, retries matter, or several downstream systems may need the same event.
-- Prefer a compact one-liner for agent-authored OpenClaw callbacks; move to a separate script only when quoting or branching becomes hard to keep correct.
-
-## Inspect a job
-
-Use these commands after `run`:
-
-- `agent-exec status <JOB_ID>`: read current state (`running`, `exited`, `killed`, `failed`)
-- `agent-exec tail [--tail-lines N] [--max-bytes N] <JOB_ID>`: read stdout/stderr tails (defaults: `50`, `65536`)
-- `agent-exec wait [--until N] [--poll N] [--forever] <JOB_ID>`: block until terminal state (defaults: `--poll 1`, `--until 30` unless `--forever` is set)
-- `agent-exec kill [--signal TERM|INT|KILL] <JOB_ID>`: request termination (default signal: `TERM`)
-- `agent-exec notify set <JOB_ID> --command <COMMAND>`: attach or replace the completion callback after the job has already started
-
-Use `wait` when the caller needs a terminal outcome before proceeding.
-
-Use `wait --forever` only when blocking until completion is explicitly required.
-
-Use `status` when the job should continue running while the caller does other work.
-
-## List jobs
+## Minimal examples
 
 ```bash
-agent-exec list [--state running|exited|killed|failed|unknown] [--cwd DIR] [--all] [--limit N]
+agent-exec run -- make test
+agent-exec run -- npm run build
+agent-exec run -- cargo test
 ```
 
-- By default, `list` filters to the caller's current working directory.
-- Use `--cwd <dir>` to filter by a specific directory.
-- Use `--all` to disable cwd filtering.
-
-## Handle completion events
-
-Read `references/completion-events.md` for the full `job.finished` payload, sink environment variables, and persistence details.
-
-Read `references/openclaw.md` when the completion path should re-enter OpenClaw.
-
-Suggested patterns:
-
-- Return the event to the launching OpenClaw session: use `--notify-command` to forward the event to the original session or conversation id with `openclaw agent --deliver --reply-channel ... --session-id ... -m ...`.
-- Deliver interpreted results via Hermes Agent: use `--notify-command` with `hermes notify` to spin up a one-shot agent that reads the payload, inspects logs/files, and posts a human-readable summary to the origin chat. Read `references/hermes.md` for setup and examples.
-- Append to a file for a durable worker: use `--notify-file` when a separate process should handle retries, fanout, or slower downstream APIs.
-
-Operational reminders:
-
-- Notification delivery is best effort. Sink failure does not change the main job state.
-- Check `completion_event.json.delivery_results` when delivery success matters.
-- Keep notify commands idempotent and quick; long or fragile sink logic belongs in a script or worker.
-
-## Install the built-in skill
-
-```bash
-agent-exec install-skills [--source self|local:<path>] [--global]
-```
-
-- Use `self` to install the built-in `agent-exec` skill.
-- Use `local:<path>` to install a local skill directory.
-- Expect installation into `./.agents/skills/` by default or `~/.agents/skills/` with `--global`.
-- Expect `.agents/.skill-lock.json` to be created or updated.
-- Expect the success payload to include installed skill summaries plus `lock_file_path`.
-
-## Respect the contract
-
-- Treat exit code `0` as success.
-- Treat exit code `1` as an expected failure with a JSON error envelope on stdout.
-- Treat exit code `2` as a clap usage error.
-- Do not emit extra stdout text around `agent-exec` responses.
-- Read `references/cli-contract.md` before changing assumptions about response fields.
+If the command keeps running, use the returned `job_id` plus the references above to inspect, wait, tail, notify, or kill as needed.

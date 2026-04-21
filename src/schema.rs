@@ -368,7 +368,7 @@ pub struct DeleteData {
 pub struct InstalledSkillSummary {
     /// Skill name (directory name under `.agents/skills/`).
     pub name: String,
-    /// Source type string used when the skill was installed (e.g. "self", "local").
+    /// Source type string used when the skill was installed (currently "embedded").
     pub source_type: String,
     /// Absolute path to the installed skill directory.
     pub path: String,

@@ -12,7 +12,6 @@ use tracing_subscriber::EnvFilter;
 
 use agent_exec::jobstore::{AmbiguousJobId, InvalidJobState, JobIdCollisionExhausted, JobNotFound};
 use agent_exec::schema::ErrorResponse;
-use agent_exec::skills::UnknownSourceScheme;
 use agent_exec::tag::InvalidTag;
 
 /// Shell variants supported by the `completions` subcommand.
@@ -493,13 +492,9 @@ enum Command {
         subcommand: TagSubcommand,
     },
 
-    /// Install agent skills into .agents/skills/ or .claude/skills/.
+    /// Install the built-in agent-exec skill into .agents/skills/ or .claude/skills/.
     #[command(name = "install-skills")]
     InstallSkills {
-        /// Source specification: "self" (built-in) or "local:<path>".
-        #[arg(long, default_value = "self")]
-        source: String,
-
         /// Install into the home directory instead of the current directory.
         #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue)]
         global: bool,
@@ -709,7 +704,6 @@ fn main() {
     if let Err(e) = result {
         // Distinguish "job not found" from generic internal errors.
         // "job_not_found" is not retryable: the job does not exist.
-        // "unknown_source_scheme" is not retryable: the source scheme is invalid.
         // "invalid_tag" is not retryable: the tag value is malformed.
         // "internal_error" is not retryable by default; a transient I/O error
         // would need its own code+retryable=true if we ever surface it.
@@ -725,8 +719,6 @@ fn main() {
                 .print();
         } else if e.downcast_ref::<JobNotFound>().is_some() {
             ErrorResponse::new("job_not_found", format!("{e:#}"), false).print();
-        } else if e.downcast_ref::<UnknownSourceScheme>().is_some() {
-            ErrorResponse::new("unknown_source_scheme", format!("{e:#}"), false).print();
         } else if e.downcast_ref::<InvalidTag>().is_some() {
             ErrorResponse::new("invalid_tag", format!("{e:#}"), false).print();
         } else if e.downcast_ref::<InvalidJobState>().is_some() {
@@ -1061,16 +1053,11 @@ fn run(cli: Cli) -> Result<()> {
             clap_complete::generate(Shell::from(shell), &mut cmd, name, &mut std::io::stdout());
         }
 
-        Command::InstallSkills {
-            source,
-            global,
-            claude,
-        } => {
+        Command::InstallSkills { global, claude } => {
             agent_exec::install_skills::execute(agent_exec::install_skills::InstallSkillsOpts {
-                source: &source,
                 global,
                 claude,
-            })?;
+            })?
         }
 
         Command::List {

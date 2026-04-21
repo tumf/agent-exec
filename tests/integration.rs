@@ -2178,16 +2178,16 @@ fn schema_stdout_is_single_json_object() {
 // install-skills tests
 // ---------------------------------------------------------------------------
 
-/// Task 4.1: `install-skills` with `--source self` succeeds and returns the
-/// expected JSON envelope with `type="install_skills"` and `skills[0].name="agent-exec"`.
+/// Task 4.1: `install-skills` installs the embedded `agent-exec` skill and
+/// returns the expected JSON envelope with `type="install_skills"`.
 #[test]
-fn install_skills_self_source_succeeds() {
+fn install_skills_embedded_source_succeeds() {
     let tmp = tempfile::tempdir().expect("create tempdir");
     let agents_dir = tmp.path().join(".agents");
 
     let bin = binary();
     let output = std::process::Command::new(&bin)
-        .args(["install-skills", "--source", "self"])
+        .args(["install-skills"])
         .current_dir(tmp.path())
         .output()
         .expect("run binary");
@@ -2213,8 +2213,8 @@ fn install_skills_self_source_succeeds() {
     );
     assert_eq!(
         skills[0]["source_type"].as_str().unwrap_or(""),
-        "self",
-        "skills[0].source_type must be 'self'; got: {v}"
+        "embedded",
+        "skills[0].source_type must be 'embedded'; got: {v}"
     );
     assert!(
         skills[0]["path"].as_str().is_some(),
@@ -2287,73 +2287,22 @@ fn install_skills_self_source_succeeds() {
     );
 }
 
-/// Task 4.2: `install-skills` with `--source local:<path>` installs a locally
-/// created fake skill into `.agents/skills/<name>/`.
+/// Task 4.2: repeated `install-skills` updates the same embedded skill lock entry.
 #[test]
-fn install_skills_local_source_succeeds() {
-    let tmp = tempfile::tempdir().expect("create tempdir");
-
-    // Create a fake skill directory.
-    let fake_skill_dir = tmp.path().join("my-fake-skill");
-    std::fs::create_dir_all(&fake_skill_dir).expect("create fake skill dir");
-    std::fs::write(
-        fake_skill_dir.join("SKILL.md"),
-        "# Fake Skill\nTest content.",
-    )
-    .expect("write fake SKILL.md");
-
-    let source_arg = format!("local:{}", fake_skill_dir.display());
-
-    // Install destination is a separate tempdir (simulates cwd).
+fn install_skills_repeated_install_updates_single_lock_entry() {
     let install_root = tempfile::tempdir().expect("create install root");
     let agents_dir = install_root.path().join(".agents");
 
     let bin = binary();
-    let output = std::process::Command::new(&bin)
-        .args(["install-skills", "--source", &source_arg])
-        .current_dir(install_root.path())
-        .output()
-        .expect("run binary");
+    for _ in 0..2 {
+        let output = std::process::Command::new(&bin)
+            .args(["install-skills"])
+            .current_dir(install_root.path())
+            .output()
+            .expect("run binary");
+        assert!(output.status.success(), "install-skills must succeed");
+    }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        !stdout.trim().is_empty(),
-        "stdout is empty (stderr: {stderr})"
-    );
-    let v: serde_json::Value =
-        serde_json::from_str(stdout.trim()).expect("stdout must be valid JSON");
-
-    assert_envelope(&v, "install_skills", true);
-
-    let skills = v["skills"].as_array().expect("skills must be an array");
-    assert!(!skills.is_empty(), "skills array must not be empty");
-    assert_eq!(
-        skills[0]["name"].as_str().unwrap_or(""),
-        "my-fake-skill",
-        "skills[0].name must be 'my-fake-skill'; got: {v}"
-    );
-    // source_type must be present in response (spec requirement).
-    assert!(
-        skills[0]["source_type"].as_str().is_some(),
-        "skills[0].source_type must be present; got: {v}"
-    );
-    assert!(
-        skills[0]["path"].as_str().is_some(),
-        "skills[0].path must be present; got: {v}"
-    );
-
-    // The skill should be present in .agents/skills/my-fake-skill/.
-    let skill_dest = agents_dir.join("skills").join("my-fake-skill");
-    // Accept either a directory or a symlink pointing to one.
-    let exists = skill_dest.exists() || skill_dest.symlink_metadata().is_ok();
-    assert!(
-        exists,
-        "installed skill directory must exist at {}",
-        skill_dest.display()
-    );
-
-    // Lock file must record name, path, and source_type (per spec requirement).
     let lock_path = agents_dir.join(".skill-lock.json");
     assert!(
         lock_path.exists(),
@@ -2366,50 +2315,24 @@ fn install_skills_local_source_succeeds() {
     let lock_skills = lock["skills"]
         .as_array()
         .expect("lock skills must be an array");
-    assert!(!lock_skills.is_empty(), "lock skills must not be empty");
+    assert_eq!(
+        lock_skills.len(),
+        1,
+        "repeated embedded install should keep exactly one lock entry"
+    );
     assert_eq!(
         lock_skills[0]["name"].as_str().unwrap_or(""),
-        "my-fake-skill",
-        "lock skills[0].name must be 'my-fake-skill'"
+        "agent-exec",
+        "lock skills[0].name must be 'agent-exec'"
     );
     assert!(
         lock_skills[0]["path"].as_str().is_some(),
         "lock skills[0].path must be present; got: {lock}"
     );
-    assert!(
-        lock_skills[0]["source_type"].as_str().is_some(),
-        "lock skills[0].source_type must be present; got: {lock}"
-    );
-}
-
-/// Task 4.3: `install-skills` with an unknown source scheme returns
-/// `error.code="unknown_source_scheme"` and exits with code 1.
-#[test]
-fn install_skills_unknown_source_scheme_returns_error() {
-    let tmp = tempfile::tempdir().expect("create tempdir");
-
-    let bin = binary();
-    let output = std::process::Command::new(&bin)
-        .args(["install-skills", "--source", "ftp://example.com/skill"])
-        .current_dir(tmp.path())
-        .output()
-        .expect("run binary");
-
     assert_eq!(
-        output.status.code(),
-        Some(1),
-        "exit code must be 1 for unknown source scheme"
-    );
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let v: serde_json::Value =
-        serde_json::from_str(stdout.trim()).expect("stdout must be valid JSON");
-
-    assert_envelope(&v, "error", false);
-    assert_eq!(
-        v["error"]["code"].as_str().unwrap_or(""),
-        "unknown_source_scheme",
-        "error.code must be 'unknown_source_scheme'; got: {v}"
+        lock_skills[0]["source_type"].as_str().unwrap_or(""),
+        "embedded",
+        "lock skills[0].source_type must be 'embedded'; got: {lock}"
     );
 }
 
@@ -2422,7 +2345,7 @@ fn install_skills_claude_local_succeeds() {
 
     let bin = binary();
     let output = std::process::Command::new(&bin)
-        .args(["install-skills", "--source", "self", "--claude"])
+        .args(["install-skills", "--claude"])
         .current_dir(tmp.path())
         .output()
         .expect("run binary");
@@ -2491,7 +2414,7 @@ fn install_skills_claude_global_succeeds() {
 
     let bin = binary();
     let output = std::process::Command::new(&bin)
-        .args(["install-skills", "--source", "self", "--claude", "--global"])
+        .args(["install-skills", "--claude", "--global"])
         .env("HOME", tmp.path())
         .current_dir(tmp.path())
         .output()
@@ -2538,7 +2461,7 @@ fn install_skills_without_claude_uses_agents() {
 
     let bin = binary();
     let output = std::process::Command::new(&bin)
-        .args(["install-skills", "--source", "self"])
+        .args(["install-skills"])
         .current_dir(tmp.path())
         .output()
         .expect("run binary");

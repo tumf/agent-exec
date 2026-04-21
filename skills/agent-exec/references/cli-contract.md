@@ -48,8 +48,10 @@ Common exit codes:
 
 ## `run` notes
 
-- `run` waits up to 10 seconds by default and returns inline output; use `--no-wait` to skip waiting.
-- use `wait` when terminal state is required and `tail` for tail-side observation.
+- In normal harness use, start with plain `agent-exec run -- <command>`; the default behavior is the optimized path.
+- `run` waits up to 10 seconds by default and returns inline output; use `--no-wait` only when immediate return is more important than seeing startup output.
+- The inline stdout/stderr payload is only a partial view. Use returned log paths and follow-up commands when you need the full output.
+- Use `wait` when terminal state is required and `tail` for tail-side observation.
 - Use `--mask KEY` when secrets are present in `--env`; masked values become `***` in output and persisted metadata.
 
 ## `list` notes
@@ -63,4 +65,4 @@ Common exit codes:
 - Expect `skills[*].name`, `skills[*].source_type`, and `skills[*].path` in the success payload.
 - Expect `lock_file_path` to point at the updated `.agents/.skill-lock.json` file.
 - Use `--global` when the skill should be installed into `~/.agents/` instead of the current directory.
-- `self` installs the built-in `agent-exec` skill; `local:<path>` installs a local skill directory.
+- `install-skills` installs only the built-in `agent-exec` skill embedded in the binary.
