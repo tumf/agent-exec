@@ -21,6 +21,7 @@ Use a normal inline shell command only when the task is clearly short, blocking,
 ## Default posture
 
 - For typical use, run `agent-exec run -- <command>` and stop there.
+- Pass the workload as normal argv after `--`. Do not wrap it in `sh -lc` yourself unless you specifically need shell syntax such as pipes, redirects, variable expansion, or compound commands.
 - Do not add wait-related flags unless you have a concrete reason.
 - Do not optimize around output volume yourself; inspect the returned log paths when you need the full output.
 - Treat the JSON response as the interface. Avoid wrapping it with extra stdout text.

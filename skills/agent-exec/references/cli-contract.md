@@ -49,6 +49,7 @@ Common exit codes:
 ## `run` notes
 
 - In normal harness use, start with plain `agent-exec run -- <command>`; the default behavior is the optimized path.
+- Pass the workload as normal argv after `--`. Do not prepend `sh -lc` for ordinary commands; reserve that for cases that truly need shell parsing.
 - `run` waits up to 10 seconds by default and returns inline output; use `--no-wait` only when immediate return is more important than seeing startup output.
 - The inline stdout/stderr payload is only a partial view. Use returned log paths and follow-up commands when you need the full output.
 - Use `wait` when terminal state is required and `tail` for tail-side observation.
