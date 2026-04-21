@@ -2,6 +2,30 @@
 
 Non-interactive agent job runner. Runs commands as background jobs and returns structured JSON on stdout.
 
+## Core Concept
+
+`agent-exec` is designed for agent harnesses, not just humans typing shell commands.
+The defaults are intentionally optimized so an agent can run uncertain or noisy
+commands without hand-tuning flags every time.
+
+- Start with plain `agent-exec run -- <command> [args...]`.
+- Do **not** add custom wait flags unless there is a concrete reason.
+- Do **not** manually wrap ordinary commands in `sh -lc`.
+- Expect inline stdout/stderr to be partial; the full logs are persisted and the
+  response tells you where they are.
+
+Why this matters:
+
+- `run` waits up to 10 seconds by default, so the harness reliably gets control
+  back before a long or stuck command consumes the whole turn.
+- The default wait also catches many startup failures immediately, which often
+  removes an extra `run -> status/tail` round trip.
+- Large output does not need to fit in context because `stdout_log_path` and
+  `stderr_log_path` always point to the persisted logs.
+
+In other words, `agent-exec` is not a launch-only wrapper. The default `run`
+behavior is the main product.
+
 ## Output Contract
 
 - **stdout**: JSON by default — every command prints exactly one JSON object; pass `--yaml` to get YAML instead
@@ -21,9 +45,12 @@ cargo install --path .
 
 既定では `run` が最大 10 秒待機し、inline output を返します。
 
+通常はこのデフォルトのまま使ってください。`--no-wait` や `--forever`
+は例外用途です。
+
 ```bash
 # 1. Start job and read inline output
-agent-exec run echo "hello world"
+agent-exec run -- echo "hello world"
 ```
 
 Example output of `run`:
@@ -51,7 +78,7 @@ Start a background job, poll its status, then read its output:
 
 ```bash
 # 1. Start the job (returns immediately with a job_id)
-JOB=$(agent-exec run sleep 30 | jq -r .job_id)
+JOB=$(agent-exec run -- sleep 30 | jq -r .job_id)
 
 # 2. Check status
 agent-exec status "$JOB"
@@ -71,7 +98,26 @@ Run a job with a timeout; SIGTERM after 5 s, SIGKILL after 2 s more:
 agent-exec run \
   --timeout 5 \
   --kill-after 2 \
-  sleep 60
+  -- sleep 60
+```
+
+### Argv-first usage
+
+For ordinary commands, pass the workload as argv after `--`:
+
+```bash
+agent-exec run -- sleep 8
+agent-exec run -- cargo test --all
+agent-exec run -- npm run build
+```
+
+Do **not** prepend `sh -lc` for ordinary commands. Reserve shell wrapping for
+cases that actually need shell parsing such as pipes, redirects, variable
+expansion, or compound commands:
+
+```bash
+# Needed because this uses shell syntax
+agent-exec run -- sh -lc 'sleep 8; echo done'
 ```
 
 ## Two-step job lifecycle (create / start)
@@ -204,6 +250,10 @@ Key options:
 `--stdin` and `--stdin-file` are mutually exclusive. When `--stdin -` is used,
 `agent-exec` requires non-interactive stdin; if caller stdin is a tty it fails
 fast with `error.code = "stdin_required"`.
+
+For ordinary commands, prefer argv-style invocation after `--` and let
+`agent-exec` handle the launch normally. Do not add `sh -lc` unless shell
+syntax is required by the workload itself.
 
 ```bash
 # Pipe stdin into the job
@@ -570,6 +620,8 @@ Both keys are optional. Absent values fall back to the built-in platform default
 
 The `exec` handoff means that for argv-mode invocations, completion tracking aligns with the target workload rather than the shell wrapper, which resolves lingering-shell issues when the target replaces the wrapper process.
 
+For agent-authored commands, argv mode should be treated as the default. Shell-string mode is for actual shell expressions, not for routine single-binary launches.
+
 The configured wrapper applies to **both** `run` command-string execution and `--notify-command` delivery. Notify delivery always uses shell-string mode regardless of how the job was launched.
 
 ### Override per invocation
@@ -614,6 +666,21 @@ Command sink example:
 JOB=$(agent-exec run --notify-command 'cat > /tmp/agent-exec-event.json' -- echo hello | jq -r .job_id)
 agent-exec wait "$JOB"
 agent-exec tail "$JOB"
+```
+
+## install-skills
+
+`install-skills` is intentionally narrow. It installs only the built-in
+embedded `agent-exec` skill into `.agents/skills/` or `.claude/skills/` and
+updates the corresponding `.skill-lock.json`.
+
+It is **not** a general skill installer and does not accept external or local
+skill sources.
+
+```bash
+agent-exec install-skills
+agent-exec install-skills --claude
+agent-exec install-skills --claude --global
 ```
 
 ### OpenClaw examples
