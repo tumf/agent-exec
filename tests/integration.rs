@@ -5461,6 +5461,209 @@ fn delete_all_dry_run_preserves_directories() {
     );
 }
 
+// ── delete / gc post-delete observability (harden-delete-gc-deletion-observability) ────
+
+/// `delete <job_id>` reporting `action="deleted"` MUST mean the job directory is
+/// absent from disk by the time the response is emitted.
+#[test]
+fn delete_single_deleted_action_implies_directory_absent() {
+    let h = TestHarness::new();
+    let run_v = h.run(&["run", "echo", "post_check_single"]);
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+    h.run(&["wait", &job_id]);
+
+    let job_path = std::path::Path::new(h.root()).join(&job_id);
+    assert!(job_path.exists(), "precondition: job directory exists");
+
+    let v = h.run(&["delete", &job_id]);
+    assert_envelope(&v, "delete", true);
+    let jobs = v["jobs"].as_array().unwrap();
+    assert_eq!(jobs[0]["action"].as_str().unwrap_or(""), "deleted");
+    // Per spec: deleted ⇒ path no longer exists at command completion.
+    assert!(
+        !job_path.exists(),
+        "deleted job directory must be absent on disk: {job_path:?}"
+    );
+}
+
+/// `delete --all` MUST include `cwd_scope` set to the effective cwd it
+/// evaluated bulk deletions against.
+#[test]
+fn delete_all_response_includes_cwd_scope() {
+    let h = TestHarness::new();
+    let dir = tempfile::tempdir().unwrap();
+    let canonical = dir
+        .path()
+        .canonicalize()
+        .unwrap_or_else(|_| dir.path().to_path_buf());
+
+    let (run_v, _) =
+        run_cmd_with_root_and_cwd(&["run", "echo", "scoped"], Some(h.root()), Some(dir.path()));
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+    h.run(&["wait", &job_id]);
+
+    let (del_v, _) =
+        run_cmd_with_root_and_cwd(&["delete", "--all"], Some(h.root()), Some(dir.path()));
+    assert_envelope(&del_v, "delete", true);
+
+    let scope = del_v["cwd_scope"]
+        .as_str()
+        .expect("cwd_scope must be present for delete --all");
+    assert_eq!(
+        scope,
+        canonical.display().to_string(),
+        "cwd_scope must report the effective cwd used for evaluation: {del_v}"
+    );
+}
+
+/// Single-job `delete <JOB_ID>` is not cwd-scoped, so `cwd_scope` MUST be absent.
+#[test]
+fn delete_single_response_omits_cwd_scope() {
+    let h = TestHarness::new();
+    let run_v = h.run(&["run", "echo", "no_scope"]);
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+    h.run(&["wait", &job_id]);
+
+    let v = h.run(&["delete", &job_id]);
+    assert_envelope(&v, "delete", true);
+    assert!(
+        v.get("cwd_scope").is_none(),
+        "cwd_scope must be absent for single-job delete: {v}"
+    );
+}
+
+/// `delete --all` MUST report cwd-mismatched jobs via the `out_of_scope` aggregate
+/// so callers can distinguish "filtered out by cwd" from "evaluated but skipped".
+#[test]
+fn delete_all_distinguishes_out_of_scope_from_in_scope_skipped() {
+    let h = TestHarness::new();
+    let dir_a = tempfile::tempdir().unwrap();
+    let dir_b = tempfile::tempdir().unwrap();
+
+    // In-scope (cwd matches) but skipped (running) job.
+    let (run_v, _) =
+        run_cmd_with_root_and_cwd(&["run", "sleep", "30"], Some(h.root()), Some(dir_a.path()));
+    let running_id = run_v["job_id"].as_str().unwrap().to_string();
+
+    // Out-of-scope (cwd mismatch) finished job from dir_b.
+    let (other_v, _) = run_cmd_with_root_and_cwd(
+        &["run", "echo", "other"],
+        Some(h.root()),
+        Some(dir_b.path()),
+    );
+    let other_id = other_v["job_id"].as_str().unwrap().to_string();
+    h.run(&["wait", &other_id]);
+
+    let (del_v, _) =
+        run_cmd_with_root_and_cwd(&["delete", "--all"], Some(h.root()), Some(dir_a.path()));
+    assert_envelope(&del_v, "delete", true);
+
+    assert!(
+        del_v["out_of_scope"].as_u64().unwrap_or(0) >= 1,
+        "out_of_scope must reflect cwd-mismatched job: {del_v}"
+    );
+    assert_eq!(
+        del_v["failed"].as_u64().unwrap_or(99),
+        0,
+        "failed must be 0 when no deletions failed: {del_v}"
+    );
+
+    // The cwd-mismatched job is filtered before the per-job array, so it does
+    // NOT appear in jobs[]; the in-scope running job DOES appear with skipped.
+    let jobs = del_v["jobs"].as_array().unwrap();
+    assert!(
+        !jobs.iter().any(|j| j["job_id"].as_str() == Some(&other_id)),
+        "out-of-scope cwd-mismatched job must not be listed per-job: {del_v}"
+    );
+    assert!(
+        jobs.iter()
+            .any(|j| j["job_id"].as_str() == Some(&running_id)
+                && j["action"].as_str() == Some("skipped")
+                && j["reason"].as_str() == Some("running")),
+        "in-scope running job must appear as skipped: {del_v}"
+    );
+
+    h.run(&["kill", &running_id]);
+}
+
+/// `delete --all` reporting `action="deleted"` MUST mean each such job
+/// directory is absent on disk by the time the response is emitted.
+#[test]
+fn delete_all_deleted_action_implies_directories_absent() {
+    let h = TestHarness::new();
+    let dir = tempfile::tempdir().unwrap();
+
+    let (run_v, _) = run_cmd_with_root_and_cwd(
+        &["run", "echo", "post_check_all"],
+        Some(h.root()),
+        Some(dir.path()),
+    );
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+    h.run(&["wait", &job_id]);
+
+    let (del_v, _) =
+        run_cmd_with_root_and_cwd(&["delete", "--all"], Some(h.root()), Some(dir.path()));
+    assert_envelope(&del_v, "delete", true);
+
+    let deleted_ids: Vec<String> = del_v["jobs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|j| j["action"].as_str() == Some("deleted"))
+        .map(|j| j["job_id"].as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        deleted_ids.contains(&job_id),
+        "expected job to be deleted: {del_v}"
+    );
+
+    for id in &deleted_ids {
+        let p = std::path::Path::new(h.root()).join(id);
+        assert!(
+            !p.exists(),
+            "deleted job directory must be absent on disk: {p:?} (response: {del_v})"
+        );
+    }
+}
+
+/// `gc` reporting `action="deleted"` MUST mean each such job directory is
+/// absent on disk by the time the response is emitted; existing reasons must
+/// also remain distinguishable via the `out_of_scope` aggregate.
+#[test]
+fn gc_deleted_action_implies_directory_absent_and_categorises_skips() {
+    let h = TestHarness::new();
+    let old = "2020-01-01T00:00:00Z";
+    write_fake_job(h.root(), "exited-old", "exited", Some(old), old);
+    // Out-of-scope: running job MUST be reported via `out_of_scope`.
+    write_fake_job(h.root(), "running-job", "running", None, old);
+
+    let v = h.run(&["gc", "--older-than", "7d"]);
+    assert_gc_envelope(&v, false);
+    assert_eq!(
+        v["deleted"].as_u64().unwrap_or(0),
+        1,
+        "exactly one job should be deleted: {v}"
+    );
+    assert!(
+        v["out_of_scope"].as_u64().unwrap_or(0) >= 1,
+        "running job must be counted in out_of_scope: {v}"
+    );
+    assert_eq!(
+        v["failed"].as_u64().unwrap_or(99),
+        0,
+        "no deletions failed in this scenario: {v}"
+    );
+
+    // Per spec: deleted ⇒ path no longer exists at command completion.
+    let deleted_path = std::path::Path::new(h.root()).join("exited-old");
+    assert!(
+        !deleted_path.exists(),
+        "deleted job directory must be absent on disk: {deleted_path:?}"
+    );
+    let running_path = std::path::Path::new(h.root()).join("running-job");
+    assert!(running_path.exists(), "running job must be preserved");
+}
+
 /// Run the binary with given args and return raw stdout + exit code (no JSON parsing).
 fn run_raw(args: &[&str]) -> (String, i32) {
     let bin = binary();

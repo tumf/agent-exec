@@ -327,7 +327,14 @@ pub struct GcData {
     /// Number of job directories actually deleted (0 when dry_run=true).
     pub deleted: u64,
     /// Number of job directories skipped (running, unreadable, or too recent).
+    /// Equals `out_of_scope + failed` for the per-job results aggregated here.
     pub skipped: u64,
+    /// Number of jobs that were not candidates for deletion (e.g. running,
+    /// non-terminal status, missing timestamp, retention window not satisfied).
+    pub out_of_scope: u64,
+    /// Number of jobs that were eligible candidates but could not be removed
+    /// (delete syscall failed or post-delete existence check still saw the path).
+    pub failed: u64,
     /// Total bytes freed (or would be freed in dry-run mode).
     pub freed_bytes: u64,
     /// Per-job details.
@@ -353,10 +360,23 @@ pub struct DeleteData {
     pub root: String,
     /// Whether this was a dry-run (no deletions performed).
     pub dry_run: bool,
+    /// Effective cwd scope used by `--all` to decide which jobs to evaluate.
+    /// Absent for single-job `delete <JOB_ID>` invocations because they are not
+    /// scoped by cwd.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd_scope: Option<String>,
     /// Number of job directories actually deleted (0 when dry_run=true).
     pub deleted: u64,
     /// Number of job directories skipped.
+    /// For aggregations involving per-job results, equals `out_of_scope + failed`.
     pub skipped: u64,
+    /// Number of jobs that were filtered out before any deletion was attempted
+    /// (cwd mismatch for `--all`, or non-terminal/state-unreadable jobs).
+    pub out_of_scope: u64,
+    /// Number of jobs that were targeted for deletion but the deletion did not
+    /// take effect (delete syscall failed or post-delete existence check still
+    /// saw the path).
+    pub failed: u64,
     /// Per-job details.
     pub jobs: Vec<DeleteJobResult>,
 }

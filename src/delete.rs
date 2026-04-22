@@ -115,9 +115,9 @@ fn delete_single(
         ))));
     }
 
-    let action = if dry_run {
+    let (action, reason, failed_count) = if dry_run {
         debug!(job_id, "delete: dry-run would delete job");
-        "would_delete"
+        ("would_delete", "explicit_delete".to_string(), 0u64)
     } else {
         std::fs::remove_dir_all(&job_path).map_err(|e| {
             anyhow!(
@@ -126,8 +126,22 @@ fn delete_single(
                 e
             )
         })?;
+        // Post-delete existence check: a successful remove_dir_all must leave
+        // the path absent at command completion. If anything (concurrent
+        // process, cache, race) re-materialised the directory we MUST NOT
+        // claim a successful deletion.
+        if job_path.exists() {
+            debug!(
+                job_id,
+                "delete: post-delete check found path still present; reporting failure"
+            );
+            return Err(anyhow!(
+                "delete reported success but job directory still exists: {}",
+                job_path.display()
+            ));
+        }
         debug!(job_id, "delete: deleted job");
-        "deleted"
+        ("deleted", "explicit_delete".to_string(), 0u64)
     };
 
     Response::new(
@@ -135,13 +149,16 @@ fn delete_single(
         DeleteData {
             root: root_str.to_string(),
             dry_run,
+            cwd_scope: None,
             deleted: if action == "deleted" { 1 } else { 0 },
             skipped: 0,
+            out_of_scope: 0,
+            failed: failed_count,
             jobs: vec![DeleteJobResult {
                 job_id: resolved_id,
                 state: state_str,
                 action: action.to_string(),
-                reason: "explicit_delete".to_string(),
+                reason,
             }],
         },
     )
@@ -170,8 +187,11 @@ fn delete_all(root: &std::path::Path, root_str: &str, dry_run: bool) -> Result<(
             DeleteData {
                 root: root_str.to_string(),
                 dry_run,
+                cwd_scope: Some(current_cwd.clone()),
                 deleted: 0,
                 skipped: 0,
+                out_of_scope: 0,
+                failed: 0,
                 jobs: vec![],
             },
         )
@@ -185,6 +205,8 @@ fn delete_all(root: &std::path::Path, root_str: &str, dry_run: bool) -> Result<(
     let mut job_results: Vec<DeleteJobResult> = Vec::new();
     let mut deleted_count: u64 = 0;
     let mut skipped_count: u64 = 0;
+    let mut out_of_scope_count: u64 = 0;
+    let mut failed_count: u64 = 0;
 
     for entry in read_dir {
         let entry = match entry {
@@ -228,7 +250,11 @@ fn delete_all(root: &std::path::Path, root_str: &str, dry_run: bool) -> Result<(
                     current_cwd = %current_cwd,
                     "delete --all: skipping job (cwd mismatch or absent)"
                 );
-                // Not counted in skipped — just out of scope.
+                // Out-of-scope by cwd: counted via out_of_scope aggregate so the
+                // operator can tell "filtered before evaluation" apart from
+                // "evaluated but not deleted". Not added to per-job results to
+                // keep that array bounded for the in-scope set.
+                out_of_scope_count += 1;
                 continue;
             }
         }
@@ -244,6 +270,7 @@ fn delete_all(root: &std::path::Path, root_str: &str, dry_run: bool) -> Result<(
             None => {
                 debug!(job_id = %job_id, "delete --all: state.json missing or unreadable; skipping");
                 skipped_count += 1;
+                out_of_scope_count += 1;
                 job_results.push(DeleteJobResult {
                     job_id,
                     state: "unknown".to_string(),
@@ -268,6 +295,7 @@ fn delete_all(root: &std::path::Path, root_str: &str, dry_run: bool) -> Result<(
             };
             debug!(job_id = %job_id, state = %state_str, "delete --all: non-terminal job; skipping");
             skipped_count += 1;
+            out_of_scope_count += 1;
             job_results.push(DeleteJobResult {
                 job_id,
                 state: state_str,
@@ -284,6 +312,7 @@ fn delete_all(root: &std::path::Path, root_str: &str, dry_run: bool) -> Result<(
         {
             debug!(job_id = %job_id, state = %state_str, "delete --all: live pid for terminal state; skipping");
             skipped_count += 1;
+            out_of_scope_count += 1;
             job_results.push(DeleteJobResult {
                 job_id,
                 state: state_str,
@@ -300,6 +329,24 @@ fn delete_all(root: &std::path::Path, root_str: &str, dry_run: bool) -> Result<(
         } else {
             match std::fs::remove_dir_all(&path) {
                 Ok(()) => {
+                    // Post-delete existence check: if the path still exists
+                    // (concurrent re-creation, broken filesystem, root
+                    // misconfiguration) we MUST NOT report `deleted`.
+                    if path.exists() {
+                        debug!(
+                            job_id = %job_id,
+                            "delete --all: post-delete check found path still present; reporting failure"
+                        );
+                        skipped_count += 1;
+                        failed_count += 1;
+                        job_results.push(DeleteJobResult {
+                            job_id,
+                            state: state_str,
+                            action: "skipped".to_string(),
+                            reason: "post_delete_check_failed".to_string(),
+                        });
+                        continue;
+                    }
                     debug!(job_id = %job_id, "delete --all: deleted");
                     deleted_count += 1;
                     "deleted"
@@ -307,6 +354,7 @@ fn delete_all(root: &std::path::Path, root_str: &str, dry_run: bool) -> Result<(
                 Err(e) => {
                     debug!(job_id = %job_id, error = %e, "delete --all: failed to delete; skipping");
                     skipped_count += 1;
+                    failed_count += 1;
                     job_results.push(DeleteJobResult {
                         job_id,
                         state: state_str,
@@ -329,6 +377,8 @@ fn delete_all(root: &std::path::Path, root_str: &str, dry_run: bool) -> Result<(
     debug!(
         deleted = deleted_count,
         skipped = skipped_count,
+        out_of_scope = out_of_scope_count,
+        failed = failed_count,
         "delete --all: complete"
     );
 
@@ -337,8 +387,11 @@ fn delete_all(root: &std::path::Path, root_str: &str, dry_run: bool) -> Result<(
         DeleteData {
             root: root_str.to_string(),
             dry_run,
+            cwd_scope: Some(current_cwd),
             deleted: deleted_count,
             skipped: skipped_count,
+            out_of_scope: out_of_scope_count,
+            failed: failed_count,
             jobs: job_results,
         },
     )
