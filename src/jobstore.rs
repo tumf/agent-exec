@@ -195,23 +195,51 @@ impl JobDir {
     ///    - 1 match   → resolve to that job
     ///    - 2+ matches → `Err(AmbiguousJobId)`
     pub fn open(root: &std::path::Path, job_id: &str) -> Result<Self> {
-        // Exact-match fast path: no directory scan needed.
+        Self::resolve_matching(root, job_id, |_| true)
+    }
+
+    /// Open an existing job directory by ID or unambiguous prefix, restricted to
+    /// jobs whose persisted state matches `predicate`.
+    pub fn open_matching<F>(root: &std::path::Path, job_id: &str, predicate: F) -> Result<Self>
+    where
+        F: Fn(&JobStatus) -> bool,
+    {
+        Self::resolve_matching(root, job_id, |job_dir| match job_dir.read_state() {
+            Ok(state) => predicate(state.status()),
+            Err(_) => false,
+        })
+    }
+
+    fn resolve_matching<F>(root: &std::path::Path, job_id: &str, predicate: F) -> Result<Self>
+    where
+        F: Fn(&JobDir) -> bool,
+    {
         let path = root.join(job_id);
         if path.is_dir() {
-            return Ok(JobDir {
+            let job_dir = JobDir {
                 path,
                 job_id: job_id.to_string(),
-            });
+            };
+            if predicate(&job_dir) {
+                return Ok(job_dir);
+            }
+            return Err(anyhow::Error::new(JobNotFound(job_id.to_string())));
         }
 
-        // Prefix scan: collect all directories whose name starts with `job_id`.
         let mut candidates: Vec<String> = std::fs::read_dir(root)
             .into_iter()
             .flatten()
             .flatten()
             .filter_map(|entry| {
                 let name = entry.file_name().to_string_lossy().into_owned();
-                if name.starts_with(job_id) && entry.path().is_dir() {
+                if !name.starts_with(job_id) || !entry.path().is_dir() {
+                    return None;
+                }
+                let job_dir = JobDir {
+                    path: entry.path(),
+                    job_id: name.clone(),
+                };
+                if predicate(&job_dir) {
                     Some(name)
                 } else {
                     None

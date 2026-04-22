@@ -39,6 +39,48 @@ This separation lets agents parse stdout reliably without filtering log noise.
 cargo install --path .
 ```
 
+## Shell Completions
+
+`agent-exec` supports dynamic shell completion for job IDs.
+
+- `status` and `tail` complete all known job IDs
+- `wait` completes only non-terminal jobs (`created`, `running`)
+- `kill` completes only running jobs
+- `delete` completes only terminal jobs
+
+The completion candidates are generated dynamically from the jobs root, so you
+need to register the completion script in your shell first.
+
+### Bash
+
+```bash
+agent-exec completions bash >> ~/.bash_completion
+source ~/.bash_completion
+```
+
+### Zsh
+
+```bash
+mkdir -p ~/.zsh/completions
+agent-exec completions zsh > ~/.zsh/completions/_agent-exec
+fpath=(~/.zsh/completions $fpath)
+autoload -Uz compinit && compinit
+```
+
+### Fish
+
+```bash
+mkdir -p ~/.config/fish/completions
+agent-exec completions fish > ~/.config/fish/completions/agent-exec.fish
+```
+
+Example:
+
+```bash
+agent-exec tail <TAB>
+agent-exec kill <TAB>
+```
+
 ## Quick Start
 
 ### Short-lived job (`run` だけで結果確認)
