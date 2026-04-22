@@ -64,6 +64,8 @@ pub fn execute(opts: GcOpts) -> Result<()> {
                 older_than_source: older_than_source.to_string(),
                 deleted: 0,
                 skipped: 0,
+                out_of_scope: 0,
+                failed: 0,
                 freed_bytes: 0,
                 jobs: vec![],
             },
@@ -78,6 +80,8 @@ pub fn execute(opts: GcOpts) -> Result<()> {
     let mut job_results: Vec<GcJobResult> = Vec::new();
     let mut deleted_count: u64 = 0;
     let mut skipped_count: u64 = 0;
+    let mut out_of_scope_count: u64 = 0;
+    let mut failed_count: u64 = 0;
     let mut freed_bytes: u64 = 0;
 
     for entry in read_dir {
@@ -114,6 +118,7 @@ pub fn execute(opts: GcOpts) -> Result<()> {
             None => {
                 debug!(path = %path.display(), "gc: state.json missing or unreadable; skipping");
                 skipped_count += 1;
+                out_of_scope_count += 1;
                 job_results.push(GcJobResult {
                     job_id,
                     state: "unknown".to_string(),
@@ -131,6 +136,7 @@ pub fn execute(opts: GcOpts) -> Result<()> {
         if *status == JobStatus::Running {
             debug!(job_id = %job_id, "gc: running job; skipping");
             skipped_count += 1;
+            out_of_scope_count += 1;
             job_results.push(GcJobResult {
                 job_id,
                 state: "running".to_string(),
@@ -148,6 +154,7 @@ pub fn execute(opts: GcOpts) -> Result<()> {
         ) {
             debug!(job_id = %job_id, status = ?status, "gc: unknown status; skipping");
             skipped_count += 1;
+            out_of_scope_count += 1;
             job_results.push(GcJobResult {
                 job_id,
                 state: status.as_str().to_string(),
@@ -168,6 +175,7 @@ pub fn execute(opts: GcOpts) -> Result<()> {
             _ => {
                 debug!(job_id = %job_id, "gc: no usable timestamp; skipping");
                 skipped_count += 1;
+                out_of_scope_count += 1;
                 job_results.push(GcJobResult {
                     job_id,
                     state: status.as_str().to_string(),
@@ -183,6 +191,7 @@ pub fn execute(opts: GcOpts) -> Result<()> {
         if !is_older_than(&gc_ts, &cutoff_rfc3339) {
             debug!(job_id = %job_id, gc_ts = %gc_ts, cutoff = %cutoff_rfc3339, "gc: too recent; skipping");
             skipped_count += 1;
+            out_of_scope_count += 1;
             job_results.push(GcJobResult {
                 job_id,
                 state: status.as_str().to_string(),
@@ -209,20 +218,39 @@ pub fn execute(opts: GcOpts) -> Result<()> {
         } else {
             match std::fs::remove_dir_all(&path) {
                 Ok(()) => {
-                    debug!(job_id = %job_id, bytes = dir_bytes, "gc: deleted");
-                    deleted_count += 1;
-                    freed_bytes += dir_bytes;
-                    job_results.push(GcJobResult {
-                        job_id,
-                        state: status.as_str().to_string(),
-                        action: "deleted".to_string(),
-                        reason: format!("older_than_{older_than_str}"),
-                        bytes: dir_bytes,
-                    });
+                    // Post-delete existence check: a successful remove_dir_all
+                    // must leave the path absent before we report `deleted`.
+                    if path.exists() {
+                        debug!(
+                            job_id = %job_id,
+                            "gc: post-delete check found path still present; reporting failure"
+                        );
+                        skipped_count += 1;
+                        failed_count += 1;
+                        job_results.push(GcJobResult {
+                            job_id,
+                            state: status.as_str().to_string(),
+                            action: "skipped".to_string(),
+                            reason: "post_delete_check_failed".to_string(),
+                            bytes: dir_bytes,
+                        });
+                    } else {
+                        debug!(job_id = %job_id, bytes = dir_bytes, "gc: deleted");
+                        deleted_count += 1;
+                        freed_bytes += dir_bytes;
+                        job_results.push(GcJobResult {
+                            job_id,
+                            state: status.as_str().to_string(),
+                            action: "deleted".to_string(),
+                            reason: format!("older_than_{older_than_str}"),
+                            bytes: dir_bytes,
+                        });
+                    }
                 }
                 Err(e) => {
                     debug!(job_id = %job_id, error = %e, "gc: failed to delete; skipping");
                     skipped_count += 1;
+                    failed_count += 1;
                     job_results.push(GcJobResult {
                         job_id,
                         state: status.as_str().to_string(),
@@ -238,6 +266,8 @@ pub fn execute(opts: GcOpts) -> Result<()> {
     debug!(
         deleted = deleted_count,
         skipped = skipped_count,
+        out_of_scope = out_of_scope_count,
+        failed = failed_count,
         freed_bytes,
         "gc: complete"
     );
@@ -251,6 +281,8 @@ pub fn execute(opts: GcOpts) -> Result<()> {
             older_than_source: older_than_source.to_string(),
             deleted: deleted_count,
             skipped: skipped_count,
+            out_of_scope: out_of_scope_count,
+            failed: failed_count,
             freed_bytes,
             jobs: job_results,
         },

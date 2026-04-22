@@ -492,19 +492,23 @@ agent-exec --root /tmp/jobs gc --older-than 7d
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `root` | string | Resolved jobs root path |
+| `root` | string | Resolved jobs root path (gc evaluates the entire root, regardless of cwd) |
 | `dry_run` | bool | Whether this was a preview-only run |
 | `older_than` | string | Effective retention window (e.g. `"30d"`) |
 | `older_than_source` | string | `"default"` or `"flag"` |
 | `deleted` | number | Count of directories actually deleted |
-| `skipped` | number | Count of directories skipped |
+| `skipped` | number | Count of directories skipped (sum of `out_of_scope + failed` for the per-job results) |
+| `out_of_scope` | number | Count of jobs that were not candidates for deletion (e.g. running, non-terminal, missing timestamp, retention not satisfied) |
+| `failed` | number | Count of jobs that were eligible candidates but could not be removed (delete syscall failed or post-delete existence check still saw the path) |
 | `freed_bytes` | number | Bytes freed (or would be freed in dry-run) |
 | `jobs` | array | Per-job details: `job_id`, `state`, `action`, `reason`, `bytes` |
 
 The `action` field in each `jobs` entry is one of:
-- `"deleted"` — directory was removed
+- `"deleted"` — directory was removed AND the post-delete existence check confirmed the path is gone at command completion
 - `"would_delete"` — would be removed in a real run (dry-run only)
 - `"skipped"` — preserved with an explanation in `reason`
+
+Use `out_of_scope` vs `failed` to tell "this job was never a deletion target" apart from "this job should have been deleted but wasn't". A job appearing as `deleted` always implies the path is absent on disk by the time the response is emitted.
 
 ## delete
 
@@ -549,23 +553,32 @@ agent-exec --root /tmp/jobs delete --all
 |-------|------|-------------|
 | `root` | string | Resolved jobs root path |
 | `dry_run` | bool | Whether this was a preview-only run |
+| `cwd_scope` | string | Effective cwd used by `--all` to evaluate which jobs to delete. Present only for `--all`; absent for single-job `delete <JOB_ID>`. |
 | `deleted` | number | Count of directories actually deleted (0 when `dry_run=true`) |
-| `skipped` | number | Count of in-scope directories that were not deleted |
-| `jobs` | array | Per-job details: `job_id`, `state`, `action`, `reason` |
+| `skipped` | number | Count of directories that were not deleted (sum of `out_of_scope + failed` for the per-job results) |
+| `out_of_scope` | number | Count of jobs filtered out before any deletion was attempted: cwd-mismatched jobs (only for `--all`) and in-scope jobs that were not deletion targets (e.g. `running`, `created`, `pid_alive`, `state_unreadable`) |
+| `failed` | number | Count of jobs that were targeted for deletion but the deletion did not take effect (delete syscall failed or post-delete existence check still saw the path) |
+| `jobs` | array | Per-job details: `job_id`, `state`, `action`, `reason`. cwd-mismatched jobs are aggregated into `out_of_scope` and not listed individually. |
 
 The `action` field in each `jobs` entry is one of:
-- `"deleted"` — directory was removed
+- `"deleted"` — directory was removed AND the post-delete existence check confirmed the path is gone at command completion
 - `"would_delete"` — would be removed in a real run (dry-run only)
-- `"skipped"` — preserved with an explanation in `reason` (e.g. `"running"`, `"created"`)
+- `"skipped"` — preserved with an explanation in `reason` (e.g. `"running"`, `"created"`, `"pid_alive"`, `"state_unreadable"`, `"post_delete_check_failed"`, or `"delete_failed: ..."`)
+
+Use `cwd_scope`, `out_of_scope`, and `failed` together to disambiguate three operator concerns:
+- "did the bulk delete actually evaluate the directory I expected?" → check `cwd_scope`
+- "is this job missing because it was filtered out, or because deletion failed?" → compare `out_of_scope` vs `failed`
+- "if I see `deleted`, can I trust the directory is gone?" → yes; `deleted` is reported only after the post-delete existence check confirms the path is absent
 
 **Difference between `delete` and `gc`**
 
 | | `delete` | `gc` |
 |--|----------|------|
-| Scope | Single job or cwd-scoped finished jobs | Entire jobs root |
+| Scope | Single job or cwd-scoped finished jobs (`cwd_scope` reports the effective cwd) | Entire jobs root, regardless of cwd |
 | Trigger | Explicit operator action | Age-based retention policy |
 | Running jobs | Always rejected / skipped | Always skipped |
 | Dry-run | `--dry-run` flag | `--dry-run` flag |
+| Post-delete check | `deleted` ⇒ path confirmed absent | `deleted` ⇒ path confirmed absent |
 
 ## serve — HTTP API server
 
