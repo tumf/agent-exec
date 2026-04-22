@@ -1,0 +1,13 @@
+{
+  "openspec/specs/agent-exec-json-printing/spec.md": 1771657359.9031432,
+  "openspec/specs/agent-exec-skills/spec.md": 1776733774.5971718,
+  "openspec/specs/agent-exec/spec.md": 1776824715.7846725,
+  "openspec/specs/agent-exec-contract/spec.md": 1776057717.0278783,
+  "openspec/specs/agent-exec-tests/spec.md": 1775960911.4814649,
+  "openspec/specs/agent-exec-test-harness/spec.md": 1776007263.168453,
+  "openspec/specs/agent-exec-jobstore/spec.md": 1776059841.9406395,
+  "openspec/specs/agent-exec-run/spec.md": 1776059904.768932,
+  "openspec/specs/agent-exec-windows/spec.md": 1776060137.7090566,
+  "openspec/specs/agent-exec-run-logging/spec.md": 1776059372.8967988,
+  "openspec/specs/agent-exec-serve/spec.md": 1776059808.6910787
+}
