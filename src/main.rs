@@ -35,6 +35,17 @@ impl From<CompletionShell> for Shell {
     }
 }
 
+impl CompletionShell {
+    fn env_name(self) -> &'static str {
+        match self {
+            CompletionShell::Bash => "bash",
+            CompletionShell::Zsh => "zsh",
+            CompletionShell::Fish => "fish",
+            CompletionShell::PowerShell => "powershell",
+        }
+    }
+}
+
 /// Clap value parser: validate a stored tag (used by `run` and `tag set`).
 fn parse_stored_tag(s: &str) -> Result<String, String> {
     agent_exec::tag::validate_stored_tag(s)
@@ -510,9 +521,11 @@ enum Command {
         subcommand: NotifySubcommand,
     },
 
-    /// Generate shell completion scripts for bash, zsh, fish, or powershell.
+    /// Generate shell completion registration scripts for bash, zsh, fish, or powershell.
     ///
     /// Source the generated script in your shell profile to enable tab-completion.
+    /// The generated script calls back into `agent-exec` at completion time so
+    /// dynamic job ID completion stays in sync with the current binary.
     /// Example (bash):
     ///   agent-exec completions bash >> ~/.bash_completion
     /// Example (zsh):
@@ -1048,9 +1061,19 @@ fn run(cli: Cli) -> Result<()> {
         }
 
         Command::Completions { shell } => {
-            let mut cmd = Cli::command();
-            let name = cmd.get_name().to_string();
-            clap_complete::generate(Shell::from(shell), &mut cmd, name, &mut std::io::stdout());
+            let completer = std::env::current_exe()
+                .context("resolve current executable for shell completions")?;
+            let current_dir = std::env::current_dir().ok();
+
+            // Reuse CompleteEnv's registration-script path so generated shell code
+            // calls back into this binary and preserves dynamic ArgValueCompleter hooks.
+            unsafe {
+                std::env::set_var("COMPLETE", shell.env_name());
+            }
+            let completed = CompleteEnv::with_factory(Cli::command)
+                .try_complete([completer.into_os_string()], current_dir.as_deref())
+                .context("generate shell completion registration")?;
+            anyhow::ensure!(completed, "completion registration was not generated");
         }
 
         Command::InstallSkills { global, claude } => {

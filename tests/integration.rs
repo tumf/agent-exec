@@ -5922,6 +5922,35 @@ fn get_dynamic_candidates(
         .collect()
 }
 
+fn write_completion_job(root: &std::path::Path, id: &str, state: &str, cwd: &str) {
+    std::fs::create_dir_all(root.join(id)).unwrap();
+    std::fs::write(
+        root.join(id).join("meta.json"),
+        serde_json::json!({
+            "job": { "id": id },
+            "schema_version": "0.1",
+            "command": ["true"],
+            "created_at": "2026-01-01T00:00:00Z",
+            "root": root.display().to_string(),
+            "env_keys": [],
+            "cwd": cwd,
+            "tags": []
+        })
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join(id).join("state.json"),
+        serde_json::json!({
+            "job": { "id": id, "status": state },
+            "result": { "exit_code": null, "signal": null, "duration_ms": null },
+            "updated_at": "2026-01-01T00:00:00Z"
+        })
+        .to_string(),
+    )
+    .unwrap();
+}
+
 #[test]
 fn test_completions_bash_outputs_nonempty_script() {
     let (stdout, code) = run_completion("bash", &["completions", "bash"], None);
@@ -5942,6 +5971,10 @@ fn test_completions_zsh_outputs_nonempty_script() {
     let (stdout, code) = run_completion("zsh", &["completions", "zsh"], None);
     assert_eq!(code, 0);
     assert!(!stdout.trim().is_empty());
+    assert!(
+        stdout.contains("_clap_dynamic_completer_") && stdout.contains("COMPLETE=\"zsh\""),
+        "zsh script must register dynamic completion callbacks: {stdout}"
+    );
 }
 
 #[test]
@@ -5968,17 +6001,13 @@ fn test_completions_invalid_shell_exits_with_code_2() {
 fn test_dynamic_completion_all_jobs_for_status() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().to_str().unwrap();
+    let cwd = std::env::current_dir().unwrap().display().to_string();
     // Create two jobs with different states
     for (id, state) in &[
         ("01AAAAAAAAAAAAAAAAAAAAAAAAA", "running"),
         ("01BBBBBBBBBBBBBBBBBBBBBBBBB", "exited"),
     ] {
-        std::fs::create_dir_all(tmp.path().join(id)).unwrap();
-        std::fs::write(
-            tmp.path().join(id).join("state.json"),
-            format!("{{\"state\":\"{state}\",\"job_id\":\"{id}\"}}"),
-        )
-        .unwrap();
+        write_completion_job(tmp.path(), id, state, &cwd);
     }
 
     // `status` should return all jobs (word index 2: agent-exec status <TAB>)
@@ -5998,16 +6027,12 @@ fn test_dynamic_completion_all_jobs_for_status() {
 fn test_dynamic_completion_running_only_for_kill() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().to_str().unwrap();
+    let cwd = std::env::current_dir().unwrap().display().to_string();
     for (id, state) in &[
         ("01AAAAAAAAAAAAAAAAAAAAAAAAA", "running"),
         ("01BBBBBBBBBBBBBBBBBBBBBBBBB", "exited"),
     ] {
-        std::fs::create_dir_all(tmp.path().join(id)).unwrap();
-        std::fs::write(
-            tmp.path().join(id).join("state.json"),
-            format!("{{\"state\":\"{state}\",\"job_id\":\"{id}\"}}"),
-        )
-        .unwrap();
+        write_completion_job(tmp.path(), id, state, &cwd);
     }
 
     // `kill` should return only running jobs (word index 2: agent-exec kill <TAB>)
@@ -6071,15 +6096,11 @@ fn get_dynamic_candidates_via_root_arg(root: &str, subcommand: &str, partial: &s
 fn test_dynamic_completion_with_root_arg_returns_jobs_from_that_path() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().to_str().unwrap();
+    let cwd = std::env::current_dir().unwrap().display().to_string();
 
     // Create a job in the custom root.
     let job_id = "01CUSTOMROOTJOBAAAAAAAAAAAAA";
-    std::fs::create_dir_all(tmp.path().join(job_id)).unwrap();
-    std::fs::write(
-        tmp.path().join(job_id).join("state.json"),
-        format!("{{\"state\":\"running\",\"job_id\":\"{job_id}\"}}"),
-    )
-    .unwrap();
+    write_completion_job(tmp.path(), job_id, "running", &cwd);
 
     // Trigger completion via --root argv (no AGENT_EXEC_ROOT env var).
     let candidates = get_dynamic_candidates_via_root_arg(root, "status", "");
@@ -6090,6 +6111,32 @@ fn test_dynamic_completion_with_root_arg_returns_jobs_from_that_path() {
     assert!(
         !ids.is_empty(),
         "--root argv resolution: expected job {job_id} in candidates: {candidates:?}"
+    );
+}
+
+#[test]
+fn test_dynamic_completion_excludes_jobs_from_other_cwd() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_str().unwrap();
+    let cwd = std::env::current_dir().unwrap().display().to_string();
+
+    write_completion_job(tmp.path(), "01MATCHAAAAAAAAAAAAAAAAAAAA", "running", &cwd);
+    write_completion_job(
+        tmp.path(),
+        "01OTHERBBBBBBBBBBBBBBBBBBBB",
+        "running",
+        "/tmp/completely-different-cwd",
+    );
+
+    let candidates = get_dynamic_candidates(root, "tail", 2, "");
+    let ids: Vec<_> = candidates.iter().filter(|c| c.starts_with("01")).collect();
+    assert!(
+        ids.iter().any(|s| s.contains("01MATCH")),
+        "tail should include current cwd job: {candidates:?}"
+    );
+    assert!(
+        !ids.iter().any(|s| s.contains("01OTHER")),
+        "tail should exclude other cwd job: {candidates:?}"
     );
 }
 

@@ -31,7 +31,20 @@ use std::path::PathBuf;
 fn read_job_state(job_dir: &std::path::Path) -> Option<String> {
     let content = std::fs::read_to_string(job_dir.join("state.json")).ok()?;
     let value: serde_json::Value = serde_json::from_str(&content).ok()?;
-    value.get("state")?.as_str().map(str::to_string)
+    value
+        .get("job")?
+        .get("status")?
+        .as_str()
+        .map(str::to_string)
+}
+
+/// Read the persisted `cwd` from `<job_dir>/meta.json`.
+/// Returns `None` on any I/O or parse failure so callers can treat missing or
+/// legacy metadata as a non-match for the default cwd filter.
+fn read_job_cwd(job_dir: &std::path::Path) -> Option<String> {
+    let content = std::fs::read_to_string(job_dir.join("meta.json")).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&content).ok()?;
+    value.get("cwd")?.as_str().map(str::to_string)
 }
 
 /// List completion candidates under `root`, optionally filtered by job state.
@@ -46,6 +59,7 @@ pub fn list_job_candidates(
     root: &std::path::Path,
     state_filter: Option<&[&str]>,
 ) -> Vec<CompletionCandidate> {
+    let cwd_filter = crate::run::resolve_effective_cwd(None);
     let entries = match std::fs::read_dir(root) {
         Ok(e) => e,
         Err(_) => return vec![],
@@ -55,7 +69,16 @@ pub fn list_job_candidates(
         .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().to_string();
+            let cwd = read_job_cwd(&e.path());
             let state = read_job_state(&e.path());
+
+            // Match `list` default behavior: only show jobs created from the
+            // caller's current working directory unless the CLI later grows an
+            // explicit completion override.
+            match cwd.as_deref() {
+                Some(job_cwd) if job_cwd == cwd_filter => {}
+                _ => return None,
+            }
 
             // Apply state filter when specified.
             if let Some(filter) = state_filter {
@@ -199,7 +222,23 @@ mod tests {
     fn make_job(root: &std::path::Path, id: &str, state: &str) {
         let dir = root.join(id);
         fs::create_dir_all(&dir).unwrap();
-        let state_json = serde_json::json!({ "state": state, "job_id": id });
+        let cwd = std::env::current_dir().unwrap().display().to_string();
+        let meta_json = serde_json::json!({
+            "job": { "id": id },
+            "schema_version": "0.1",
+            "command": ["true"],
+            "created_at": "2026-01-01T00:00:00Z",
+            "root": root.display().to_string(),
+            "env_keys": [],
+            "cwd": cwd,
+            "tags": []
+        });
+        fs::write(dir.join("meta.json"), meta_json.to_string()).unwrap();
+        let state_json = serde_json::json!({
+            "job": { "id": id, "status": state },
+            "result": { "exit_code": null, "signal": null, "duration_ms": null },
+            "updated_at": "2026-01-01T00:00:00Z"
+        });
         fs::write(dir.join("state.json"), state_json.to_string()).unwrap();
     }
 
@@ -259,7 +298,20 @@ mod tests {
     fn test_missing_state_json_included_without_filter() {
         let tmp = tempdir().unwrap();
         // Job dir without state.json
-        fs::create_dir_all(tmp.path().join("01NOSTATE")).unwrap();
+        let dir = tmp.path().join("01NOSTATE");
+        fs::create_dir_all(&dir).unwrap();
+        let cwd = std::env::current_dir().unwrap().display().to_string();
+        let meta_json = serde_json::json!({
+            "job": { "id": "01NOSTATE" },
+            "schema_version": "0.1",
+            "command": ["true"],
+            "created_at": "2026-01-01T00:00:00Z",
+            "root": tmp.path().display().to_string(),
+            "env_keys": [],
+            "cwd": cwd,
+            "tags": []
+        });
+        fs::write(dir.join("meta.json"), meta_json.to_string()).unwrap();
         make_job(tmp.path(), "01AAA", "running");
 
         let candidates = list_job_candidates(tmp.path(), None);
@@ -275,7 +327,20 @@ mod tests {
     fn test_missing_state_json_excluded_with_filter() {
         let tmp = tempdir().unwrap();
         // Job dir without state.json — should be excluded when filtering
-        fs::create_dir_all(tmp.path().join("01NOSTATE")).unwrap();
+        let dir = tmp.path().join("01NOSTATE");
+        fs::create_dir_all(&dir).unwrap();
+        let cwd = std::env::current_dir().unwrap().display().to_string();
+        let meta_json = serde_json::json!({
+            "job": { "id": "01NOSTATE" },
+            "schema_version": "0.1",
+            "command": ["true"],
+            "created_at": "2026-01-01T00:00:00Z",
+            "root": tmp.path().display().to_string(),
+            "env_keys": [],
+            "cwd": cwd,
+            "tags": []
+        });
+        fs::write(dir.join("meta.json"), meta_json.to_string()).unwrap();
         make_job(tmp.path(), "01AAA", "running");
 
         let candidates = list_job_candidates(tmp.path(), Some(&["running"]));
@@ -361,5 +426,35 @@ mod tests {
         assert!(names.contains(&"01CUSTOM".to_string()));
         assert!(!names.contains(&"01OTHER".to_string()));
         assert_eq!(candidates.len(), 1);
+    }
+
+    #[test]
+    fn test_cwd_filter_excludes_jobs_from_other_directories() {
+        let tmp = tempdir().unwrap();
+        make_job(tmp.path(), "01MATCH", "running");
+
+        let dir = tmp.path().join("01OTHER");
+        fs::create_dir_all(&dir).unwrap();
+        let meta_json = serde_json::json!({
+            "job": { "id": "01OTHER" },
+            "schema_version": "0.1",
+            "command": ["true"],
+            "created_at": "2026-01-01T00:00:00Z",
+            "root": tmp.path().display().to_string(),
+            "env_keys": [],
+            "cwd": "/tmp/somewhere-else",
+            "tags": []
+        });
+        fs::write(dir.join("meta.json"), meta_json.to_string()).unwrap();
+        let state_json = serde_json::json!({ "state": "running", "job_id": "01OTHER" });
+        fs::write(dir.join("state.json"), state_json.to_string()).unwrap();
+
+        let candidates = list_job_candidates(tmp.path(), None);
+        let names: Vec<_> = candidates
+            .iter()
+            .map(|c| c.get_value().to_string_lossy().to_string())
+            .collect();
+        assert!(names.contains(&"01MATCH".to_string()));
+        assert!(!names.contains(&"01OTHER".to_string()));
     }
 }
