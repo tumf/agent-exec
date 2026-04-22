@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>graphify - graphify-out/graph.html</title>
+<script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0f0f1a; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; display: flex; height: 100vh; overflow: hidden; }
+  #graph { flex: 1; }
+  #sidebar { width: 280px; background: #1a1a2e; border-left: 1px solid #2a2a4e; display: flex; flex-direction: column; overflow: hidden; }
+  #search-wrap { padding: 12px; border-bottom: 1px solid #2a2a4e; }
+  #search { width: 100%; background: #0f0f1a; border: 1px solid #3a3a5e; color: #e0e0e0; padding: 7px 10px; border-radius: 6px; font-size: 13px; outline: none; }
+  #search:focus { border-color: #4E79A7; }
+  #search-results { max-height: 140px; overflow-y: auto; padding: 4px 12px; border-bottom: 1px solid #2a2a4e; display: none; }
+  .search-item { padding: 4px 6px; cursor: pointer; border-radius: 4px; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .search-item:hover { background: #2a2a4e; }
+  #info-panel { padding: 14px; border-bottom: 1px solid #2a2a4e; min-height: 140px; }
+  #info-panel h3 { font-size: 13px; color: #aaa; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.05em; }
+  #info-content { font-size: 13px; color: #ccc; line-height: 1.6; }
+  #info-content .field { margin-bottom: 5px; }
+  #info-content .field b { color: #e0e0e0; }
+  #info-content .empty { color: #555; font-style: italic; }
+  .neighbor-link { display: block; padding: 2px 6px; margin: 2px 0; border-radius: 3px; cursor: pointer; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-left: 3px solid #333; }
+  .neighbor-link:hover { background: #2a2a4e; }
+  #neighbors-list { max-height: 160px; overflow-y: auto; margin-top: 4px; }
+  #legend-wrap { flex: 1; overflow-y: auto; padding: 12px; }
+  #legend-wrap h3 { font-size: 13px; color: #aaa; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.05em; }
+  .legend-item { display: flex; align-items: center; gap: 8px; padding: 4px 0; cursor: pointer; border-radius: 4px; font-size: 12px; }
+  .legend-item:hover { background: #2a2a4e; padding-left: 4px; }
+  .legend-item.dimmed { opacity: 0.35; }
+  .legend-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+  .legend-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .legend-count { color: #666; font-size: 11px; }
+  #stats { padding: 10px 14px; border-top: 1px solid #2a2a4e; font-size: 11px; color: #555; }
+</style>
+</head>
+<body>
+<div id="graph"></div>
+<div id="sidebar">
+  <div id="search-wrap">
+    <input id="search" type="text" placeholder="Search nodes..." autocomplete="off">
+    <div id="search-results"></div>
+  </div>
+  <div id="info-panel">
+    <h3>Node Info</h3>
+    <div id="info-content"><span class="empty">Click a node to inspect it</span></div>
+  </div>
+  <div id="legend-wrap">
+    <h3>Communities</h3>
+    <div id="legend"></div>
+  </div>
+  <div id="stats">34 nodes &middot; 48 edges &middot; 6 communities</div>
+</div>
+<script>
+const RAW_NODES = [{"id": "agent_exec_spec", "label": "agent-exec Canonical Spec", "color": {"background": "#76B7B2", "border": "#76B7B2", "highlight": {"background": "#ffffff", "border": "#76B7B2"}}, "size": 35.0, "font": {"size": 12, "color": "#ffffff"}, "title": "agent-exec Canonical Spec", "community": 3, "community_name": "Core Harness", "source_file": "openspec/specs/agent-exec/spec.md", "file_type": "document", "degree": 5}, {"id": "agent_exec_json_printing_spec", "label": "agent-exec JSON Printing Spec", "color": {"background": "#4E79A7", "border": "#4E79A7", "highlight": {"background": "#ffffff", "border": "#4E79A7"}}, "size": 15.0, "font": {"size": 12, "color": "#ffffff"}, "title": "agent-exec JSON Printing Spec", "community": 0, "community_name": "JSON Contract", "source_file": "openspec/specs/agent-exec-json-printing/spec.md", "file_type": "document", "degree": 1}, {"id": "agent_exec_contract_spec", "label": "agent-exec Contract Spec", "color": {"background": "#4E79A7", "border": "#4E79A7", "highlight": {"background": "#ffffff", "border": "#4E79A7"}}, "size": 25.0, "font": {"size": 12, "color": "#ffffff"}, "title": "agent-exec Contract Spec", "community": 0, "community_name": "JSON Contract", "source_file": "openspec/specs/agent-exec-contract/spec.md", "file_type": "document", "degree": 3}, {"id": "agent_exec_run_spec", "label": "agent-exec Run Spec", "color": {"background": "#F28E2B", "border": "#F28E2B", "highlight": {"background": "#ffffff", "border": "#F28E2B"}}, "size": 20.0, "font": {"size": 12, "color": "#ffffff"}, "title": "agent-exec Run Spec", "community": 1, "community_name": "Run Serve I/O", "source_file": "openspec/specs/agent-exec-run/spec.md", "file_type": "document", "degree": 2}, {"id": "agent_exec_jobstore_spec", "label": "agent-exec Jobstore Spec", "color": {"background": "#E15759", "border": "#E15759", "highlight": {"background": "#ffffff", "border": "#E15759"}}, "size": 35.0, "font": {"size": 12, "color": "#ffffff"}, "title": "agent-exec Jobstore Spec", "community": 2, "community_name": "Jobstore Windows", "source_file": "openspec/specs/agent-exec-jobstore/spec.md", "file_type": "document", "degree": 5}, {"id": "agent_exec_windows_spec", "label": "agent-exec Windows Spec", "color": {"background": "#E15759", "border": "#E15759", "highlight": {"background": "#ffffff", "border": "#E15759"}}, "size": 20.0, "font": {"size": 12, "color": "#ffffff"}, "title": "agent-exec Windows Spec", "community": 2, "community_name": "Jobstore Windows", "source_file": "openspec/specs/agent-exec-windows/spec.md", "file_type": "document", "degree": 2}, {"id": "agent_exec_serve_spec", "label": "agent-exec Serve Spec", "color": {"background": "#F28E2B", "border": "#F28E2B", "highlight": {"background": "#ffffff", "border": "#F28E2B"}}, "size": 35.0, "font": {"size": 12, "color": "#ffffff"}, "title": "agent-exec Serve Spec", "community": 1, "community_name": "Run Serve I/O", "source_file": "openspec/specs/agent-exec-serve/spec.md", "file_type": "document", "degree": 5}, {"id": "agent_exec_tests_spec", "label": "agent-exec Tests Spec", "color": {"background": "#4E79A7", "border": "#4E79A7", "highlight": {"background": "#ffffff", "border": "#4E79A7"}}, "size": 15.0, "font": {"size": 12, "color": "#ffffff"}, "title": "agent-exec Tests Spec", "community": 0, "community_name": "JSON Contract", "source_file": "openspec/specs/agent-exec-tests/spec.md", "file_type": "document", "degree": 1}, {"id": "agent_exec_test_harness_spec", "label": "agent-exec Test Harness Spec", "color": {"background": "#76B7B2", "border": "#76B7B2", "highlight": {"background": "#ffffff", "border": "#76B7B2"}}, "size": 15.0, "font": {"size": 12, "color": "#ffffff"}, "title": "agent-exec Test Harness Spec", "community": 3, "community_name": "Core Harness", "source_file": "openspec/specs/agent-exec-test-harness/spec.md", "file_type": "document", "degree": 1}, {"id": "agent_exec_skills_spec", "label": "agent-exec Skills Spec", "color": {"background": "#EDC948", "border": "#EDC948", "highlight": {"background": "#ffffff", "border": "#EDC948"}}, "size": 20.0, "font": {"size": 12, "color": "#ffffff"}, "title": "agent-exec Skills Spec", "community": 5, "community_name": "Skills Packaging", "source_file": "openspec/specs/agent-exec-skills/spec.md", "file_type": "document", "degree": 2}, {"id": "agent_exec_run_logging_spec", "label": "agent-exec Run Logging Spec", "color": {"background": "#59A14F", "border": "#59A14F", "highlight": {"background": "#ffffff", "border": "#59A14F"}}, "size": 20.0, "font": {"size": 12, "color": "#ffffff"}, "title": "agent-exec Run Logging Spec", "community": 4, "community_name": "Run Logging", "source_file": "openspec/specs/agent-exec-run-logging/spec.md", "file_type": "document", "degree": 2}, {"id": "json_only_stdout", "label": "JSON-only stdout", "color": {"background": "#4E79A7", "border": "#4E79A7", "highlight": {"background": "#ffffff", "border": "#4E79A7"}}, "size": 35.0, "font": {"size": 12, "color": "#ffffff"}, "title": "JSON-only stdout", "community": 0, "community_name": "JSON Contract", "source_file": "openspec/specs/agent-exec/spec.md", "file_type": "document", "degree": 5}, {"id": "common_json_envelope", "label": "Common JSON Envelope", "color": {"background": "#4E79A7", "border": "#4E79A7", "highlight": {"background": "#ffffff", "border": "#4E79A7"}}, "size": 35.0, "font": {"size": 12, "color": "#ffffff"}, "title": "Common JSON Envelope", "community": 0, "community_name": "JSON Contract", "source_file": "openspec/specs/agent-exec-contract/spec.md", "file_type": "document", "degree": 5}, {"id": "error_object_format", "label": "Error Object Format", "color": {"background": "#4E79A7", "border": "#4E79A7", "highlight": {"background": "#ffffff", "border": "#4E79A7"}}, "size": 20.0, "font": {"size": 12, "color": "#ffffff"}, "title": "Error Object Format", "community": 0, "community_name": "JSON Contract", "source_file": "openspec/specs/agent-exec-contract/spec.md", "file_type": "document", "degree": 2}, {"id": "inline_output_contract", "label": "Inline Output Contract", "color": {"background": "#F28E2B", "border": "#F28E2B", "highlight": {"background": "#ffffff", "border": "#F28E2B"}}, "size": 40.0, "font": {"size": 12, "color": "#ffffff"}, "title": "Inline Output Contract", "community": 1, "community_name": "Run Serve I/O", "source_file": "openspec/specs/agent-exec/spec.md", "file_type": "document", "degree": 6}, {"id": "tail_range_contract", "label": "Tail Range Contract", "color": {"background": "#F28E2B", "border": "#F28E2B", "highlight": {"background": "#ffffff", "border": "#F28E2B"}}, "size": 25.0, "font": {"size": 12, "color": "#ffffff"}, "title": "Tail Range Contract", "community": 1, "community_name": "Run Serve I/O", "source_file": "openspec/specs/agent-exec-run/spec.md", "file_type": "document", "degree": 3}, {"id": "jobstore_root_precedence", "label": "Jobstore Root Precedence", "color": {"background": "#76B7B2", "border": "#76B7B2", "highlight": {"background": "#ffffff", "border": "#76B7B2"}}, "size": 25.0, "font": {"size": 12, "color": "#ffffff"}, "title": "Jobstore Root Precedence", "community": 3, "community_name": "Core Harness", "source_file": "openspec/specs/agent-exec-jobstore/spec.md", "file_type": "document", "degree": 3}, {"id": "job_directory_structure", "label": "Job Directory Structure", "color": {"background": "#E15759", "border": "#E15759", "highlight": {"background": "#ffffff", "border": "#E15759"}}, "size": 25.0, "font": {"size": 12, "color": "#ffffff"}, "title": "Job Directory Structure", "community": 2, "community_name": "Jobstore Windows", "source_file": "openspec/specs/agent-exec-jobstore/spec.md", "file_type": "document", "degree": 3}, {"id": "meta_json_schema", "label": "meta.json Schema", "color": {"background": "#E15759", "border": "#E15759", "highlight": {"background": "#ffffff", "border": "#E15759"}}, "size": 20.0, "font": {"size": 12, "color": "#ffffff"}, "title": "meta.json Schema", "community": 2, "community_name": "Jobstore Windows", "source_file": "openspec/specs/agent-exec-jobstore/spec.md", "file_type": "document", "degree": 2}, {"id": "state_json_schema", "label": "state.json Schema", "color": {"background": "#E15759", "border": "#E15759", "highlight": {"background": "#ffffff", "border": "#E15759"}}, "size": 25.0, "font": {"size": 12, "color": "#ffffff"}, "title": "state.json Schema", "community": 2, "community_name": "Jobstore Windows", "source_file": "openspec/specs/agent-exec-jobstore/spec.md", "file_type": "document", "degree": 3}, {"id": "hash_like_job_id", "label": "Hash-like Job ID", "color": {"background": "#76B7B2", "border": "#76B7B2", "highlight": {"background": "#ffffff", "border": "#76B7B2"}}, "size": 25.0, "font": {"size": 12, "color": "#ffffff"}, "title": "Hash-like Job ID", "community": 3, "community_name": "Core Harness", "source_file": "openspec/specs/agent-exec/spec.md", "file_type": "document", "degree": 3}, {"id": "prefix_job_lookup", "label": "Prefix Job Lookup", "color": {"background": "#76B7B2", "border": "#76B7B2", "highlight": {"background": "#ffffff", "border": "#76B7B2"}}, "size": 25.0, "font": {"size": 12, "color": "#ffffff"}, "title": "Prefix Job Lookup", "community": 3, "community_name": "Core Harness", "source_file": "openspec/specs/agent-exec/spec.md", "file_type": "document", "degree": 3}, {"id": "windows_job_object_management", "label": "Windows Job Object Management", "color": {"background": "#E15759", "border": "#E15759", "highlight": {"background": "#ffffff", "border": "#E15759"}}, "size": 20.0, "font": {"size": 12, "color": "#ffffff"}, "title": "Windows Job Object Management", "community": 2, "community_name": "Jobstore Windows", "source_file": "openspec/specs/agent-exec-windows/spec.md", "file_type": "document", "degree": 2}, {"id": "windows_job_name_field", "label": "windows_job_name Field", "color": {"background": "#E15759", "border": "#E15759", "highlight": {"background": "#ffffff", "border": "#E15759"}}, "size": 25.0, "font": {"size": 12, "color": "#ffffff"}, "title": "windows_job_name Field", "community": 2, "community_name": "Jobstore Windows", "source_file": "openspec/specs/agent-exec-windows/spec.md", "file_type": "document", "degree": 3}, {"id": "serve_rest_api", "label": "Serve REST API", "color": {"background": "#F28E2B", "border": "#F28E2B", "highlight": {"background": "#ffffff", "border": "#F28E2B"}}, "size": 30.0, "font": {"size": 12, "color": "#ffffff"}, "title": "Serve REST API", "community": 1, "community_name": "Run Serve I/O", "source_file": "openspec/specs/agent-exec-serve/spec.md", "file_type": "document", "degree": 4}, {"id": "serve_auth_guard", "label": "Serve Auth Guard", "color": {"background": "#F28E2B", "border": "#F28E2B", "highlight": {"background": "#ffffff", "border": "#F28E2B"}}, "size": 20.0, "font": {"size": 12, "color": "#ffffff"}, "title": "Serve Auth Guard", "community": 1, "community_name": "Run Serve I/O", "source_file": "openspec/specs/agent-exec-serve/spec.md", "file_type": "document", "degree": 2}, {"id": "embedded_skill_installation", "label": "Embedded Skill Installation", "color": {"background": "#EDC948", "border": "#EDC948", "highlight": {"background": "#ffffff", "border": "#EDC948"}}, "size": 20.0, "font": {"size": 12, "color": "#ffffff"}, "title": "Embedded Skill Installation", "community": 5, "community_name": "Skills Packaging", "source_file": "openspec/specs/agent-exec-skills/spec.md", "file_type": "document", "degree": 2}, {"id": "skill_lock_file", "label": "Skill Lock File", "color": {"background": "#EDC948", "border": "#EDC948", "highlight": {"background": "#ffffff", "border": "#EDC948"}}, "size": 20.0, "font": {"size": 12, "color": "#ffffff"}, "title": "Skill Lock File", "community": 5, "community_name": "Skills Packaging", "source_file": "openspec/specs/agent-exec-skills/spec.md", "file_type": "document", "degree": 2}, {"id": "integration_test_contract", "label": "Integration Test Contract", "color": {"background": "#4E79A7", "border": "#4E79A7", "highlight": {"background": "#ffffff", "border": "#4E79A7"}}, "size": 30.0, "font": {"size": 12, "color": "#ffffff"}, "title": "Integration Test Contract", "community": 0, "community_name": "JSON Contract", "source_file": "openspec/specs/agent-exec-tests/spec.md", "file_type": "document", "degree": 4}, {"id": "agroot_test_isolation", "label": "AGENT_EXEC_ROOT Test Isolation", "color": {"background": "#76B7B2", "border": "#76B7B2", "highlight": {"background": "#ffffff", "border": "#76B7B2"}}, "size": 25.0, "font": {"size": 12, "color": "#ffffff"}, "title": "AGENT_EXEC_ROOT Test Isolation", "community": 3, "community_name": "Core Harness", "source_file": "openspec/specs/agent-exec-test-harness/spec.md", "file_type": "document", "degree": 3}, {"id": "full_log_human_view", "label": "full.log Human View", "color": {"background": "#59A14F", "border": "#59A14F", "highlight": {"background": "#ffffff", "border": "#59A14F"}}, "size": 20.0, "font": {"size": 12, "color": "#ffffff"}, "title": "full.log Human View", "community": 4, "community_name": "Run Logging", "source_file": "openspec/specs/agent-exec-run-logging/spec.md", "file_type": "document", "degree": 2}, {"id": "stream_logs_machine_source", "label": "Stream Logs as Machine Source", "color": {"background": "#59A14F", "border": "#59A14F", "highlight": {"background": "#ffffff", "border": "#59A14F"}}, "size": 20.0, "font": {"size": 12, "color": "#ffffff"}, "title": "Stream Logs as Machine Source", "community": 4, "community_name": "Run Logging", "source_file": "openspec/specs/agent-exec-run-logging/spec.md", "file_type": "document", "degree": 2}, {"id": "rationale_monitor_true_workload_termination", "label": "Rationale: Distinguish True Workload Termination", "color": {"background": "#F28E2B", "border": "#F28E2B", "highlight": {"background": "#ffffff", "border": "#F28E2B"}}, "size": 15.0, "font": {"size": 12, "color": "#ffffff"}, "title": "Rationale: Distinguish True Workload Termination", "community": 1, "community_name": "Run Serve I/O", "source_file": "openspec/specs/agent-exec-run/spec.md", "file_type": "document", "degree": 1}, {"id": "rationale_full_log_not_machine_parsed", "label": "Rationale: full.log Is Not for Machine Parsing", "color": {"background": "#59A14F", "border": "#59A14F", "highlight": {"background": "#ffffff", "border": "#59A14F"}}, "size": 20.0, "font": {"size": 12, "color": "#ffffff"}, "title": "Rationale: full.log Is Not for Machine Parsing", "community": 4, "community_name": "Run Logging", "source_file": "openspec/specs/agent-exec-run-logging/spec.md", "file_type": "document", "degree": 2}];
+const RAW_EDGES = [{"from": "agent_exec_spec", "to": "json_only_stdout", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "agent_exec_spec", "to": "inline_output_contract", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "agent_exec_spec", "to": "jobstore_root_precedence", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "agent_exec_spec", "to": "hash_like_job_id", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "agent_exec_spec", "to": "prefix_job_lookup", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "agent_exec_json_printing_spec", "to": "json_only_stdout", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "agent_exec_contract_spec", "to": "json_only_stdout", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "agent_exec_contract_spec", "to": "common_json_envelope", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "agent_exec_contract_spec", "to": "error_object_format", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "agent_exec_run_spec", "to": "inline_output_contract", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "agent_exec_run_spec", "to": "tail_range_contract", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "agent_exec_jobstore_spec", "to": "jobstore_root_precedence", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "agent_exec_jobstore_spec", "to": "job_directory_structure", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "agent_exec_jobstore_spec", "to": "meta_json_schema", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "agent_exec_jobstore_spec", "to": "state_json_schema", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "agent_exec_jobstore_spec", "to": "hash_like_job_id", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "agent_exec_windows_spec", "to": "windows_job_object_management", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "agent_exec_windows_spec", "to": "windows_job_name_field", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "agent_exec_serve_spec", "to": "inline_output_contract", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "agent_exec_serve_spec", "to": "tail_range_contract", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "agent_exec_serve_spec", "to": "prefix_job_lookup", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "agent_exec_serve_spec", "to": "serve_rest_api", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "agent_exec_serve_spec", "to": "serve_auth_guard", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "agent_exec_tests_spec", "to": "integration_test_contract", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "agent_exec_test_harness_spec", "to": "agroot_test_isolation", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "agent_exec_skills_spec", "to": "embedded_skill_installation", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "agent_exec_skills_spec", "to": "skill_lock_file", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "agent_exec_run_logging_spec", "to": "full_log_human_view", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "agent_exec_run_logging_spec", "to": "stream_logs_machine_source", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "json_only_stdout", "to": "common_json_envelope", "label": "semantically_similar_to", "title": "semantically_similar_to [INFERRED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "INFERRED"}, {"from": "json_only_stdout", "to": "integration_test_contract", "label": "conceptually_related_to", "title": "conceptually_related_to [INFERRED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "INFERRED"}, {"from": "common_json_envelope", "to": "error_object_format", "label": "shares_data_with", "title": "shares_data_with [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "common_json_envelope", "to": "serve_rest_api", "label": "shares_data_with", "title": "shares_data_with [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "common_json_envelope", "to": "integration_test_contract", "label": "conceptually_related_to", "title": "conceptually_related_to [INFERRED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "INFERRED"}, {"from": "inline_output_contract", "to": "rationale_monitor_true_workload_termination", "label": "rationale_for", "title": "rationale_for [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "inline_output_contract", "to": "tail_range_contract", "label": "shares_data_with", "title": "shares_data_with [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "inline_output_contract", "to": "serve_rest_api", "label": "conceptually_related_to", "title": "conceptually_related_to [INFERRED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "INFERRED"}, {"from": "jobstore_root_precedence", "to": "agroot_test_isolation", "label": "conceptually_related_to", "title": "conceptually_related_to [INFERRED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "INFERRED"}, {"from": "job_directory_structure", "to": "meta_json_schema", "label": "shares_data_with", "title": "shares_data_with [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "job_directory_structure", "to": "state_json_schema", "label": "shares_data_with", "title": "shares_data_with [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "state_json_schema", "to": "windows_job_name_field", "label": "shares_data_with", "title": "shares_data_with [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "hash_like_job_id", "to": "prefix_job_lookup", "label": "shares_data_with", "title": "shares_data_with [INFERRED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "INFERRED"}, {"from": "windows_job_object_management", "to": "windows_job_name_field", "label": "references", "title": "references [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "serve_rest_api", "to": "serve_auth_guard", "label": "conceptually_related_to", "title": "conceptually_related_to [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "embedded_skill_installation", "to": "skill_lock_file", "label": "conceptually_related_to", "title": "conceptually_related_to [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "integration_test_contract", "to": "agroot_test_isolation", "label": "conceptually_related_to", "title": "conceptually_related_to [INFERRED]", "dashes": true, "width": 1, "color": {"opacity": 0.35}, "confidence": "INFERRED"}, {"from": "full_log_human_view", "to": "rationale_full_log_not_machine_parsed", "label": "rationale_for", "title": "rationale_for [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}, {"from": "stream_logs_machine_source", "to": "rationale_full_log_not_machine_parsed", "label": "rationale_for", "title": "rationale_for [EXTRACTED]", "dashes": false, "width": 2, "color": {"opacity": 0.7}, "confidence": "EXTRACTED"}];
+const LEGEND = [{"cid": 0, "color": "#4E79A7", "label": "JSON Contract", "count": 7}, {"cid": 1, "color": "#F28E2B", "label": "Run Serve I/O", "count": 7}, {"cid": 2, "color": "#E15759", "label": "Jobstore Windows", "count": 7}, {"cid": 3, "color": "#76B7B2", "label": "Core Harness", "count": 6}, {"cid": 4, "color": "#59A14F", "label": "Run Logging", "count": 4}, {"cid": 5, "color": "#EDC948", "label": "Skills Packaging", "count": 3}];
+
+// HTML-escape helper — prevents XSS when injecting graph data into innerHTML
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+// Build vis datasets
+const nodesDS = new vis.DataSet(RAW_NODES.map(n => ({
+  id: n.id, label: n.label, color: n.color, size: n.size,
+  font: n.font, title: n.title,
+  _community: n.community, _community_name: n.community_name,
+  _source_file: n.source_file, _file_type: n.file_type, _degree: n.degree,
+})));
+
+const edgesDS = new vis.DataSet(RAW_EDGES.map((e, i) => ({
+  id: i, from: e.from, to: e.to,
+  label: '',
+  title: e.title,
+  dashes: e.dashes,
+  width: e.width,
+  color: e.color,
+  arrows: { to: { enabled: true, scaleFactor: 0.5 } },
+})));
+
+const container = document.getElementById('graph');
+const network = new vis.Network(container, { nodes: nodesDS, edges: edgesDS }, {
+  physics: {
+    enabled: true,
+    solver: 'forceAtlas2Based',
+    forceAtlas2Based: {
+      gravitationalConstant: -60,
+      centralGravity: 0.005,
+      springLength: 120,
+      springConstant: 0.08,
+      damping: 0.4,
+      avoidOverlap: 0.8,
+    },
+    stabilization: { iterations: 200, fit: true },
+  },
+  interaction: {
+    hover: true,
+    tooltipDelay: 100,
+    hideEdgesOnDrag: true,
+    navigationButtons: false,
+    keyboard: false,
+  },
+  nodes: { shape: 'dot', borderWidth: 1.5 },
+  edges: { smooth: { type: 'continuous', roundness: 0.2 }, selectionWidth: 3 },
+});
+
+network.once('stabilizationIterationsDone', () => {
+  network.setOptions({ physics: { enabled: false } });
+});
+
+function showInfo(nodeId) {
+  const n = nodesDS.get(nodeId);
+  if (!n) return;
+  const neighborIds = network.getConnectedNodes(nodeId);
+  const neighborItems = neighborIds.map(nid => {
+    const nb = nodesDS.get(nid);
+    const color = nb ? nb.color.background : '#555';
+    return `<span class="neighbor-link" style="border-left-color:${esc(color)}" onclick="focusNode(${JSON.stringify(nid)})">${esc(nb ? nb.label : nid)}</span>`;
+  }).join('');
+  document.getElementById('info-content').innerHTML = `
+    <div class="field"><b>${esc(n.label)}</b></div>
+    <div class="field">Type: ${esc(n._file_type || 'unknown')}</div>
+    <div class="field">Community: ${esc(n._community_name)}</div>
+    <div class="field">Source: ${esc(n._source_file || '-')}</div>
+    <div class="field">Degree: ${n._degree}</div>
+    ${neighborIds.length ? `<div class="field" style="margin-top:8px;color:#aaa;font-size:11px">Neighbors (${neighborIds.length})</div><div id="neighbors-list">${neighborItems}</div>` : ''}
+  `;
+}
+
+function focusNode(nodeId) {
+  network.focus(nodeId, { scale: 1.4, animation: true });
+  network.selectNodes([nodeId]);
+  showInfo(nodeId);
+}
+
+// Track hovered node — hover detection is more reliable than click params
+let hoveredNodeId = null;
+network.on('hoverNode', params => {
+  hoveredNodeId = params.node;
+  container.style.cursor = 'pointer';
+});
+network.on('blurNode', () => {
+  hoveredNodeId = null;
+  container.style.cursor = 'default';
+});
+container.addEventListener('click', () => {
+  if (hoveredNodeId !== null) {
+    showInfo(hoveredNodeId);
+    network.selectNodes([hoveredNodeId]);
+  }
+});
+network.on('click', params => {
+  if (params.nodes.length > 0) {
+    showInfo(params.nodes[0]);
+  } else if (hoveredNodeId === null) {
+    document.getElementById('info-content').innerHTML = '<span class="empty">Click a node to inspect it</span>';
+  }
+});
+
+const searchInput = document.getElementById('search');
+const searchResults = document.getElementById('search-results');
+searchInput.addEventListener('input', () => {
+  const q = searchInput.value.toLowerCase().trim();
+  searchResults.innerHTML = '';
+  if (!q) { searchResults.style.display = 'none'; return; }
+  const matches = RAW_NODES.filter(n => n.label.toLowerCase().includes(q)).slice(0, 20);
+  if (!matches.length) { searchResults.style.display = 'none'; return; }
+  searchResults.style.display = 'block';
+  matches.forEach(n => {
+    const el = document.createElement('div');
+    el.className = 'search-item';
+    el.textContent = n.label;
+    el.style.borderLeft = `3px solid ${n.color.background}`;
+    el.style.paddingLeft = '8px';
+    el.onclick = () => {
+      network.focus(n.id, { scale: 1.5, animation: true });
+      network.selectNodes([n.id]);
+      showInfo(n.id);
+      searchResults.style.display = 'none';
+      searchInput.value = '';
+    };
+    searchResults.appendChild(el);
+  });
+});
+document.addEventListener('click', e => {
+  if (!searchResults.contains(e.target) && e.target !== searchInput)
+    searchResults.style.display = 'none';
+});
+
+const hiddenCommunities = new Set();
+const legendEl = document.getElementById('legend');
+LEGEND.forEach(c => {
+  const item = document.createElement('div');
+  item.className = 'legend-item';
+  item.innerHTML = `<div class="legend-dot" style="background:${c.color}"></div>
+    <span class="legend-label">${c.label}</span>
+    <span class="legend-count">${c.count}</span>`;
+  item.onclick = () => {
+    if (hiddenCommunities.has(c.cid)) {
+      hiddenCommunities.delete(c.cid);
+      item.classList.remove('dimmed');
+    } else {
+      hiddenCommunities.add(c.cid);
+      item.classList.add('dimmed');
+    }
+    const updates = RAW_NODES
+      .filter(n => n.community === c.cid)
+      .map(n => ({ id: n.id, hidden: hiddenCommunities.has(c.cid) }));
+    nodesDS.update(updates);
+  };
+  legendEl.appendChild(item);
+});
+</script>
+<script>
+// Render hyperedges as shaded regions
+const hyperedges = [{"id": "job_lifecycle_contract", "label": "Job Lifecycle Contract", "nodes": ["inline_output_contract", "job_directory_structure", "state_json_schema"], "relation": "form", "confidence": "INFERRED", "confidence_score": 0.84, "source_file": "openspec/specs/agent-exec/spec.md"}, {"id": "serve_http_surface", "label": "Serve HTTP Surface", "nodes": ["serve_rest_api", "inline_output_contract", "common_json_envelope"], "relation": "implement", "confidence": "EXTRACTED", "confidence_score": 1.0, "source_file": "openspec/specs/agent-exec-serve/spec.md"}];
+// afterDrawing passes ctx already transformed to network coordinate space.
+// Draw node positions raw — no manual pan/zoom/DPR math needed.
+network.on('afterDrawing', function(ctx) {
+    hyperedges.forEach(h => {
+        const positions = h.nodes
+            .map(nid => network.getPositions([nid])[nid])
+            .filter(p => p !== undefined);
+        if (positions.length < 2) return;
+        ctx.save();
+        ctx.globalAlpha = 0.12;
+        ctx.fillStyle = '#6366f1';
+        ctx.strokeStyle = '#6366f1';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        // Centroid and expanded hull in network coordinates
+        const cx = positions.reduce((s, p) => s + p.x, 0) / positions.length;
+        const cy = positions.reduce((s, p) => s + p.y, 0) / positions.length;
+        const expanded = positions.map(p => ({
+            x: cx + (p.x - cx) * 1.15,
+            y: cy + (p.y - cy) * 1.15
+        }));
+        ctx.moveTo(expanded[0].x, expanded[0].y);
+        expanded.slice(1).forEach(p => ctx.lineTo(p.x, p.y));
+        ctx.closePath();
+        ctx.fill();
+        ctx.globalAlpha = 0.4;
+        ctx.stroke();
+        // Label
+        ctx.globalAlpha = 0.8;
+        ctx.fillStyle = '#4f46e5';
+        ctx.font = 'bold 11px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(h.label, cx, cy - 5);
+        ctx.restore();
+    });
+});
+</script>
+</body>
+</html>
