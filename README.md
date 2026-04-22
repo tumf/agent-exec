@@ -370,6 +370,18 @@ agent-exec list --all --tag project.build.*
 agent-exec list --tag ci --tag release
 ```
 
+### `ps` — shorthand for `list --state running`
+
+```bash
+agent-exec ps [--limit N] [--cwd PATH | --all] [--tag PATTERN]...
+```
+
+`ps` returns only jobs in state `running`. It accepts the same filtering
+knobs as `list` except for `--state`, which is fixed to `running`. Any
+`agent-exec ps [FLAGS]` invocation is equivalent to
+`agent-exec list --state running [FLAGS]` with the same JSON shape
+(`type="list"`).
+
 ### `tag set` — replace job tags
 
 ```bash
@@ -521,6 +533,10 @@ current working directory.
 agent-exec delete <JOB_ID>
 agent-exec delete --all [--dry-run]
 ```
+
+`rm` is a visible alias of `delete`: `agent-exec rm <JOB_ID>` and
+`agent-exec rm --all [--dry-run]` behave identically to the corresponding
+`delete` invocations and emit the same JSON shape (`type="delete"`).
 
 **State rules**
 
