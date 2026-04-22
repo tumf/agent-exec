@@ -6527,3 +6527,166 @@ fn wait_terminal_returns_progress_hints() {
         "updated_at should be present as string: {wait_v}"
     );
 }
+
+// ── ps / rm aliases ────────────────────────────────────────────────────────────
+
+/// `ps` returns only running jobs (shorthand for `list --state running`).
+#[test]
+fn ps_returns_only_running_jobs() {
+    let h = TestHarness::new();
+
+    let long_run = h.run(&["run", "sleep", "60"]);
+    let long_job_id = long_run["job_id"].as_str().unwrap().to_string();
+
+    let short_run = h.run(&["run", "echo", "done"]);
+    let short_job_id = short_run["job_id"].as_str().unwrap().to_string();
+    h.run(&["wait", "--until", "5", &short_job_id]);
+
+    let v = h.run(&["ps"]);
+    assert_envelope(&v, "list", true);
+
+    let jobs = v["jobs"].as_array().expect("jobs missing");
+    let has_long = jobs
+        .iter()
+        .any(|j| j["job_id"].as_str() == Some(&long_job_id));
+    let has_short = jobs
+        .iter()
+        .any(|j| j["job_id"].as_str() == Some(&short_job_id));
+    assert!(has_long, "ps should include the running job; got: {v}");
+    assert!(!has_short, "ps should NOT include exited jobs; got: {v}");
+    for job in jobs {
+        assert_eq!(
+            job["state"].as_str().unwrap_or(""),
+            "running",
+            "unexpected state in ps result: {job}"
+        );
+    }
+
+    h.run(&["kill", &long_job_id]);
+}
+
+/// `ps --all` lists running jobs across all cwds (same as `list --state running --all`).
+#[test]
+fn ps_all_includes_running_jobs_from_other_cwds() {
+    let h = TestHarness::new();
+    let dir_a = tempfile::tempdir().unwrap();
+    let dir_b = tempfile::tempdir().unwrap();
+
+    let (va, _) =
+        run_cmd_with_root_and_cwd(&["run", "sleep", "60"], Some(h.root()), Some(dir_a.path()));
+    let job_a_id = va["job_id"].as_str().unwrap().to_string();
+
+    let (vb, _) =
+        run_cmd_with_root_and_cwd(&["run", "sleep", "60"], Some(h.root()), Some(dir_b.path()));
+    let job_b_id = vb["job_id"].as_str().unwrap().to_string();
+
+    let (v, _) = run_cmd_with_root_and_cwd(&["ps", "--all"], Some(h.root()), Some(dir_a.path()));
+    assert_envelope(&v, "list", true);
+    let jobs = v["jobs"].as_array().expect("jobs missing");
+    let has_a = jobs.iter().any(|j| j["job_id"].as_str() == Some(&job_a_id));
+    let has_b = jobs.iter().any(|j| j["job_id"].as_str() == Some(&job_b_id));
+    assert!(has_a, "ps --all should include job A; got: {v}");
+    assert!(has_b, "ps --all should include job B; got: {v}");
+
+    h.run(&["kill", &job_a_id]);
+    h.run(&["kill", &job_b_id]);
+}
+
+/// `ps --cwd <PATH>` scopes to that directory, matching `list --state running --cwd`.
+#[test]
+fn ps_cwd_flag_scopes_to_directory() {
+    let h = TestHarness::new();
+    let dir_a = tempfile::tempdir().unwrap();
+    let dir_b = tempfile::tempdir().unwrap();
+
+    let (va, _) =
+        run_cmd_with_root_and_cwd(&["run", "sleep", "60"], Some(h.root()), Some(dir_a.path()));
+    let job_a_id = va["job_id"].as_str().unwrap().to_string();
+
+    let (vb, _) =
+        run_cmd_with_root_and_cwd(&["run", "sleep", "60"], Some(h.root()), Some(dir_b.path()));
+    let job_b_id = vb["job_id"].as_str().unwrap().to_string();
+
+    let dir_a_str = dir_a.path().to_str().unwrap();
+    let (v, _) = run_cmd_with_root_and_cwd(&["ps", "--cwd", dir_a_str], Some(h.root()), None);
+    assert_envelope(&v, "list", true);
+    let jobs = v["jobs"].as_array().expect("jobs missing");
+    let has_a = jobs.iter().any(|j| j["job_id"].as_str() == Some(&job_a_id));
+    let has_b = jobs.iter().any(|j| j["job_id"].as_str() == Some(&job_b_id));
+    assert!(has_a, "ps --cwd dir_a should include job A; got: {v}");
+    assert!(!has_b, "ps --cwd dir_a should NOT include job B; got: {v}");
+
+    h.run(&["kill", &job_a_id]);
+    h.run(&["kill", &job_b_id]);
+}
+
+/// `ps --state` must not be exposed — clap rejects it as a usage error.
+#[test]
+fn ps_does_not_expose_state_flag() {
+    let h = TestHarness::new();
+    assert_usage_error(&["ps", "--state", "exited"], Some(h.root()));
+}
+
+/// `rm <JOB_ID>` is an alias of `delete <JOB_ID>`.
+#[test]
+fn rm_alias_deletes_finished_job() {
+    let h = TestHarness::new();
+
+    let run_v = h.run(&["run", "echo", "rm_me"]);
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+    h.run(&["wait", &job_id]);
+
+    let v = h.run(&["rm", &job_id]);
+    assert_envelope(&v, "delete", true);
+    assert_eq!(
+        v["deleted"].as_u64().unwrap_or(0),
+        1,
+        "expected deleted=1: {v}"
+    );
+    let jobs = v["jobs"].as_array().unwrap();
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0]["job_id"].as_str().unwrap_or(""), job_id);
+    assert_eq!(jobs[0]["action"].as_str().unwrap_or(""), "deleted");
+
+    let status_v = h.run(&["status", &job_id]);
+    assert_eq!(
+        status_v["error"]["code"].as_str().unwrap_or(""),
+        "job_not_found"
+    );
+}
+
+/// `rm --dry-run --all` behaves identically to `delete --dry-run --all`.
+#[test]
+fn rm_alias_dry_run_all_matches_delete() {
+    let h = TestHarness::new();
+
+    let r = h.run(&["run", "echo", "bulk"]);
+    let job_id = r["job_id"].as_str().unwrap().to_string();
+    h.run(&["wait", &job_id]);
+
+    let v = h.run(&["rm", "--dry-run", "--all"]);
+    assert_envelope(&v, "delete", true);
+    assert!(
+        v["dry_run"].as_bool().unwrap_or(false),
+        "expected dry_run=true: {v}"
+    );
+    assert_eq!(
+        v["deleted"].as_u64().unwrap_or(1),
+        0,
+        "dry-run must not count deleted: {v}"
+    );
+    let jobs = v["jobs"].as_array().unwrap();
+    let has_target = jobs.iter().any(|j| {
+        j["job_id"].as_str() == Some(&job_id) && j["action"].as_str() == Some("would_delete")
+    });
+    assert!(
+        has_target,
+        "expected target job to be reported as would_delete: {v}"
+    );
+
+    let status_v = h.run(&["status", &job_id]);
+    assert!(
+        status_v["ok"].as_bool().unwrap_or(false),
+        "dry-run rm must not delete the directory: {status_v}"
+    );
+}

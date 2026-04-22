@@ -442,6 +442,7 @@ enum Command {
     },
 
     /// Delete one or all finished jobs.
+    #[command(visible_alias = "rm")]
     Delete {
         /// Delete all finished jobs whose persisted cwd matches the caller's current directory.
         /// Mutually exclusive with JOB_ID.
@@ -482,6 +483,27 @@ enum Command {
         /// Filter jobs by state: created|running|exited|killed|failed|unknown.
         #[arg(long, value_parser = ["created", "running", "exited", "killed", "failed", "unknown"])]
         state: Option<String>,
+
+        /// Filter jobs by working directory (conflicts with --all).
+        #[arg(long, conflicts_with = "all")]
+        cwd: Option<String>,
+
+        /// Show all jobs regardless of working directory (conflicts with --cwd).
+        #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue, conflicts_with = "cwd")]
+        all: bool,
+
+        /// Filter jobs by tag pattern (may be repeated; all patterns must match).
+        /// Supports exact match (e.g. "aaa") and namespace prefix match (e.g. "hoge.*").
+        #[arg(long = "tag", value_name = "PATTERN", value_parser = parse_filter_pattern)]
+        tags: Vec<String>,
+    },
+
+    /// Shorthand for `list --state running`. Accepts the same filtering knobs
+    /// as `list` except for `--state`, which is fixed to `running`.
+    Ps {
+        /// Maximum number of jobs to return (0 = no limit).
+        #[arg(long, default_value = "50")]
+        limit: u64,
 
         /// Filter jobs by working directory (conflicts with --all).
         #[arg(long, conflicts_with = "all")]
@@ -1094,6 +1116,22 @@ fn run(cli: Cli) -> Result<()> {
                 root: root.as_deref(),
                 limit,
                 state: state.as_deref(),
+                cwd: cwd.as_deref(),
+                all,
+                tags,
+            })?;
+        }
+
+        Command::Ps {
+            limit,
+            cwd,
+            all,
+            tags,
+        } => {
+            agent_exec::list::execute(agent_exec::list::ListOpts {
+                root: root.as_deref(),
+                limit,
+                state: Some("running"),
                 cwd: cwd.as_deref(),
                 all,
                 tags,
