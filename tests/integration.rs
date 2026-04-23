@@ -627,19 +627,28 @@ fn stdin_option_conflict_is_usage_error_for_run_and_create() {
 fn run_stdin_dash_with_tty_like_stdin_fails_fast() {
     let h = TestHarness::new();
     let bin = binary();
+    let command = format!(
+        "AGENT_EXEC_ROOT={} {} run --stdin - -- cat",
+        h.root(),
+        bin.display()
+    );
 
-    let output = std::process::Command::new("script")
-        .arg("-q")
-        .arg("/dev/null")
-        .arg("sh")
-        .arg("-lc")
-        .arg(format!(
-            "AGENT_EXEC_ROOT={} {} run --stdin - -- cat",
-            h.root(),
-            bin.display()
-        ))
-        .output()
-        .expect("run script tty wrapper");
+    let mut cmd = std::process::Command::new("script");
+    if cfg!(target_os = "macos") {
+        cmd.arg("-q")
+            .arg("/dev/null")
+            .arg("sh")
+            .arg("-lc")
+            .arg(&command);
+    } else {
+        cmd.arg("-q")
+            .arg("-e")
+            .arg("-c")
+            .arg(&command)
+            .arg("/dev/null");
+    }
+
+    let output = cmd.output().expect("run script tty wrapper");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);

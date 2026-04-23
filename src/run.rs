@@ -728,7 +728,11 @@ pub fn observe_inline_output(
     let stderr = job_dir.read_head_metrics("stderr.log", max_bytes);
 
     Ok(InlineObservation {
-        waited_ms: started.elapsed().as_millis() as u64,
+        waited_ms: if wait {
+            started.elapsed().as_millis() as u64
+        } else {
+            0
+        },
         stdout: stdout.head,
         stderr: stderr.head,
         stdout_range: stdout.range,
