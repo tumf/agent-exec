@@ -468,15 +468,47 @@ agent-exec notify set "$JOB" \
 ### `gc` — garbage collect old job data
 
 ```bash
-agent-exec [--root <PATH>] gc [--older-than <DURATION>] [--dry-run]
+agent-exec [--root <PATH>] gc [--older-than <DURATION>] [--max-jobs <N>] [--max-bytes <BYTES>] [--dry-run]
 ```
 
-Deletes job directories under the root whose terminal state (`exited`, `killed`, or `failed`) is older than the retention window. Running jobs are never touched.
+Deletes job directories under the root using terminal-only safety rules. Candidates are selected by age and optional pressure policies. Active jobs (`running` / `created`) are never touched.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--older-than <DURATION>` | `30d` | Retention window: jobs older than this are eligible for deletion. Supports `30d`, `24h`, `60m`, `3600s`. |
+| `--older-than <DURATION>` | `30d` | Retention window: terminal jobs older than this are eligible. Supports `30d`, `24h`, `60m`, `3600s`. |
+| `--max-jobs <N>` | unset | Keep newest `N` terminal jobs; older terminal jobs become candidates. |
+| `--max-bytes <BYTES>` | unset | Apply byte-pressure cleanup for terminal jobs when total terminal bytes exceed this target. |
 | `--dry-run` | false | Report candidates without deleting anything. |
+
+## Automatic cleanup (auto-GC)
+
+`run` / `start` perform best-effort bounded auto-GC after successful launch by default.
+
+- Default retention: `30d`
+- Same safety rules as manual `gc` (skip `running` / `created` / unreadable)
+- Failures never fail parent `run` / `start`
+- Auto-GC is bounded (scan/delete budgets) to avoid dominating launch latency
+
+Per-invocation controls:
+
+- `--no-auto-gc`
+- `--auto-gc-older-than <DURATION>`
+- `--auto-gc-max-jobs <N>`
+- `--auto-gc-max-bytes <BYTES>`
+
+Config (`config.toml`) controls (optional):
+
+```toml
+[gc]
+auto = true
+older_than = "30d"
+max_jobs = 200
+max_bytes = 1073741824
+scan_limit = 200
+delete_limit = 20
+```
+
+CLI overrides config for each invocation.
 
 **Retention semantics**
 
@@ -513,6 +545,8 @@ agent-exec --root /tmp/jobs gc --older-than 7d
 | `out_of_scope` | number | Count of jobs that were not candidates for deletion (e.g. running, non-terminal, missing timestamp, retention not satisfied) |
 | `failed` | number | Count of jobs that were eligible candidates but could not be removed (delete syscall failed or post-delete existence check still saw the path) |
 | `freed_bytes` | number | Bytes freed (or would be freed in dry-run) |
+| `scanned_dirs` | number | Number of directories scanned during this GC run |
+| `candidate_count` | number | Number of directories selected as deletion candidates by policy |
 | `jobs` | array | Per-job details: `job_id`, `state`, `action`, `reason`, `bytes` |
 
 The `action` field in each `jobs` entry is one of:

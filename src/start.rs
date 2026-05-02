@@ -20,6 +20,16 @@ pub struct StartOpts<'a> {
     pub job_id: &'a str,
     /// Override for jobs root directory.
     pub root: Option<&'a str>,
+    /// Disable best-effort auto-GC for this invocation.
+    pub no_auto_gc: bool,
+    /// Optional auto-GC retention override.
+    pub auto_gc_older_than: Option<String>,
+    /// Optional auto-GC max-jobs override.
+    pub auto_gc_max_jobs: Option<u64>,
+    /// Optional auto-GC max-bytes override.
+    pub auto_gc_max_bytes: Option<u64>,
+    /// Base auto-GC settings resolved from config/defaults.
+    pub auto_gc_config: crate::gc::AutoGcConfig,
     /// Wait for inline output observation before returning.
     pub wait: bool,
     /// Maximum wait duration in seconds for inline observation.
@@ -94,6 +104,20 @@ pub fn execute(opts: StartOpts) -> Result<()> {
     )?;
 
     info!(job_id = %opts.job_id, supervisor_pid, started_at = %started_at, "job started");
+
+    if !opts.no_auto_gc {
+        let mut auto_cfg = opts.auto_gc_config.clone();
+        if let Some(v) = opts.auto_gc_older_than {
+            auto_cfg.older_than = v;
+        }
+        if let Some(v) = opts.auto_gc_max_jobs {
+            auto_cfg.max_jobs = usize::try_from(v).ok();
+        }
+        if let Some(v) = opts.auto_gc_max_bytes {
+            auto_cfg.max_bytes = Some(v);
+        }
+        crate::gc::maybe_run_auto_gc(&root, &auto_cfg);
+    }
 
     let stdout_log_path = job_dir.stdout_path().display().to_string();
     let stderr_log_path = job_dir.stderr_path().display().to_string();

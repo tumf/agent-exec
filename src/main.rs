@@ -217,6 +217,22 @@ enum Command {
         #[arg(long)]
         root: Option<String>,
 
+        /// Disable best-effort automatic GC for this invocation.
+        #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue)]
+        no_auto_gc: bool,
+
+        /// Auto-GC retention window override (e.g. 30d, 24h).
+        #[arg(long, value_name = "DURATION")]
+        auto_gc_older_than: Option<String>,
+
+        /// Auto-GC max terminal jobs override.
+        #[arg(long, value_name = "N")]
+        auto_gc_max_jobs: Option<u64>,
+
+        /// Auto-GC max terminal bytes override.
+        #[arg(long, value_name = "BYTES")]
+        auto_gc_max_bytes: Option<u64>,
+
         /// Wait for inline output observation before returning.
         /// Bare `--wait` is treated as `true`; `--wait true|false` remains supported.
         #[arg(
@@ -251,6 +267,22 @@ enum Command {
 
     /// Run a command as a background job and return JSON immediately.
     Run {
+        /// Disable best-effort automatic GC for this invocation.
+        #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue)]
+        no_auto_gc: bool,
+
+        /// Auto-GC retention window override (e.g. 30d, 24h).
+        #[arg(long, value_name = "DURATION")]
+        auto_gc_older_than: Option<String>,
+
+        /// Auto-GC max terminal jobs override.
+        #[arg(long, value_name = "N")]
+        auto_gc_max_jobs: Option<u64>,
+
+        /// Auto-GC max terminal bytes override.
+        #[arg(long, value_name = "BYTES")]
+        auto_gc_max_bytes: Option<u64>,
+
         /// Timeout in seconds; 0 = no timeout.
         #[arg(long, default_value = "0")]
         timeout: u64,
@@ -465,6 +497,14 @@ enum Command {
         /// When omitted, defaults to 30d.
         #[arg(long, value_name = "DURATION")]
         older_than: Option<String>,
+
+        /// Keep at most N newest terminal jobs (older terminal jobs become candidates).
+        #[arg(long, value_name = "N")]
+        max_jobs: Option<u64>,
+
+        /// Keep total terminal-job bytes under this limit when possible.
+        #[arg(long, value_name = "BYTES")]
+        max_bytes: Option<u64>,
 
         /// Report candidates without deleting any directories.
         #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue)]
@@ -893,6 +933,10 @@ fn run(cli: Cli) -> Result<()> {
 
         Command::Start {
             root,
+            no_auto_gc,
+            auto_gc_older_than,
+            auto_gc_max_jobs,
+            auto_gc_max_bytes,
             wait,
             until,
             forever,
@@ -903,9 +947,15 @@ fn run(cli: Cli) -> Result<()> {
             let effective_wait = if no_wait { false } else { wait };
             let effective_until_seconds = if no_wait { 0 } else { until };
             let effective_forever = if no_wait { false } else { forever };
+            let cfg = agent_exec::config::resolve_config(None)?;
             agent_exec::start::execute(agent_exec::start::StartOpts {
                 job_id: &job_id,
                 root: root.as_deref(),
+                no_auto_gc,
+                auto_gc_older_than,
+                auto_gc_max_jobs,
+                auto_gc_max_bytes,
+                auto_gc_config: cfg.gc.to_auto_gc_config(),
                 wait: effective_wait,
                 until_seconds: effective_until_seconds,
                 forever: effective_forever,
@@ -914,6 +964,10 @@ fn run(cli: Cli) -> Result<()> {
         }
 
         Command::Run {
+            no_auto_gc,
+            auto_gc_older_than,
+            auto_gc_max_jobs,
+            auto_gc_max_bytes,
             timeout,
             kill_after,
             cwd,
@@ -957,9 +1011,15 @@ fn run(cli: Cli) -> Result<()> {
             let effective_wait = if no_wait { false } else { wait };
             let effective_until_seconds = if no_wait { 0 } else { until };
             let effective_forever = if no_wait { false } else { forever };
+            let cfg = agent_exec::config::resolve_config(config.as_deref())?;
             agent_exec::run::execute(agent_exec::run::RunOpts {
                 command,
                 root: root.as_deref(),
+                no_auto_gc,
+                auto_gc_older_than,
+                auto_gc_max_jobs,
+                auto_gc_max_bytes,
+                auto_gc_config: cfg.gc.to_auto_gc_config(),
                 wait: effective_wait,
                 until_seconds: effective_until_seconds,
                 forever: effective_forever,
@@ -1050,11 +1110,15 @@ fn run(cli: Cli) -> Result<()> {
 
         Command::Gc {
             older_than,
+            max_jobs,
+            max_bytes,
             dry_run,
         } => {
             agent_exec::gc::execute(agent_exec::gc::GcOpts {
                 root: root.as_deref(),
                 older_than: older_than.as_deref(),
+                max_jobs,
+                max_bytes,
                 dry_run,
             })?;
         }
