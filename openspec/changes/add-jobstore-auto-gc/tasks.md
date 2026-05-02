@@ -19,9 +19,12 @@
 - [x] Run repository verification. Completion condition: formatting, linting, and tests pass with repository-standard commands. (verification: integration - run `cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo test --all`).
 
 ## Verification Follow-up
-- Intermittent `tests/serve_integration.rs::test_auth_token_accepted` failure was observed once during an intermediate run, but targeted rerun and final full `cargo test --all` both passed.
+Intermittent `tests/serve_integration.rs::test_auth_token_accepted` failure was observed once during an intermediate run, but targeted rerun and final full `cargo test --all` both passed.
 
 ## Future Work
 
 - Consider a separate proposal for sharding the jobs root by date or cwd if flat root scans remain a bottleneck after bounded auto-GC.
 - Consider a separate proposal for a dedicated `jobs summary` or `doctor` command if `gc --dry-run` summary is not enough for operator diagnostics.
+
+## Acceptance #1 Failure Follow-up
+- [ ] OpenSpec strict validation fails, so the change is not archive-ready: `agent-exec run -- cflx openspec validate add-jobstore-auto-gc --strict` exited 1 with `add-jobstore-auto-gc: tasks.md:22: Possible task without checkbox: - Intermittent tests/serve_integration.rs::test_a...`. Relevant path: `openspec/changes/add-jobstore-auto-gc/tasks.md:21-22` has a `## Verification Follow-up` section containing a bare dash item (`- Intermittent ...`) that the validator treats as an invalid task entry. Action: convert that note to non-task prose or a checked task item acceptable to OpenSpec validation, then rerun strict validation.
