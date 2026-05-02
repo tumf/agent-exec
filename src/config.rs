@@ -11,6 +11,35 @@ use std::path::{Path, PathBuf};
 pub struct AgentExecConfig {
     #[serde(default)]
     pub shell: ShellConfig,
+    #[serde(default)]
+    pub gc: GcConfig,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct GcConfig {
+    pub auto: Option<bool>,
+    pub older_than: Option<String>,
+    pub max_jobs: Option<usize>,
+    pub max_bytes: Option<u64>,
+    pub scan_limit: Option<usize>,
+    pub delete_limit: Option<usize>,
+}
+
+impl GcConfig {
+    pub fn to_auto_gc_config(&self) -> crate::gc::AutoGcConfig {
+        let default = crate::gc::AutoGcConfig::default();
+        crate::gc::AutoGcConfig {
+            enabled: self.auto.unwrap_or(default.enabled),
+            older_than: self
+                .older_than
+                .clone()
+                .unwrap_or_else(|| default.older_than.clone()),
+            max_jobs: self.max_jobs,
+            max_bytes: self.max_bytes,
+            scan_limit: self.scan_limit.unwrap_or(default.scan_limit),
+            delete_limit: self.delete_limit.unwrap_or(default.delete_limit),
+        }
+    }
 }
 
 /// `[shell]` section of `config.toml`.
@@ -112,6 +141,23 @@ fn platform_wrapper_from_config(cfg: &ShellConfig) -> Option<Vec<String>> {
     return cfg.unix.clone();
     #[cfg(windows)]
     return cfg.windows.clone();
+}
+
+/// Resolve and load the effective config from explicit path or XDG default.
+pub fn resolve_config(config_path_override: Option<&str>) -> Result<AgentExecConfig> {
+    let path: Option<PathBuf> = if let Some(p) = config_path_override {
+        Some(PathBuf::from(p))
+    } else {
+        discover_config_path()
+    };
+
+    if let Some(path) = path
+        && let Some(cfg) = load_config(&path)?
+    {
+        return Ok(cfg);
+    }
+
+    Ok(AgentExecConfig::default())
 }
 
 #[cfg(test)]

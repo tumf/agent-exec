@@ -49,6 +49,16 @@ pub struct RunOpts<'a> {
     pub command: Vec<String>,
     /// Override for jobs root directory.
     pub root: Option<&'a str>,
+    /// Disable best-effort auto-GC for this invocation.
+    pub no_auto_gc: bool,
+    /// Optional auto-GC retention override.
+    pub auto_gc_older_than: Option<String>,
+    /// Optional auto-GC max-jobs override.
+    pub auto_gc_max_jobs: Option<u64>,
+    /// Optional auto-GC max-bytes override.
+    pub auto_gc_max_bytes: Option<u64>,
+    /// Base auto-GC settings resolved from config/defaults.
+    pub auto_gc_config: crate::gc::AutoGcConfig,
     /// Wait for inline output observation before returning.
     pub wait: bool,
     /// Maximum wait duration in seconds for inline observation.
@@ -106,6 +116,11 @@ impl<'a> Default for RunOpts<'a> {
         RunOpts {
             command: vec![],
             root: None,
+            no_auto_gc: false,
+            auto_gc_older_than: None,
+            auto_gc_max_jobs: None,
+            auto_gc_max_bytes: None,
+            auto_gc_config: crate::gc::AutoGcConfig::default(),
             wait: true,
             until_seconds: 10,
             forever: false,
@@ -607,6 +622,20 @@ pub fn execute(opts: RunOpts) -> Result<()> {
         opts.max_bytes,
     )?;
     let elapsed_ms = elapsed_start.elapsed().as_millis() as u64;
+
+    if !opts.no_auto_gc {
+        let mut auto_cfg = opts.auto_gc_config.clone();
+        if let Some(v) = opts.auto_gc_older_than {
+            auto_cfg.older_than = v;
+        }
+        if let Some(v) = opts.auto_gc_max_jobs {
+            auto_cfg.max_jobs = usize::try_from(v).ok();
+        }
+        if let Some(v) = opts.auto_gc_max_bytes {
+            auto_cfg.max_bytes = Some(v);
+        }
+        crate::gc::maybe_run_auto_gc(&root, &auto_cfg);
+    }
 
     let response = Response::new(
         "run",

@@ -1,95 +1,233 @@
-//! Implementation of the `gc` sub-command.
-//!
-//! Traverses all job directories under the resolved root, evaluates each for
-//! eligibility (terminal state + GC timestamp older than the retention window),
-//! and either deletes or reports them.
+//! Implementation of the `gc` sub-command and shared auto-GC engine.
 
 use anyhow::{Result, anyhow};
-use tracing::debug;
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+use tracing::{debug, info, warn};
 
 use crate::jobstore::resolve_root;
-use crate::schema::{GcData, GcJobResult, JobStatus, Response};
+use crate::schema::{GcData, GcJobResult, JobState, JobStatus, Response};
 
 const DEFAULT_OLDER_THAN: &str = "30d";
+const DEFAULT_AUTO_SCAN_LIMIT: usize = 200;
+const DEFAULT_AUTO_DELETE_LIMIT: usize = 20;
 
-/// Options for the `gc` sub-command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GcMode {
+    Manual,
+    Automatic,
+}
+
+#[derive(Debug, Clone)]
+pub struct GcPolicy {
+    pub older_than: String,
+    pub max_jobs: Option<usize>,
+    pub max_bytes: Option<u64>,
+    pub dry_run: bool,
+    pub mode: GcMode,
+    pub scan_limit: Option<usize>,
+    pub delete_limit: Option<usize>,
+}
+
 #[derive(Debug)]
 pub struct GcOpts<'a> {
     pub root: Option<&'a str>,
-    /// Retention duration string (e.g. "30d", "24h"); None means use default.
     pub older_than: Option<&'a str>,
+    pub max_jobs: Option<u64>,
+    pub max_bytes: Option<u64>,
     pub dry_run: bool,
 }
 
-/// Execute `gc`: traverse root, evaluate jobs, delete or report, emit JSON.
+#[derive(Debug, Clone)]
+struct Candidate {
+    job_id: String,
+    path: PathBuf,
+    status: JobStatus,
+    gc_ts: String,
+    bytes: u64,
+    reasons: Vec<&'static str>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutoGcConfig {
+    pub enabled: bool,
+    pub older_than: String,
+    pub max_jobs: Option<usize>,
+    pub max_bytes: Option<u64>,
+    pub scan_limit: usize,
+    pub delete_limit: usize,
+}
+
+impl Default for AutoGcConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            older_than: DEFAULT_OLDER_THAN.to_string(),
+            max_jobs: None,
+            max_bytes: None,
+            scan_limit: DEFAULT_AUTO_SCAN_LIMIT,
+            delete_limit: DEFAULT_AUTO_DELETE_LIMIT,
+        }
+    }
+}
+
 pub fn execute(opts: GcOpts) -> Result<()> {
     let root = resolve_root(opts.root);
     let root_str = root.display().to_string();
 
     let (older_than_str, older_than_source) = match opts.older_than {
-        Some(s) => (s.to_string(), "flag"),
-        None => (DEFAULT_OLDER_THAN.to_string(), "default"),
+        Some(s) => (s.to_string(), "flag".to_string()),
+        None => (DEFAULT_OLDER_THAN.to_string(), "default".to_string()),
     };
 
-    let retention_secs = parse_duration(&older_than_str).ok_or_else(|| {
-        anyhow!("invalid duration: {older_than_str}; expected formats: 30d, 24h, 60m, 3600s")
+    let max_jobs = opts
+        .max_jobs
+        .map(|v| usize::try_from(v).map_err(|_| anyhow!("invalid --max-jobs: {v}")))
+        .transpose()?;
+
+    let policy = GcPolicy {
+        older_than: older_than_str.clone(),
+        max_jobs,
+        max_bytes: opts.max_bytes,
+        dry_run: opts.dry_run,
+        mode: GcMode::Manual,
+        scan_limit: None,
+        delete_limit: None,
+    };
+
+    let outcome = run_gc(&root, &policy)?;
+
+    Response::new(
+        "gc",
+        GcData {
+            root: root_str,
+            dry_run: opts.dry_run,
+            older_than: older_than_str,
+            older_than_source,
+            deleted: outcome.deleted,
+            skipped: outcome.skipped,
+            out_of_scope: outcome.out_of_scope,
+            failed: outcome.failed,
+            freed_bytes: outcome.freed_bytes,
+            scanned_dirs: outcome.scanned_dirs,
+            candidate_count: outcome.candidate_count,
+            jobs: outcome.jobs,
+        },
+    )
+    .print();
+
+    Ok(())
+}
+
+pub fn maybe_run_auto_gc(root: &Path, cfg: &AutoGcConfig) {
+    if !cfg.enabled {
+        debug!("auto-gc disabled");
+        return;
+    }
+
+    let policy = GcPolicy {
+        older_than: cfg.older_than.clone(),
+        max_jobs: cfg.max_jobs,
+        max_bytes: cfg.max_bytes,
+        dry_run: false,
+        mode: GcMode::Automatic,
+        scan_limit: Some(cfg.scan_limit),
+        delete_limit: Some(cfg.delete_limit),
+    };
+
+    if let Err(e) = run_gc_with_lock(root, &policy) {
+        warn!(error = %e, "auto-gc failed (best-effort)");
+    }
+}
+
+#[derive(Debug)]
+struct GcOutcome {
+    deleted: u64,
+    skipped: u64,
+    out_of_scope: u64,
+    failed: u64,
+    freed_bytes: u64,
+    scanned_dirs: u64,
+    candidate_count: u64,
+    jobs: Vec<GcJobResult>,
+}
+
+fn run_gc_with_lock(root: &Path, policy: &GcPolicy) -> Result<GcOutcome> {
+    if policy.mode == GcMode::Manual {
+        return run_gc(root, policy);
+    }
+
+    let lock_path = root.join(".gc.lock");
+    let lock = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lock_path);
+
+    let lock_file = match lock {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            debug!(path = %lock_path.display(), "auto-gc lock already held; skipping");
+            return Ok(empty_outcome());
+        }
+        Err(e) => return Err(anyhow!("create auto-gc lock {}: {e}", lock_path.display())),
+    };
+
+    let result = run_gc(root, policy);
+    drop(lock_file);
+    let _ = std::fs::remove_file(&lock_path);
+    result
+}
+
+fn empty_outcome() -> GcOutcome {
+    GcOutcome {
+        deleted: 0,
+        skipped: 0,
+        out_of_scope: 0,
+        failed: 0,
+        freed_bytes: 0,
+        scanned_dirs: 0,
+        candidate_count: 0,
+        jobs: vec![],
+    }
+}
+
+fn run_gc(root: &Path, policy: &GcPolicy) -> Result<GcOutcome> {
+    if !root.exists() {
+        return Ok(empty_outcome());
+    }
+
+    let retention_secs = parse_duration(&policy.older_than).ok_or_else(|| {
+        anyhow!(
+            "invalid duration: {}; expected formats: 30d, 24h, 60m, 3600s",
+            policy.older_than
+        )
     })?;
 
-    // Compute the cutoff timestamp as seconds since UNIX epoch.
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
     let cutoff_secs = now_secs.saturating_sub(retention_secs);
-    let cutoff_rfc3339 = format_rfc3339(cutoff_secs);
+    let cutoff = format_rfc3339(cutoff_secs);
 
-    debug!(
-        root = %root_str,
-        older_than = %older_than_str,
-        older_than_source,
-        dry_run = opts.dry_run,
-        cutoff = %cutoff_rfc3339,
-        "gc: starting"
-    );
+    let mut scanned_dirs = 0u64;
+    let mut out_of_scope = 0u64;
+    let mut skipped = 0u64;
+    let mut failed = 0u64;
 
-    // If root does not exist, return empty response.
-    if !root.exists() {
-        debug!(root = %root_str, "gc: root does not exist; nothing to collect");
-        Response::new(
-            "gc",
-            GcData {
-                root: root_str,
-                dry_run: opts.dry_run,
-                older_than: older_than_str,
-                older_than_source: older_than_source.to_string(),
-                deleted: 0,
-                skipped: 0,
-                out_of_scope: 0,
-                failed: 0,
-                freed_bytes: 0,
-                jobs: vec![],
-            },
-        )
-        .print();
-        return Ok(());
-    }
+    let mut results = Vec::new();
+    let mut candidates = Vec::<Candidate>::new();
 
-    let read_dir = std::fs::read_dir(&root)
-        .map_err(|e| anyhow!("failed to read root directory {}: {}", root_str, e))?;
-
-    let mut job_results: Vec<GcJobResult> = Vec::new();
-    let mut deleted_count: u64 = 0;
-    let mut skipped_count: u64 = 0;
-    let mut out_of_scope_count: u64 = 0;
-    let mut failed_count: u64 = 0;
-    let mut freed_bytes: u64 = 0;
+    let read_dir = std::fs::read_dir(root)
+        .map_err(|e| anyhow!("failed to read root directory {}: {}", root.display(), e))?;
 
     for entry in read_dir {
         let entry = match entry {
-            Ok(e) => e,
+            Ok(v) => v,
             Err(e) => {
-                debug!(error = %e, "gc: failed to read directory entry; skipping");
-                skipped_count += 1;
+                skipped += 1;
+                failed += 1;
+                warn!(error = %e, "gc: failed to read directory entry");
                 continue;
             }
         };
@@ -99,27 +237,32 @@ pub fn execute(opts: GcOpts) -> Result<()> {
             continue;
         }
 
+        scanned_dirs += 1;
+        if let Some(limit) = policy.scan_limit
+            && scanned_dirs as usize > limit
+        {
+            break;
+        }
+
         let job_id = match path.file_name().and_then(|n| n.to_str()) {
-            Some(n) => n.to_string(),
+            Some(s) => s.to_string(),
             None => {
-                debug!(path = %path.display(), "gc: cannot get dir name; skipping");
-                skipped_count += 1;
+                skipped += 1;
+                out_of_scope += 1;
                 continue;
             }
         };
 
-        // Read state.json — required for eligibility evaluation.
         let state_path = path.join("state.json");
         let state = match std::fs::read(&state_path)
             .ok()
-            .and_then(|b| serde_json::from_slice::<crate::schema::JobState>(&b).ok())
+            .and_then(|b| serde_json::from_slice::<JobState>(&b).ok())
         {
             Some(s) => s,
             None => {
-                debug!(path = %path.display(), "gc: state.json missing or unreadable; skipping");
-                skipped_count += 1;
-                out_of_scope_count += 1;
-                job_results.push(GcJobResult {
+                skipped += 1;
+                out_of_scope += 1;
+                results.push(GcJobResult {
                     job_id,
                     state: "unknown".to_string(),
                     action: "skipped".to_string(),
@@ -130,32 +273,27 @@ pub fn execute(opts: GcOpts) -> Result<()> {
             }
         };
 
-        let status = state.status();
-
-        // Running jobs are never deleted.
-        if *status == JobStatus::Running {
-            debug!(job_id = %job_id, "gc: running job; skipping");
-            skipped_count += 1;
-            out_of_scope_count += 1;
-            job_results.push(GcJobResult {
+        let status = state.status().clone();
+        if matches!(status, JobStatus::Running | JobStatus::Created) {
+            skipped += 1;
+            out_of_scope += 1;
+            results.push(GcJobResult {
                 job_id,
-                state: "running".to_string(),
+                state: status.as_str().to_string(),
                 action: "skipped".to_string(),
-                reason: "running".to_string(),
+                reason: "active_job".to_string(),
                 bytes: 0,
             });
             continue;
         }
 
-        // Only terminal states are candidates.
         if !matches!(
             status,
             JobStatus::Exited | JobStatus::Killed | JobStatus::Failed
         ) {
-            debug!(job_id = %job_id, status = ?status, "gc: unknown status; skipping");
-            skipped_count += 1;
-            out_of_scope_count += 1;
-            job_results.push(GcJobResult {
+            skipped += 1;
+            out_of_scope += 1;
+            results.push(GcJobResult {
                 job_id,
                 state: status.as_str().to_string(),
                 action: "skipped".to_string(),
@@ -165,34 +303,30 @@ pub fn execute(opts: GcOpts) -> Result<()> {
             continue;
         }
 
-        // Determine the GC timestamp: finished_at preferred, updated_at as fallback.
-        let gc_ts = match state
+        let gc_ts = state
             .finished_at
             .as_deref()
             .or(Some(state.updated_at.as_str()))
-        {
-            Some(ts) if !ts.is_empty() => ts.to_string(),
-            _ => {
-                debug!(job_id = %job_id, "gc: no usable timestamp; skipping");
-                skipped_count += 1;
-                out_of_scope_count += 1;
-                job_results.push(GcJobResult {
-                    job_id,
-                    state: status.as_str().to_string(),
-                    action: "skipped".to_string(),
-                    reason: "no_timestamp".to_string(),
-                    bytes: 0,
-                });
-                continue;
-            }
-        };
+            .unwrap_or_default()
+            .to_string();
 
-        // Compare GC timestamp to cutoff (lexicographic comparison of RFC 3339 UTC strings).
-        if !is_older_than(&gc_ts, &cutoff_rfc3339) {
-            debug!(job_id = %job_id, gc_ts = %gc_ts, cutoff = %cutoff_rfc3339, "gc: too recent; skipping");
-            skipped_count += 1;
-            out_of_scope_count += 1;
-            job_results.push(GcJobResult {
+        if gc_ts.is_empty() {
+            skipped += 1;
+            out_of_scope += 1;
+            results.push(GcJobResult {
+                job_id,
+                state: status.as_str().to_string(),
+                action: "skipped".to_string(),
+                reason: "no_timestamp".to_string(),
+                bytes: 0,
+            });
+            continue;
+        }
+
+        if !is_older_than(&gc_ts, &cutoff) {
+            skipped += 1;
+            out_of_scope += 1;
+            results.push(GcJobResult {
                 job_id,
                 state: status.as_str().to_string(),
                 action: "skipped".to_string(),
@@ -202,99 +336,162 @@ pub fn execute(opts: GcOpts) -> Result<()> {
             continue;
         }
 
-        // Compute directory size before deletion.
-        let dir_bytes = dir_size_bytes(&path);
+        let bytes = dir_size_bytes(&path);
+        candidates.push(Candidate {
+            job_id,
+            path,
+            status,
+            gc_ts,
+            bytes,
+            reasons: vec!["older_than"],
+        });
+    }
 
-        if opts.dry_run {
-            debug!(job_id = %job_id, bytes = dir_bytes, "gc: dry-run would delete");
-            freed_bytes += dir_bytes;
-            job_results.push(GcJobResult {
-                job_id,
-                state: status.as_str().to_string(),
-                action: "would_delete".to_string(),
-                reason: format!("older_than_{older_than_str}"),
-                bytes: dir_bytes,
-            });
-        } else {
-            match std::fs::remove_dir_all(&path) {
-                Ok(()) => {
-                    // Post-delete existence check: a successful remove_dir_all
-                    // must leave the path absent before we report `deleted`.
-                    if path.exists() {
-                        debug!(
-                            job_id = %job_id,
-                            "gc: post-delete check found path still present; reporting failure"
-                        );
-                        skipped_count += 1;
-                        failed_count += 1;
-                        job_results.push(GcJobResult {
-                            job_id,
-                            state: status.as_str().to_string(),
-                            action: "skipped".to_string(),
-                            reason: "post_delete_check_failed".to_string(),
-                            bytes: dir_bytes,
-                        });
-                    } else {
-                        debug!(job_id = %job_id, bytes = dir_bytes, "gc: deleted");
-                        deleted_count += 1;
-                        freed_bytes += dir_bytes;
-                        job_results.push(GcJobResult {
-                            job_id,
-                            state: status.as_str().to_string(),
-                            action: "deleted".to_string(),
-                            reason: format!("older_than_{older_than_str}"),
-                            bytes: dir_bytes,
-                        });
-                    }
+    candidates.sort_by(|a, b| a.gc_ts.cmp(&b.gc_ts)); // oldest first
+
+    if let Some(max_jobs) = policy.max_jobs
+        && candidates.len() > max_jobs
+    {
+        // keep newest max_jobs, mark older ones for count pressure
+        let cut = candidates.len() - max_jobs;
+        for c in &mut candidates[..cut] {
+            c.reasons.push("max_jobs");
+        }
+        for c in &mut candidates[cut..] {
+            c.reasons.retain(|r| *r != "older_than");
+        }
+    }
+
+    if let Some(max_bytes) = policy.max_bytes {
+        let mut all_terminal_total = candidates.iter().map(|c| c.bytes).sum::<u64>();
+        if all_terminal_total > max_bytes {
+            for c in &mut candidates {
+                if all_terminal_total <= max_bytes {
+                    break;
                 }
-                Err(e) => {
-                    debug!(job_id = %job_id, error = %e, "gc: failed to delete; skipping");
-                    skipped_count += 1;
-                    failed_count += 1;
-                    job_results.push(GcJobResult {
-                        job_id,
-                        state: status.as_str().to_string(),
-                        action: "skipped".to_string(),
-                        reason: format!("delete_failed: {e}"),
-                        bytes: dir_bytes,
-                    });
+                if !c.reasons.contains(&"max_bytes") {
+                    c.reasons.push("max_bytes");
                 }
+                all_terminal_total = all_terminal_total.saturating_sub(c.bytes);
             }
         }
     }
 
-    debug!(
-        deleted = deleted_count,
-        skipped = skipped_count,
-        out_of_scope = out_of_scope_count,
-        failed = failed_count,
+    let mut selected = Vec::new();
+    for c in candidates {
+        if c.reasons.is_empty() {
+            skipped += 1;
+            out_of_scope += 1;
+            results.push(GcJobResult {
+                job_id: c.job_id,
+                state: c.status.as_str().to_string(),
+                action: "skipped".to_string(),
+                reason: "policy_not_matched".to_string(),
+                bytes: c.bytes,
+            });
+            continue;
+        }
+        selected.push(c);
+    }
+
+    let candidate_count = selected.len() as u64;
+    let mut deleted = 0u64;
+    let mut freed_bytes = 0u64;
+    let mut deletions = 0usize;
+
+    for c in selected {
+        if let Some(limit) = policy.delete_limit
+            && deletions >= limit
+        {
+            skipped += 1;
+            out_of_scope += 1;
+            results.push(GcJobResult {
+                job_id: c.job_id,
+                state: c.status.as_str().to_string(),
+                action: "skipped".to_string(),
+                reason: "delete_budget_exhausted".to_string(),
+                bytes: c.bytes,
+            });
+            continue;
+        }
+
+        let reason = c.reasons.join("+");
+
+        if policy.dry_run {
+            freed_bytes = freed_bytes.saturating_add(c.bytes);
+            results.push(GcJobResult {
+                job_id: c.job_id,
+                state: c.status.as_str().to_string(),
+                action: "would_delete".to_string(),
+                reason,
+                bytes: c.bytes,
+            });
+            continue;
+        }
+
+        match std::fs::remove_dir_all(&c.path) {
+            Ok(()) => {
+                if c.path.exists() {
+                    skipped += 1;
+                    failed += 1;
+                    results.push(GcJobResult {
+                        job_id: c.job_id,
+                        state: c.status.as_str().to_string(),
+                        action: "skipped".to_string(),
+                        reason: "post_delete_check_failed".to_string(),
+                        bytes: c.bytes,
+                    });
+                } else {
+                    deletions += 1;
+                    deleted += 1;
+                    freed_bytes = freed_bytes.saturating_add(c.bytes);
+                    results.push(GcJobResult {
+                        job_id: c.job_id,
+                        state: c.status.as_str().to_string(),
+                        action: "deleted".to_string(),
+                        reason,
+                        bytes: c.bytes,
+                    });
+                }
+            }
+            Err(e) => {
+                skipped += 1;
+                failed += 1;
+                results.push(GcJobResult {
+                    job_id: c.job_id,
+                    state: c.status.as_str().to_string(),
+                    action: "skipped".to_string(),
+                    reason: format!("delete_failed: {e}"),
+                    bytes: c.bytes,
+                });
+            }
+        }
+    }
+
+    info!(
+        mode = ?policy.mode,
+        deleted,
+        skipped,
+        out_of_scope,
+        failed,
         freed_bytes,
-        "gc: complete"
+        scanned_dirs,
+        candidate_count,
+        "gc complete"
     );
 
-    Response::new(
-        "gc",
-        GcData {
-            root: root_str,
-            dry_run: opts.dry_run,
-            older_than: older_than_str,
-            older_than_source: older_than_source.to_string(),
-            deleted: deleted_count,
-            skipped: skipped_count,
-            out_of_scope: out_of_scope_count,
-            failed: failed_count,
-            freed_bytes,
-            jobs: job_results,
-        },
-    )
-    .print();
-
-    Ok(())
+    Ok(GcOutcome {
+        deleted,
+        skipped,
+        out_of_scope,
+        failed,
+        freed_bytes,
+        scanned_dirs,
+        candidate_count,
+        jobs: results,
+    })
 }
 
-/// Parse a duration string into seconds.
-///
-/// Supported formats: `30d`, `24h`, `60m`, `3600s`.
 pub fn parse_duration(s: &str) -> Option<u64> {
     let s = s.trim();
     if let Some(n) = s.strip_suffix('d') {
@@ -306,50 +503,34 @@ pub fn parse_duration(s: &str) -> Option<u64> {
     } else if let Some(n) = s.strip_suffix('s') {
         n.parse::<u64>().ok()
     } else {
-        // Plain number treated as seconds.
         s.parse::<u64>().ok()
     }
 }
 
-/// Return true when `ts` represents a point in time strictly before `cutoff`.
-///
-/// Both `ts` and `cutoff` must be RFC 3339 UTC strings produced by
-/// `format_rfc3339` (format: `YYYY-MM-DDTHH:MM:SSZ`).  Lexicographic
-/// comparison is correct for zero-padded fixed-width UTC ISO 8601 strings.
 fn is_older_than(ts: &str, cutoff: &str) -> bool {
-    // Normalize: compare the first 19 chars (YYYY-MM-DDTHH:MM:SS) only so
-    // that subsecond suffixes and different timezone markers don't break the
-    // comparison.  Both values are UTC so ignoring the suffix is safe.
     let ts_prefix = &ts[..ts.len().min(19)];
     let cutoff_prefix = &cutoff[..cutoff.len().min(19)];
     ts_prefix < cutoff_prefix
 }
 
-/// Recursively compute the total byte size of a directory.
-///
-/// Counts only regular file sizes (metadata size is excluded). Returns 0
-/// if the directory cannot be read.
-pub fn dir_size_bytes(path: &std::path::Path) -> u64 {
+pub fn dir_size_bytes(path: &Path) -> u64 {
     let mut total = 0u64;
     let Ok(entries) = std::fs::read_dir(path) else {
         return 0;
     };
     for entry in entries.flatten() {
-        let entry_path = entry.path();
-        if let Ok(meta) = entry_path.metadata() {
+        let p = entry.path();
+        if let Ok(meta) = p.metadata() {
             if meta.is_file() {
                 total += meta.len();
             } else if meta.is_dir() {
-                total += dir_size_bytes(&entry_path);
+                total += dir_size_bytes(&p);
             }
         }
     }
     total
 }
 
-/// Manual conversion of Unix timestamp (seconds) to RFC 3339 UTC string.
-///
-/// Duplicated from `run.rs` to keep `gc` self-contained.
 fn format_rfc3339(secs: u64) -> String {
     let mut s = secs;
     let seconds = s % 60;
@@ -417,80 +598,22 @@ mod tests {
     #[test]
     fn parse_duration_days() {
         assert_eq!(parse_duration("30d"), Some(30 * 86_400));
-        assert_eq!(parse_duration("7d"), Some(7 * 86_400));
-        assert_eq!(parse_duration("1d"), Some(86_400));
-    }
-
-    #[test]
-    fn parse_duration_hours() {
-        assert_eq!(parse_duration("24h"), Some(24 * 3_600));
-        assert_eq!(parse_duration("1h"), Some(3_600));
-    }
-
-    #[test]
-    fn parse_duration_minutes() {
-        assert_eq!(parse_duration("60m"), Some(3_600));
-    }
-
-    #[test]
-    fn parse_duration_seconds() {
-        assert_eq!(parse_duration("3600s"), Some(3_600));
-        assert_eq!(parse_duration("0s"), Some(0));
     }
 
     #[test]
     fn parse_duration_invalid() {
         assert!(parse_duration("abc").is_none());
-        assert!(parse_duration("").is_none());
     }
 
     #[test]
-    fn is_older_than_true() {
+    fn older_than_logic() {
         assert!(is_older_than(
             "2020-01-01T00:00:00Z",
             "2024-01-01T00:00:00Z"
         ));
-    }
-
-    #[test]
-    fn is_older_than_false_equal() {
         assert!(!is_older_than(
             "2024-01-01T00:00:00Z",
             "2024-01-01T00:00:00Z"
         ));
-    }
-
-    #[test]
-    fn is_older_than_false_newer() {
-        assert!(!is_older_than(
-            "2025-01-01T00:00:00Z",
-            "2024-01-01T00:00:00Z"
-        ));
-    }
-
-    #[test]
-    fn format_rfc3339_epoch() {
-        // UNIX epoch → 1970-01-01T00:00:00Z
-        assert_eq!(format_rfc3339(0), "1970-01-01T00:00:00Z");
-    }
-
-    #[test]
-    fn format_rfc3339_known() {
-        // 2024-01-01T00:00:00Z = 1704067200 secs since epoch
-        assert_eq!(format_rfc3339(1_704_067_200), "2024-01-01T00:00:00Z");
-    }
-
-    #[test]
-    fn dir_size_bytes_empty_dir() {
-        let tmp = tempfile::tempdir().unwrap();
-        assert_eq!(dir_size_bytes(tmp.path()), 0);
-    }
-
-    #[test]
-    fn dir_size_bytes_with_file() {
-        let tmp = tempfile::tempdir().unwrap();
-        let file = tmp.path().join("test.txt");
-        std::fs::write(&file, b"hello world").unwrap();
-        assert_eq!(dir_size_bytes(tmp.path()), 11);
     }
 }

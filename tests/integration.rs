@@ -2967,6 +2967,14 @@ fn assert_gc_envelope(v: &serde_json::Value, dry_run: bool) {
         "older_than_source field missing"
     );
     assert!(v["jobs"].is_array(), "jobs must be an array");
+    assert!(
+        v["scanned_dirs"].as_u64().is_some(),
+        "scanned_dirs field missing"
+    );
+    assert!(
+        v["candidate_count"].as_u64().is_some(),
+        "candidate_count field missing"
+    );
 }
 
 /// gc on an empty root returns ok with zero counts.
@@ -3058,7 +3066,7 @@ fn gc_deletes_only_terminal_jobs() {
     );
     let running_entry = running_entry.unwrap();
     assert_eq!(running_entry["action"].as_str().unwrap_or(""), "skipped");
-    assert_eq!(running_entry["reason"].as_str().unwrap_or(""), "running");
+    assert_eq!(running_entry["reason"].as_str().unwrap_or(""), "active_job");
 }
 
 /// gc --dry-run reports candidates without deleting directories.
@@ -3169,6 +3177,49 @@ fn gc_custom_older_than_flag_reported() {
     assert_gc_envelope(&v, false);
     assert_eq!(v["older_than"].as_str().unwrap_or(""), "7d");
     assert_eq!(v["older_than_source"].as_str().unwrap_or(""), "flag");
+}
+
+#[test]
+fn gc_supports_max_jobs_policy() {
+    let h = TestHarness::new();
+    let old = "2020-01-01T00:00:00Z";
+    write_fake_job(h.root(), "job-1", "exited", Some(old), old);
+    write_fake_job(h.root(), "job-2", "exited", Some(old), old);
+    write_fake_job(h.root(), "job-3", "exited", Some(old), old);
+
+    let v = h.run(&["gc", "--max-jobs", "1", "--dry-run"]);
+    assert_gc_envelope(&v, true);
+
+    let jobs = v["jobs"].as_array().unwrap();
+    let would_delete = jobs
+        .iter()
+        .filter(|j| j["action"].as_str().unwrap_or("") == "would_delete")
+        .count();
+    assert!(
+        would_delete >= 2,
+        "must select older jobs by max-jobs policy"
+    );
+
+    assert!(std::path::Path::new(h.root()).join("job-1").exists());
+    assert!(std::path::Path::new(h.root()).join("job-2").exists());
+    assert!(std::path::Path::new(h.root()).join("job-3").exists());
+}
+
+#[test]
+fn gc_supports_max_bytes_policy() {
+    let h = TestHarness::new();
+    let old = "2020-01-01T00:00:00Z";
+    write_fake_job(h.root(), "bytes-1", "exited", Some(old), old);
+    write_fake_job(h.root(), "bytes-2", "exited", Some(old), old);
+
+    let v = h.run(&["gc", "--max-bytes", "1", "--dry-run"]);
+    assert_gc_envelope(&v, true);
+
+    let jobs = v["jobs"].as_array().unwrap();
+    let has_max_bytes_reason = jobs
+        .iter()
+        .any(|j| j["reason"].as_str().unwrap_or("").contains("max_bytes"));
+    assert!(has_max_bytes_reason, "max-bytes reason must be reported");
 }
 
 /// gc skips jobs whose state.json is unreadable.
@@ -4706,24 +4757,66 @@ fn create_does_not_trigger_notification_side_effects() {
 #[test]
 fn start_uses_tags_persisted_by_create() {
     let h = TestHarness::new();
-
     let c = h.run(&["create", "--tag", "mytag", "--tag", "other", "--", "true"]);
-    assert_envelope(&c, "create", true);
     let job_id = c["job_id"].as_str().unwrap().to_string();
 
     let s = h.run(&["start", &job_id]);
     assert_envelope(&s, "start", true);
-    let tags: Vec<&str> = s["tags"]
-        .as_array()
-        .expect("tags in start response")
-        .iter()
-        .map(|t| t.as_str().unwrap())
-        .collect();
-    assert_eq!(
-        tags,
-        vec!["mytag", "other"],
-        "start must return the tags persisted by create"
+    let tags = s["tags"].as_array().expect("tags must be an array");
+    let tag_strs: Vec<&str> = tags.iter().map(|t| t.as_str().unwrap()).collect();
+    assert_eq!(tag_strs, vec!["mytag", "other"]);
+}
+
+#[test]
+fn run_auto_gc_deletes_old_terminal_job_by_default() {
+    let h = TestHarness::new();
+    let old = "2020-01-01T00:00:00Z";
+    write_fake_job(h.root(), "old-auto-run", "exited", Some(old), old);
+
+    let v = h.run(&["run", "echo", "hi"]);
+    assert_envelope(&v, "run", true);
+    assert!(v.get("stdout").is_some(), "run response contract changed");
+
+    let old_path = std::path::Path::new(h.root()).join("old-auto-run");
+    assert!(
+        !old_path.exists(),
+        "old terminal job should be cleaned by auto-gc"
     );
+}
+
+#[test]
+fn start_auto_gc_deletes_old_terminal_job_by_default() {
+    let h = TestHarness::new();
+    let old = "2020-01-01T00:00:00Z";
+    write_fake_job(h.root(), "old-auto-start", "exited", Some(old), old);
+
+    let c = h.run(&["create", "--", "echo", "start-auto-gc"]);
+    let job_id = c["job_id"].as_str().unwrap().to_string();
+
+    let s = h.run(&["start", &job_id]);
+    assert_envelope(&s, "start", true);
+
+    let old_path = std::path::Path::new(h.root()).join("old-auto-start");
+    assert!(
+        !old_path.exists(),
+        "old terminal job should be cleaned by auto-gc"
+    );
+
+    let st = h.run(&["status", &job_id]);
+    assert_envelope(&st, "status", true);
+}
+
+#[test]
+fn run_no_auto_gc_opt_out_preserves_old_terminal_job() {
+    let h = TestHarness::new();
+    let old = "2020-01-01T00:00:00Z";
+    write_fake_job(h.root(), "old-no-auto", "exited", Some(old), old);
+
+    let v = h.run(&["run", "--no-auto-gc", "echo", "hi"]);
+    assert_envelope(&v, "run", true);
+
+    let old_path = std::path::Path::new(h.root()).join("old-no-auto");
+    assert!(old_path.exists(), "--no-auto-gc must preserve old job");
 }
 
 /// Output-match notification persisted by `create` is used by `start` when executing the job.

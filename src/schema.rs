@@ -337,6 +337,10 @@ pub struct GcData {
     pub failed: u64,
     /// Total bytes freed (or would be freed in dry-run mode).
     pub freed_bytes: u64,
+    /// Number of job directories scanned.
+    pub scanned_dirs: u64,
+    /// Number of deletion candidates selected by policy.
+    pub candidate_count: u64,
     /// Per-job details.
     pub jobs: Vec<GcJobResult>,
 }
