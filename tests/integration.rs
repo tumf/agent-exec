@@ -1513,10 +1513,50 @@ fn list_returns_jobs_sorted_by_started_at_desc() {
         assert!(job.get("job_id").is_some(), "job_id missing in job summary");
         assert!(job.get("state").is_some(), "state missing in job summary");
         assert!(
+            job.get("command").is_some(),
+            "command missing in job summary"
+        );
+        assert!(
             job.get("started_at").is_some(),
             "started_at missing in job summary"
         );
     }
+}
+
+#[test]
+fn list_jobs_include_command() {
+    let h = TestHarness::new();
+    let expected_command = ["sh", "-c", "printf '%s\\n' list-command-field"];
+
+    let run_v = h.run(&[
+        "run",
+        "--",
+        expected_command[0],
+        expected_command[1],
+        expected_command[2],
+    ]);
+    assert_envelope(&run_v, "run", true);
+    let job_id = run_v["job_id"]
+        .as_str()
+        .expect("job_id missing")
+        .to_string();
+
+    let list_v = h.run(&["list", "--all"]);
+    assert_envelope(&list_v, "list", true);
+    let jobs = list_v["jobs"].as_array().expect("jobs missing");
+    let job = jobs
+        .iter()
+        .find(|j| j["job_id"].as_str() == Some(&job_id))
+        .unwrap_or_else(|| panic!("job {job_id} not found in list response: {list_v}"));
+
+    let command = job["command"]
+        .as_array()
+        .expect("command must be an array in job summary");
+    let actual_command: Vec<&str> = command
+        .iter()
+        .map(|arg| arg.as_str().expect("command arg must be string"))
+        .collect();
+    assert_eq!(actual_command, expected_command);
 }
 
 /// Spec: `--limit` truncates the result and sets truncated=true.

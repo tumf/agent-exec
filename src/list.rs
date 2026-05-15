@@ -197,6 +197,7 @@ pub fn execute(opts: ListOpts) -> Result<()> {
             job_id: meta.job.id.clone(),
             short_job_id: short_job_id(&meta.job.id),
             state: state_str,
+            command: meta.command.clone(),
             exit_code,
             created_at: meta.created_at.clone(),
             started_at: job_started_at,
