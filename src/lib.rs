@@ -1,7 +1,7 @@
 /// agent-exec v0.1 — core library
 ///
 /// Provides JSON output types, job-directory management, and the
-/// implementation of the sub-commands: create, run, start, status, tail,
+/// implementation of the sub-commands: create, run, start, restart, status, tail,
 /// wait, kill, list, schema, install-skills, and completions.
 pub mod completions;
 pub mod config;
@@ -13,6 +13,7 @@ pub mod jobstore;
 pub mod kill;
 pub mod list;
 pub mod notify;
+pub mod restart;
 pub mod run;
 pub mod schema;
 pub mod schema_cmd;

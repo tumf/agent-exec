@@ -45,6 +45,7 @@ cargo install --path .
 
 - `status` and `tail` complete all known job IDs
 - `wait` completes only non-terminal jobs (`created`, `running`)
+- `restart` completes all known job IDs
 - `kill` completes only running jobs
 - `delete` completes only terminal jobs
 
@@ -180,6 +181,7 @@ agent-exec start "$JOB"
   It returns `type="create"` and the `job_id`.
 - `start` reads the persisted definition and spawns the supervisor.
   既定では最大 10 秒待機し、inline output（head 範囲）を返します。
+- `restart` reuses an existing job ID and persisted definition, terminating any running process before relaunching.
 - `run` は即時実行の convenience path で、同じ inline output 契約を返します（`--no-wait` で待機無効化可能）。
 
 ### Persisted environment
@@ -260,6 +262,18 @@ Launches the job whose definition was persisted by `create`.
 
 Returns `type="start"` with inline output fields (`stdout`, `stderr`, `stdout_range`, `stderr_range`, `stdout_total_bytes`, `stderr_total_bytes`, `encoding`).
 Only jobs in `created` state can be started; any other state returns `error.code="invalid_state"`.
+
+### `restart` — relaunch an existing job in place
+
+```bash
+agent-exec restart [OPTIONS] <JOB_ID>
+```
+
+Reuses the existing job directory and `job_id`, reads the persisted execution definition from `meta.json`, and launches a fresh run. If the job is currently `running`, `restart` first terminates the current process tree with `--signal` (default `TERM`) and waits until termination is confirmed before relaunching.
+
+`restart` accepts the same observation controls as `start` (`--wait`, `--until`, `--forever`, `--no-wait`, `--max-bytes`) plus auto-GC controls. Before relaunch it clears per-run artifacts (`stdout.log`, `stderr.log`, `full.log`, and stale `completion_event.json`) so inline output and `tail` reflect the replacement run.
+
+Returns `type="restart"` with the same inline output fields as `run` / `start`.
 
 ### `run` — start a background job
 
@@ -482,7 +496,7 @@ Deletes job directories under the root using terminal-only safety rules. Candida
 
 ## Automatic cleanup (auto-GC)
 
-`run` / `start` perform best-effort bounded auto-GC after successful launch by default.
+`run` / `start` / `restart` perform best-effort bounded auto-GC after successful launch by default.
 
 - Default retention: `30d`
 - Same safety rules as manual `gc` (skip `running` / `created` / unreadable)
