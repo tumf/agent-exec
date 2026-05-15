@@ -262,6 +262,8 @@ pub struct JobSummary {
     pub short_job_id: String,
     /// Job state: created | running | exited | killed | failed | unknown
     pub state: String,
+    /// Original command argv persisted in meta.json.
+    pub command: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
     /// Creation timestamp from meta.json (RFC 3339).
