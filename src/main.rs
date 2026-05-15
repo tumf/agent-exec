@@ -265,6 +265,64 @@ enum Command {
         job_id: String,
     },
 
+    /// Restart an existing job with the same job ID. Returns JSON with type="restart".
+    Restart {
+        /// Override jobs root directory.
+        #[arg(long)]
+        root: Option<String>,
+
+        /// Signal name to send to a currently running job before relaunch (default: TERM).
+        #[arg(long, default_value = "TERM", value_parser = SignalValueParser)]
+        signal: String,
+
+        /// Disable best-effort automatic GC for this invocation.
+        #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue)]
+        no_auto_gc: bool,
+
+        /// Auto-GC retention window override (e.g. 30d, 24h).
+        #[arg(long, value_name = "DURATION")]
+        auto_gc_older_than: Option<String>,
+
+        /// Auto-GC max terminal jobs override.
+        #[arg(long, value_name = "N")]
+        auto_gc_max_jobs: Option<u64>,
+
+        /// Auto-GC max terminal bytes override.
+        #[arg(long, value_name = "BYTES")]
+        auto_gc_max_bytes: Option<u64>,
+
+        /// Wait for inline output observation before returning.
+        /// Bare `--wait` is treated as `true`; `--wait true|false` remains supported.
+        #[arg(
+            long,
+            default_value_t = true,
+            default_missing_value = "true",
+            num_args = 0..=1,
+            action = clap::ArgAction::Set
+        )]
+        wait: bool,
+
+        /// Maximum wait time in seconds for inline observation.
+        #[arg(long, default_value = "10", conflicts_with = "forever")]
+        until: u64,
+
+        /// Wait indefinitely for terminal state / observation budget.
+        #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue, conflicts_with = "until")]
+        forever: bool,
+
+        /// Alias for `--wait false --until 0`.
+        #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue)]
+        no_wait: bool,
+
+        /// Maximum bytes to include from the head of each stream.
+        #[arg(long, default_value = "65536")]
+        max_bytes: u64,
+
+        /// Job ID of an existing job.
+        #[arg(value_name = "JOB_ID", add = ArgValueCompleter::new(agent_exec::completions::complete_all_jobs))]
+        job_id: String,
+    },
+
     /// Run a command as a background job and return JSON immediately.
     Run {
         /// Disable best-effort automatic GC for this invocation.
@@ -829,7 +887,7 @@ where
             break;
         }
 
-        if arg_text == "run" || arg_text == "start" {
+        if arg_text == "run" || arg_text == "start" || arg_text == "restart" {
             wait_alias_enabled = true;
             wait_alias_phase_ended = false;
             normalized.push(arg);
@@ -951,6 +1009,40 @@ fn run(cli: Cli) -> Result<()> {
             agent_exec::start::execute(agent_exec::start::StartOpts {
                 job_id: &job_id,
                 root: root.as_deref(),
+                no_auto_gc,
+                auto_gc_older_than,
+                auto_gc_max_jobs,
+                auto_gc_max_bytes,
+                auto_gc_config: cfg.gc.to_auto_gc_config(),
+                wait: effective_wait,
+                until_seconds: effective_until_seconds,
+                forever: effective_forever,
+                max_bytes,
+            })?;
+        }
+
+        Command::Restart {
+            root,
+            signal,
+            no_auto_gc,
+            auto_gc_older_than,
+            auto_gc_max_jobs,
+            auto_gc_max_bytes,
+            wait,
+            until,
+            forever,
+            no_wait,
+            max_bytes,
+            job_id,
+        } => {
+            let effective_wait = if no_wait { false } else { wait };
+            let effective_until_seconds = if no_wait { 0 } else { until };
+            let effective_forever = if no_wait { false } else { forever };
+            let cfg = agent_exec::config::resolve_config(None)?;
+            agent_exec::restart::execute(agent_exec::restart::RestartOpts {
+                job_id: &job_id,
+                root: root.as_deref(),
+                signal: &signal,
                 no_auto_gc,
                 auto_gc_older_than,
                 auto_gc_max_jobs,

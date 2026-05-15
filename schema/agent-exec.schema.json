@@ -73,7 +73,7 @@
         "stderr_included_bytes": { "type": "integer", "minimum": 0 }
       }
     },
-    "RunResponse": {
+    "RunLikeResponse": {
       "allOf": [
         { "$ref": "#/definitions/Envelope" },
         {
@@ -84,7 +84,7 @@
             "waited_ms", "elapsed_ms"
           ],
           "properties": {
-            "type": { "const": "run" },
+            "type": { "enum": ["run", "restart"] },
             "job_id": { "type": "string" },
             "state": {
               "type": "string",
@@ -246,7 +246,7 @@
   },
   "oneOf": [
     { "$ref": "#/definitions/ErrorResponse" },
-    { "$ref": "#/definitions/RunResponse" },
+    { "$ref": "#/definitions/RunLikeResponse" },
     { "$ref": "#/definitions/StatusResponse" },
     { "$ref": "#/definitions/TailResponse" },
     { "$ref": "#/definitions/WaitResponse" },

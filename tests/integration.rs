@@ -1456,6 +1456,285 @@ fn tail_includes_log_paths_and_bytes_metrics() {
     );
 }
 
+// ── restart ────────────────────────────────────────────────────────────────────
+
+#[test]
+fn restart_help_documents_flags() {
+    let bin = binary();
+    let output = std::process::Command::new(&bin)
+        .args(["restart", "--help"])
+        .output()
+        .expect("run binary");
+    assert!(output.status.success(), "restart --help failed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for expected in [
+        "JOB_ID",
+        "--signal",
+        "--wait",
+        "--until",
+        "--forever",
+        "--no-wait",
+        "--max-bytes",
+    ] {
+        assert!(
+            stdout.contains(expected),
+            "restart --help should contain {expected}; stdout: {stdout}"
+        );
+    }
+}
+
+#[test]
+fn restart_terminal_job_preserves_job_id_and_directory() {
+    let h = TestHarness::new();
+    let run_v = h.run(&["run", "--wait", "--", "echo", "restart-ok"]);
+    assert_envelope(&run_v, "run", true);
+    let job_id = run_v["job_id"]
+        .as_str()
+        .expect("job_id missing")
+        .to_string();
+    let _ = wait_until_terminal(&h, &job_id);
+    let before_dirs = std::fs::read_dir(h.root()).expect("read root").count();
+
+    let restart_v = h.run(&["restart", "--wait", &job_id]);
+    assert_envelope(&restart_v, "restart", true);
+    assert_eq!(restart_v["job_id"].as_str().unwrap_or(""), job_id);
+    assert!(
+        restart_v["stdout"]
+            .as_str()
+            .unwrap_or("")
+            .contains("restart-ok"),
+        "restart stdout should include command output: {restart_v}"
+    );
+    let after_dirs = std::fs::read_dir(h.root()).expect("read root").count();
+    assert_eq!(
+        after_dirs, before_dirs,
+        "restart must not create a new job dir"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn restart_running_job_terminates_old_process_and_launches_replacement() {
+    let h = TestHarness::new();
+    let marker = std::path::Path::new(h.root()).join("restart-marker.txt");
+    let command = format!(
+        "echo $$ > {marker}; echo fresh; sleep 60",
+        marker = marker.display()
+    );
+    let run_v = h.run(&["run", "--no-wait", "--", "sh", "-c", &command]);
+    assert_envelope(&run_v, "run", true);
+    let job_id = run_v["job_id"]
+        .as_str()
+        .expect("job_id missing")
+        .to_string();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !marker.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "marker was not written"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let old_pid: u32 = std::fs::read_to_string(&marker)
+        .expect("read marker")
+        .trim()
+        .parse()
+        .expect("parse pid");
+
+    let restart_v = h.run(&["restart", "--wait", &job_id]);
+    assert_envelope(&restart_v, "restart", true);
+    assert_eq!(restart_v["job_id"].as_str().unwrap_or(""), job_id);
+    assert!(
+        restart_v["stdout"].as_str().unwrap_or("").contains("fresh"),
+        "replacement output should be visible: {restart_v}"
+    );
+
+    let still_alive = unsafe { libc::kill(old_pid as libc::pid_t, 0) } == 0;
+    assert!(
+        !still_alive,
+        "old process {old_pid} should have been terminated"
+    );
+    let _ = h.run(&["kill", "--signal", "KILL", &job_id]);
+}
+
+#[test]
+fn restart_created_job_behaves_like_start() {
+    let h = TestHarness::new();
+    let create_v = h.run(&["create", "--", "echo", "created-restart"]);
+    assert_envelope(&create_v, "create", true);
+    let job_id = create_v["job_id"]
+        .as_str()
+        .expect("job_id missing")
+        .to_string();
+
+    let restart_v = h.run(&["restart", "--wait", &job_id]);
+    assert_envelope(&restart_v, "restart", true);
+    assert_eq!(restart_v["job_id"].as_str().unwrap_or(""), job_id);
+    assert!(
+        restart_v["stdout"]
+            .as_str()
+            .unwrap_or("")
+            .contains("created-restart"),
+        "created restart output missing: {restart_v}"
+    );
+}
+
+#[test]
+fn restart_resets_logs_and_completion_event() {
+    let h = TestHarness::new();
+    let run_v = h.run(&["run", "--wait", "--", "echo", "old-output"]);
+    let job_id = run_v["job_id"]
+        .as_str()
+        .expect("job_id missing")
+        .to_string();
+    let _ = wait_until_terminal(&h, &job_id);
+    let completion_path = std::path::Path::new(h.root())
+        .join(&job_id)
+        .join("completion_event.json");
+    std::fs::write(&completion_path, "stale completion").expect("write stale completion");
+
+    let restart_v = h.run(&["restart", "--wait", &job_id]);
+    assert_envelope(&restart_v, "restart", true);
+    let stdout = restart_v["stdout"].as_str().unwrap_or("");
+    assert!(
+        stdout.contains("old-output"),
+        "new run output missing: {restart_v}"
+    );
+    assert_eq!(
+        stdout.matches("old-output").count(),
+        1,
+        "restart stdout should not include stale duplicated output: {restart_v}"
+    );
+
+    let tail_v = h.run(&["tail", &job_id]);
+    assert_envelope(&tail_v, "tail", true);
+    assert_eq!(
+        tail_v["stdout"]
+            .as_str()
+            .unwrap_or("")
+            .matches("old-output")
+            .count(),
+        1,
+        "tail should represent only the new run: {tail_v}"
+    );
+    assert!(
+        !completion_path.exists(),
+        "stale completion_event.json should be removed before relaunch"
+    );
+}
+
+#[test]
+fn restart_preserves_metadata_env_mask_and_stdin() {
+    let h = TestHarness::new();
+    let create_v = h.run(&[
+        "create",
+        "--env",
+        "SECRET_RESTART=value42",
+        "--mask",
+        "SECRET_RESTART",
+        "--stdin",
+        "stdin-ok",
+        "--",
+        "sh",
+        "-c",
+        "printf '%s:' \"$SECRET_RESTART\"; cat",
+    ]);
+    let job_id = create_v["job_id"]
+        .as_str()
+        .expect("job_id missing")
+        .to_string();
+    let meta_path = std::path::Path::new(h.root())
+        .join(&job_id)
+        .join("meta.json");
+    let meta_before = std::fs::read_to_string(&meta_path).expect("read meta before");
+
+    let restart_v = h.run(&["restart", "--wait", &job_id]);
+    assert_envelope(&restart_v, "restart", true);
+    assert!(
+        restart_v["stdout"]
+            .as_str()
+            .unwrap_or("")
+            .contains("value42:stdin-ok"),
+        "restart should apply persisted env and stdin: {restart_v}"
+    );
+    assert!(
+        restart_v["env_vars"]
+            .as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .any(|v| v.as_str() == Some("SECRET_RESTART=***")),
+        "restart response should mask env vars: {restart_v}"
+    );
+    let meta_after = std::fs::read_to_string(&meta_path).expect("read meta after");
+    assert_eq!(
+        meta_after, meta_before,
+        "restart should not rewrite meta.json"
+    );
+}
+
+#[test]
+fn restart_response_fields_and_no_wait_contract() {
+    let h = TestHarness::new();
+    let create_v = h.run(&["create", "--", "sh", "-c", "sleep 1; echo later"]);
+    let job_id = create_v["job_id"]
+        .as_str()
+        .expect("job_id missing")
+        .to_string();
+
+    let restart_v = h.run(&["restart", "--no-wait", &job_id]);
+    assert_envelope(&restart_v, "restart", true);
+    for field in [
+        "job_id",
+        "state",
+        "tags",
+        "stdout_log_path",
+        "stderr_log_path",
+        "elapsed_ms",
+        "waited_ms",
+        "stdout",
+        "stderr",
+        "stdout_range",
+        "stderr_range",
+        "stdout_total_bytes",
+        "stderr_total_bytes",
+        "encoding",
+    ] {
+        assert!(
+            restart_v.get(field).is_some(),
+            "missing field {field}: {restart_v}"
+        );
+    }
+    assert_eq!(restart_v["waited_ms"].as_u64().unwrap_or(u64::MAX), 0);
+    let _ = h.run(&["kill", "--signal", "KILL", &job_id]);
+}
+
+#[test]
+fn restart_unknown_job_returns_stable_json_error() {
+    let h = TestHarness::new();
+    let v = h.run(&["restart", "NONEXISTENT_RESTART_JOB"]);
+    assert_envelope(&v, "error", false);
+    assert_eq!(v["error"]["code"].as_str().unwrap_or(""), "job_not_found");
+}
+
+#[test]
+fn restart_with_old_terminal_job_keeps_target_inspectable() {
+    let h = TestHarness::new();
+    let old_v = h.run(&["run", "--wait", "--", "echo", "old-gc-candidate"]);
+    let old_id = old_v["job_id"].as_str().expect("old id").to_string();
+    let _ = wait_until_terminal(&h, &old_id);
+
+    let target_v = h.run(&["run", "--wait", "--", "echo", "target-restart"]);
+    let target_id = target_v["job_id"].as_str().expect("target id").to_string();
+    let _ = wait_until_terminal(&h, &target_id);
+
+    let restart_v = h.run(&["restart", "--wait", &target_id]);
+    assert_envelope(&restart_v, "restart", true);
+    let status_v = h.run(&["status", &target_id]);
+    assert_envelope(&status_v, "status", true);
+    assert_eq!(status_v["job_id"].as_str().unwrap_or(""), target_id);
+}
+
 // ── list ───────────────────────────────────────────────────────────────────────
 
 /// Spec: `list` on an empty (non-existent) root returns jobs=[].
