@@ -3,6 +3,7 @@
 ## Purpose
 TBD - created by archiving change define-agent-exec-run-supervise-v0-1. Update Purpose after archive.
 ## Requirements
+
 ### Requirement: run の監視分離
 
 Issue `#5` verification must distinguish between visible success output and actual workload termination. A job must not be considered reliably complete merely because its logs contain apparent success lines, and regressions for lingering `running` state must include a reproduction shape where the wrapped workload process itself may remain alive after success-like output (MUST).
@@ -185,7 +186,6 @@ When `agent-exec run -- 'echo hello && echo world'` is executed
 Then the job runs as a shell command string through the resolved wrapper
 And shell syntax remains available to that command string
 
-
 ### Requirement: wait サブコマンドの待機期限オプション
 
 `wait` サブコマンドは既定では最大 30 秒までジョブの終端状態を待機しなければならない（MUST）。待機上限は `--until <seconds>` によって上書きできなければならない（MUST）。`--forever` が指定された場合は終端状態になるまで無制限に待機しなければならない（MUST）。`--until` と `--forever` は互いに同時指定を許可してはならない（MUST NOT）。
@@ -235,7 +235,6 @@ Given a user executes `agent-exec wait --timeout-ms 100 <job_id>`
 When clap validates arguments
 Then the command fails with usage error
 And stdout is empty
-
 
 ### Requirement: 環境変数の注入
 
@@ -304,7 +303,6 @@ Then どちらも usage error で失敗する
 **Then**: the canonical polling option is documented in seconds
 **And**: the help text does not imply millisecond-accurate checking
 
-
 ### Requirement: wait サブコマンドの待機期限オプション
 
 `wait` サブコマンドは既定では最大 30 秒までジョブの終端状態を待機しなければならない（MUST）。待機上限は `--until <seconds>` によって上書きできなければならない（MUST）。`--forever` が指定された場合は終端状態になるまで無制限に待機しなければならない（MUST）。`--until` と `--forever` は互いに同時指定を許可してはならない（MUST NOT）。
@@ -366,7 +364,6 @@ Then どちらも usage error で失敗する
 **When**: they look for current run examples
 **Then**: the live examples do not use `snapshot` or `stdout_tail`
 
-
 ### Requirement: tail が range 付き末尾観測を担う
 
 `tail` はログ末尾の観測を担い、`stdout`, `stderr`, `stdout_range`, `stderr_range`, `stdout_total_bytes`, `stderr_total_bytes`, `encoding` を返さなければならない（MUST）。`run` / `start` の head 契約と field 名は共有するが、返却する byte 区間は末尾側でなければならない（MUST）。
@@ -390,7 +387,6 @@ When `run` の JSON が返る
 Then `stdout` と `stdout_range` と `stdout_total_bytes` が含まれる
 And `stdout_log_path` と `stderr_log_path` が含まれる
 And `snapshot` と `final_snapshot` は含まれない
-
 
 ### Requirement: run のジョブ生成と初回 inline output
 
@@ -428,7 +424,6 @@ And `snapshot` と `final_snapshot` は含まれない
 **Then**: the command succeeds
 **And**: the effective wait behavior remains equivalent to `agent-exec start --no-wait <job_id>`
 
-
 ### Requirement: run のジョブ生成と初回 inline output
 
 `run` はジョブを起動し、既定では `--wait --until 10` 相当の待機予算内で観測できた stdout / stderr を初回レスポンスに含めなければならない（MUST）。`--wait` は人間向け CLI では裸指定だけで `true` として受理されなければならない（MUST）。後方互換のため `--wait true|false` も受け付けてよい（MAY）。`--no-wait` は `--wait false --until 0` のエイリアスであり、追加待機なしの launch-only 返却を明示的に選べなければならない（MUST）。
@@ -453,7 +448,6 @@ And `snapshot` と `final_snapshot` は含まれない
 **Given**: a user executes `agent-exec run -- sh -c "sleep 30"` with the default 10-second budget
 **When**: the inline observation returns before the job exits
 **Then**: the JSON omits `exit_code`, `finished_at`, `signal`, and `duration_ms`
-
 
 ### Requirement: wait サブコマンドの待機期限オプション
 
@@ -538,3 +532,32 @@ And `snapshot` と `final_snapshot` は含まれない
 **Then**: `stdout` contains U+FFFD in place of the truncated character
 **And**: `stdout_range[1] - stdout_range[0]` equals 2
 **And**: `stdout_total_bytes` equals 3
+
+### Requirement: restart launch semantics
+
+`restart` MUST launch an existing job from its persisted job definition using the same supervisor path as `start`, while allowing current states `created`, `running`, `exited`, `killed`, and `failed` when the persisted definition is usable.
+
+#### Scenario: restart launches from meta command
+
+**Given**: an existing job has `meta.json.command` set to a command that prints `restart-ok`
+**When**: `agent-exec restart <job_id> --wait` is executed
+**Then**: the launched child process runs the command from `meta.json`
+**And**: the restart response stdout includes `restart-ok`
+
+### Requirement: restart preserves launch-time option semantics
+
+Restart MUST apply persisted runtime controls and observation controls consistently with `start`. Runtime controls stored in metadata, such as timeout, kill-after, progress-every, stdin file, notification settings, environment settings, and shell wrapper, MUST apply to the restarted process. Observation controls passed to `restart`, such as `--wait`, `--until`, `--forever`, `--no-wait`, and `--max-bytes`, MUST affect only the restart response observation.
+
+#### Scenario: restart honors persisted timeout
+
+**Given**: a job definition has a persisted timeout that is shorter than its command runtime
+**When**: `agent-exec restart <job_id> --wait --forever` is executed
+**Then**: the restarted process is terminated by the persisted timeout
+**And**: the response eventually reports a terminal state
+
+#### Scenario: restart honors response no-wait without changing runtime
+
+**Given**: a restartable job command sleeps for several seconds
+**When**: `agent-exec restart --no-wait <job_id>` is executed
+**Then**: restart returns promptly
+**And**: the process continues running unless stopped by persisted runtime controls
