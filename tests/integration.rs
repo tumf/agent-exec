@@ -1152,9 +1152,13 @@ fn run_timeout_terminates_child() {
 fn run_progress_every_updates_state() {
     let h = TestHarness::new();
 
-    // Run a long sleep with progress-every=1s.
-    let run_v = h.run(&["run", "--progress-every", "1", "sleep", "5"]);
-    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+    // Run a long sleep with progress-every=1s. Use `--` so the child command
+    // is never interpreted as an agent-exec option when the CLI surface changes.
+    let run_v = h.run(&["run", "--progress-every", "1", "--", "sleep", "5"]);
+    let job_id = run_v["job_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("run response missing job_id: {run_v}"))
+        .to_string();
 
     // Wait for at least one progress tick.
     std::thread::sleep(std::time::Duration::from_millis(1500));
@@ -7185,4 +7189,206 @@ fn rm_alias_dry_run_all_matches_delete() {
         status_v["ok"].as_bool().unwrap_or(false),
         "dry-run rm must not delete the directory: {status_v}"
     );
+}
+
+fn write_compression_config(dir: &std::path::Path, mode: &str) -> std::path::PathBuf {
+    let path = dir.join("config.toml");
+    std::fs::write(&path, format!("[compression]\ndefault = \"{mode}\"\n")).expect("write config");
+    path
+}
+
+#[test]
+fn compression_default_route_and_off_preserve_raw_fields() {
+    let h = TestHarness::new();
+    let v = h.run(&["run", "sh", "-c", "printf 'error: bad\\n'"]);
+    assert_envelope(&v, "run", true);
+    assert_eq!(v["compression"]["mode"].as_str(), Some("route"));
+    assert_eq!(v["stdout"].as_str(), Some("error: bad\n"));
+    assert!(v.get("stdout_range").is_some());
+    assert!(v.get("stdout_total_bytes").is_some());
+    assert_eq!(v["encoding"].as_str(), Some("utf-8-lossy"));
+
+    let off = h.run(&["run", "--compress", "off", "echo", "hi"]);
+    assert_envelope(&off, "run", true);
+    assert!(
+        off.get("compression").is_none(),
+        "off must omit compression: {off}"
+    );
+}
+
+#[test]
+fn compression_rtk_alias_and_conflict_behaviour() {
+    let h = TestHarness::new();
+    let a = h.run(&[
+        "run",
+        "--compress",
+        "errors",
+        "sh",
+        "-c",
+        "printf 'error: bad\\n'",
+    ]);
+    let b = h.run(&[
+        "run",
+        "--rtk",
+        "errors",
+        "sh",
+        "-c",
+        "printf 'error: bad\\n'",
+    ]);
+    assert_eq!(a["compression"]["mode"].as_str(), Some("errors"));
+    assert_eq!(b["compression"]["mode"].as_str(), Some("errors"));
+    assert_eq!(a["compression"]["strategy"], b["compression"]["strategy"]);
+    assert_usage_error(
+        &[
+            "run",
+            "--compress",
+            "errors",
+            "--rtk",
+            "logs",
+            "--",
+            "echo",
+            "hi",
+        ],
+        Some(h.root()),
+    );
+    assert_usage_error(&["run", "--compress", "auto", "echo", "hi"], Some(h.root()));
+}
+
+#[test]
+fn compression_config_default_and_cli_precedence() {
+    let h = TestHarness::new();
+    let cfg_home = tempfile::tempdir().expect("config tempdir");
+    let cfg_path = write_compression_config(cfg_home.path(), "off");
+    let cfg_arg = cfg_path.to_str().expect("config path utf8");
+
+    let off = h.run(&["run", "--config", cfg_arg, "echo", "hi"]);
+    assert_envelope(&off, "run", true);
+    assert!(
+        off.get("compression").is_none(),
+        "config off should omit compression: {off}"
+    );
+
+    let route = h.run(&[
+        "run",
+        "--config",
+        cfg_arg,
+        "--compress",
+        "route",
+        "echo",
+        "hi",
+    ]);
+    assert_eq!(route["compression"]["mode"].as_str(), Some("route"));
+
+    let invalid_cfg_path = write_compression_config(cfg_home.path(), "auto");
+    let invalid_cfg_arg = invalid_cfg_path.to_str().expect("invalid config path utf8");
+    let invalid = h.run(&["run", "--config", invalid_cfg_arg, "echo", "hi"]);
+    assert_envelope(&invalid, "error", false);
+    assert_eq!(invalid["error"]["code"].as_str(), Some("config_error"));
+}
+
+#[test]
+fn compression_is_wired_for_start_restart_and_tail() {
+    let h = TestHarness::new();
+    let create = h.run(&["create", "sh", "-c", "printf 'same\\nsame\\n'"]);
+    let job_id = create["job_id"].as_str().unwrap().to_string();
+
+    let start = h.run(&["start", "--compress", "logs", &job_id]);
+    assert_envelope(&start, "start", true);
+    assert_eq!(start["compression"]["mode"].as_str(), Some("logs"));
+
+    let tail = h.run(&["tail", "--rtk", "logs", &job_id]);
+    assert_envelope(&tail, "tail", true);
+    assert_eq!(tail["compression"]["mode"].as_str(), Some("logs"));
+    assert!(
+        tail["compression"]["stdout"]
+            .as_str()
+            .unwrap_or("")
+            .contains("repeated 2x"),
+        "tail logs compression should deduplicate: {tail}"
+    );
+
+    let restart = h.run(&["restart", "--compress", "errors", &job_id]);
+    assert_envelope(&restart, "restart", true);
+    assert_eq!(restart["compression"]["mode"].as_str(), Some("errors"));
+}
+
+#[test]
+fn compression_modes_have_behavior_for_errors_logs_and_json() {
+    let h = TestHarness::new();
+    let errors = h.run(&[
+        "run",
+        "--compress",
+        "errors",
+        "sh",
+        "-c",
+        "printf 'ok\\nerror: boom\\n'",
+    ]);
+    assert_eq!(
+        errors["compression"]["detected_kind"].as_str(),
+        Some("errors")
+    );
+    assert_eq!(
+        errors["compression"]["stdout"].as_str(),
+        Some("error: boom")
+    );
+
+    let logs = h.run(&[
+        "run",
+        "--compress",
+        "logs",
+        "sh",
+        "-c",
+        "printf 'x\\nx\\ny\\n'",
+    ]);
+    assert!(
+        logs["compression"]["stdout"]
+            .as_str()
+            .unwrap_or("")
+            .contains("repeated 2x")
+    );
+
+    let json = h.run(&[
+        "run",
+        "--compress",
+        "json",
+        "sh",
+        "-c",
+        "printf '{\\\"a\\\":1,\\\"b\\\":[2]}'",
+    ]);
+    assert!(
+        json["compression"]["stdout"]
+            .as_str()
+            .unwrap_or("")
+            .contains("object keys=2")
+    );
+}
+
+#[test]
+fn compression_schema_and_help_list_modes_without_auto() {
+    let h = TestHarness::new();
+    let schema = h.run(&["schema"]);
+    let modes = &schema["schema"]["definitions"]["CompressionData"]["properties"]["mode"]["enum"];
+    assert!(
+        modes
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v.as_str() == Some("route"))
+    );
+    assert!(
+        !modes
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v.as_str() == Some("auto"))
+    );
+
+    let output = Command::new(binary())
+        .args(["run", "--help"])
+        .output()
+        .expect("run help");
+    let help = String::from_utf8_lossy(&output.stdout);
+    assert!(help.contains("--compress <MODE>"));
+    assert!(help.contains("--rtk <MODE>"));
+    assert!(help.contains("route"));
 }

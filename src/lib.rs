@@ -4,6 +4,7 @@
 /// implementation of the sub-commands: create, run, start, restart, status, tail,
 /// wait, kill, list, schema, install-skills, and completions.
 pub mod completions;
+pub mod compress;
 pub mod config;
 pub mod create;
 pub mod delete;

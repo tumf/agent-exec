@@ -10,6 +10,7 @@ use std::ffi::OsString;
 
 use tracing_subscriber::EnvFilter;
 
+use agent_exec::compress::CompressionMode;
 use agent_exec::jobstore::{AmbiguousJobId, InvalidJobState, JobIdCollisionExhausted, JobNotFound};
 use agent_exec::schema::ErrorResponse;
 use agent_exec::tag::InvalidTag;
@@ -216,50 +217,39 @@ enum Command {
         /// Override jobs root directory.
         #[arg(long)]
         root: Option<String>,
-
         /// Disable best-effort automatic GC for this invocation.
         #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue)]
         no_auto_gc: bool,
-
         /// Auto-GC retention window override (e.g. 30d, 24h).
         #[arg(long, value_name = "DURATION")]
         auto_gc_older_than: Option<String>,
-
         /// Auto-GC max terminal jobs override.
         #[arg(long, value_name = "N")]
         auto_gc_max_jobs: Option<u64>,
-
         /// Auto-GC max terminal bytes override.
         #[arg(long, value_name = "BYTES")]
         auto_gc_max_bytes: Option<u64>,
-
         /// Wait for inline output observation before returning.
-        /// Bare `--wait` is treated as `true`; `--wait true|false` remains supported.
-        #[arg(
-            long,
-            default_value_t = true,
-            default_missing_value = "true",
-            num_args = 0..=1,
-            action = clap::ArgAction::Set
-        )]
+        #[arg(long, default_value_t = true, default_missing_value = "true", num_args = 0..=1, action = clap::ArgAction::Set)]
         wait: bool,
-
         /// Maximum wait time in seconds for inline observation.
         #[arg(long, default_value = "10", conflicts_with = "forever")]
         until: u64,
-
         /// Wait indefinitely for terminal state / observation budget.
         #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue, conflicts_with = "until")]
         forever: bool,
-
         /// Alias for `--wait false --until 0`.
         #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue)]
         no_wait: bool,
-
         /// Maximum bytes to include from the head of each stream.
         #[arg(long, default_value = "65536")]
         max_bytes: u64,
-
+        /// Inline output compression mode.
+        #[arg(long, value_enum, value_name = "MODE")]
+        compress: Option<CompressionMode>,
+        /// Alias for --compress.
+        #[arg(long, value_enum, value_name = "MODE")]
+        rtk: Option<CompressionMode>,
         /// Job ID of a previously created job.
         #[arg(add = ArgValueCompleter::new(agent_exec::completions::complete_created_jobs))]
         job_id: String,
@@ -267,203 +257,106 @@ enum Command {
 
     /// Restart an existing job with the same job ID. Returns JSON with type="restart".
     Restart {
-        /// Override jobs root directory.
         #[arg(long)]
         root: Option<String>,
-
-        /// Signal name to send to a currently running job before relaunch (default: TERM).
         #[arg(long, default_value = "TERM", value_parser = SignalValueParser)]
         signal: String,
-
-        /// Disable best-effort automatic GC for this invocation.
         #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue)]
         no_auto_gc: bool,
-
-        /// Auto-GC retention window override (e.g. 30d, 24h).
         #[arg(long, value_name = "DURATION")]
         auto_gc_older_than: Option<String>,
-
-        /// Auto-GC max terminal jobs override.
         #[arg(long, value_name = "N")]
         auto_gc_max_jobs: Option<u64>,
-
-        /// Auto-GC max terminal bytes override.
         #[arg(long, value_name = "BYTES")]
         auto_gc_max_bytes: Option<u64>,
-
-        /// Wait for inline output observation before returning.
-        /// Bare `--wait` is treated as `true`; `--wait true|false` remains supported.
-        #[arg(
-            long,
-            default_value_t = true,
-            default_missing_value = "true",
-            num_args = 0..=1,
-            action = clap::ArgAction::Set
-        )]
+        #[arg(long, default_value_t = true, default_missing_value = "true", num_args = 0..=1, action = clap::ArgAction::Set)]
         wait: bool,
-
-        /// Maximum wait time in seconds for inline observation.
         #[arg(long, default_value = "10", conflicts_with = "forever")]
         until: u64,
-
-        /// Wait indefinitely for terminal state / observation budget.
         #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue, conflicts_with = "until")]
         forever: bool,
-
-        /// Alias for `--wait false --until 0`.
         #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue)]
         no_wait: bool,
-
-        /// Maximum bytes to include from the head of each stream.
         #[arg(long, default_value = "65536")]
         max_bytes: u64,
-
-        /// Job ID of an existing job.
+        #[arg(long, value_enum, value_name = "MODE")]
+        compress: Option<CompressionMode>,
+        #[arg(long, value_enum, value_name = "MODE")]
+        rtk: Option<CompressionMode>,
         #[arg(value_name = "JOB_ID", add = ArgValueCompleter::new(agent_exec::completions::complete_all_jobs))]
         job_id: String,
     },
 
     /// Run a command as a background job and return JSON immediately.
     Run {
-        /// Disable best-effort automatic GC for this invocation.
         #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue)]
         no_auto_gc: bool,
-
-        /// Auto-GC retention window override (e.g. 30d, 24h).
         #[arg(long, value_name = "DURATION")]
         auto_gc_older_than: Option<String>,
-
-        /// Auto-GC max terminal jobs override.
         #[arg(long, value_name = "N")]
         auto_gc_max_jobs: Option<u64>,
-
-        /// Auto-GC max terminal bytes override.
         #[arg(long, value_name = "BYTES")]
         auto_gc_max_bytes: Option<u64>,
-
-        /// Timeout in seconds; 0 = no timeout.
         #[arg(long, default_value = "0")]
         timeout: u64,
-
-        /// Seconds after SIGTERM to send SIGKILL; 0 = immediate SIGKILL on timeout.
         #[arg(long, default_value = "0")]
         kill_after: u64,
-
-        /// Working directory for the command.
         #[arg(long, value_hint = ValueHint::DirPath)]
         cwd: Option<String>,
-
-        /// Set environment variable KEY=VALUE (may be repeated).
         #[arg(long = "env", value_name = "KEY=VALUE")]
         env_vars: Vec<String>,
-
-        /// Load environment variables from a file (may be repeated, applied in order).
         #[arg(long = "env-file", value_name = "FILE", value_hint = ValueHint::FilePath)]
         env_files: Vec<String>,
-
-        /// Do not inherit the current process environment.
         #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue, conflicts_with = "inherit_env")]
         no_inherit_env: bool,
-
-        /// Inherit the current process environment (default; conflicts with --no-inherit-env).
         #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue, conflicts_with = "no_inherit_env")]
         inherit_env: bool,
-
-        /// Mask secret values in JSON output (key name only, may be repeated).
         #[arg(long = "mask", value_name = "KEY")]
         mask: Vec<String>,
-
-        /// Provide stdin content directly. Use `--stdin -` to read from caller stdin.
         #[arg(long, value_name = "VALUE", conflicts_with = "stdin_file")]
         stdin: Option<String>,
-
-        /// Read stdin content from file and materialize it into the job directory.
         #[arg(long, value_name = "PATH", value_hint = ValueHint::FilePath, conflicts_with = "stdin")]
         stdin_file: Option<String>,
-
-        /// Maximum bytes allowed for materialized stdin.bin (default: 64 MiB).
         #[arg(long, value_name = "BYTES", default_value_t = agent_exec::run::DEFAULT_STDIN_MAX_BYTES)]
         stdin_max_bytes: u64,
-
-        /// Assign a tag to this job (may be repeated; duplicates are deduplicated).
         #[arg(long = "tag", value_name = "TAG", value_parser = parse_stored_tag)]
         tags: Vec<String>,
-
-        /// Override full.log path.
         #[arg(long, value_hint = ValueHint::FilePath)]
         log: Option<String>,
-
-        /// Interval (seconds) at which state.json.updated_at is refreshed; 0 = disabled.
         #[arg(long, default_value = "0")]
         progress_every: u64,
-
-        /// Shell command string to run on job completion; executed via the configured shell
-        /// wrapper. Event JSON is sent to stdin.
-        /// Also sets AGENT_EXEC_EVENT_PATH, AGENT_EXEC_JOB_ID, and AGENT_EXEC_EVENT_TYPE.
         #[arg(long, value_name = "COMMAND")]
         notify_command: Option<String>,
-
-        /// File path that receives one NDJSON `job.finished` event per completed job.
         #[arg(long, value_name = "PATH", value_hint = ValueHint::FilePath)]
         notify_file: Option<String>,
-
-        /// Pattern to match against output lines (enables output-match notifications).
         #[arg(long, value_name = "PATTERN")]
         output_pattern: Option<String>,
-
-        /// Match type for output-match: contains (default) or regex.
         #[arg(long, value_name = "TYPE", value_parser = ["contains", "regex"])]
         output_match_type: Option<String>,
-
-        /// Stream to match: stdout, stderr, or either (default).
         #[arg(long, value_name = "STREAM", value_parser = ["stdout", "stderr", "either"])]
         output_stream: Option<String>,
-
-        /// Shell command string to execute on output match.
         #[arg(long, value_name = "COMMAND")]
         output_command: Option<String>,
-
-        /// File path that receives one NDJSON event per output match.
         #[arg(long = "output-file", value_name = "PATH", value_hint = ValueHint::FilePath)]
         output_file: Option<String>,
-
-        /// Path to a config.toml file to load (overrides XDG default).
         #[arg(long, value_name = "PATH", value_hint = ValueHint::FilePath)]
         config: Option<String>,
-
-        /// Shell wrapper program and flags used to execute command strings
-        /// (e.g. "bash -lc"). Overrides the config file and built-in default.
         #[arg(long, value_name = "PROGRAM AND FLAGS")]
         shell_wrapper: Option<String>,
-
-        /// Wait for inline output observation before returning.
-        /// Bare `--wait` is treated as `true`; `--wait true|false` remains supported.
-        #[arg(
-            long,
-            default_value_t = true,
-            default_missing_value = "true",
-            num_args = 0..=1,
-            action = clap::ArgAction::Set
-        )]
+        #[arg(long, default_value_t = true, default_missing_value = "true", num_args = 0..=1, action = clap::ArgAction::Set)]
         wait: bool,
-
-        /// Maximum wait time in seconds for inline observation.
         #[arg(long, default_value = "10", conflicts_with = "forever")]
         until: u64,
-
-        /// Wait indefinitely for terminal state / observation budget.
         #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue, conflicts_with = "until")]
         forever: bool,
-
-        /// Alias for `--wait false --until 0`.
         #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue)]
         no_wait: bool,
-
-        /// Maximum bytes to include from the head of each stream.
         #[arg(long, default_value = "65536")]
         max_bytes: u64,
-
-        /// Command and arguments to run.
+        #[arg(long, value_enum, value_name = "MODE")]
+        compress: Option<CompressionMode>,
+        #[arg(long, value_enum, value_name = "MODE")]
+        rtk: Option<CompressionMode>,
         #[arg(required = true, trailing_var_arg = true, value_hint = ValueHint::CommandWithArguments)]
         command: Vec<String>,
     },
@@ -484,6 +377,14 @@ enum Command {
         /// Maximum bytes.
         #[arg(long, default_value = "65536")]
         max_bytes: u64,
+
+        /// Include built-in compressed inline output view using the selected mode.
+        #[arg(long, value_enum, value_name = "MODE")]
+        compress: Option<CompressionMode>,
+
+        /// Alias for --compress.
+        #[arg(long, value_enum, value_name = "MODE")]
+        rtk: Option<CompressionMode>,
 
         /// Job ID.
         #[arg(add = ArgValueCompleter::new(agent_exec::completions::complete_all_jobs))]
@@ -854,6 +755,11 @@ fn main() {
             ErrorResponse::new("job_not_found", format!("{e:#}"), false).print();
         } else if e.downcast_ref::<InvalidTag>().is_some() {
             ErrorResponse::new("invalid_tag", format!("{e:#}"), false).print();
+        } else if e
+            .downcast_ref::<agent_exec::config::ConfigError>()
+            .is_some()
+        {
+            ErrorResponse::new("config_error", format!("{e:#}"), false).print();
         } else if e.downcast_ref::<InvalidJobState>().is_some() {
             ErrorResponse::new("invalid_state", format!("{e:#}"), false).print();
         } else if e.downcast_ref::<JobIdCollisionExhausted>().is_some() {
@@ -862,6 +768,8 @@ fn main() {
             ErrorResponse::new("stdin_required", format!("{e:#}"), false).print();
         } else if e.downcast_ref::<agent_exec::run::StdinTooLarge>().is_some() {
             ErrorResponse::new("stdin_too_large", format!("{e:#}"), false).print();
+        } else if format!("{e:#}").contains("parse config file") {
+            ErrorResponse::new("config_error", format!("{e:#}"), false).print();
         } else {
             ErrorResponse::new("internal_error", format!("{e:#}"), false).print();
         }
@@ -927,6 +835,22 @@ where
     }
 
     normalized
+}
+
+fn resolve_compression_or_exit(
+    compress: Option<CompressionMode>,
+    rtk: Option<CompressionMode>,
+    cfg: &agent_exec::config::AgentExecConfig,
+) -> CompressionMode {
+    match agent_exec::compress::resolve_cli_mode(compress, rtk) {
+        Ok(Some(mode)) => mode,
+        Ok(None) => cfg.compression.default_mode(),
+        Err(message) => {
+            Cli::command()
+                .error(clap::error::ErrorKind::ArgumentConflict, message)
+                .exit();
+        }
+    }
 }
 
 fn run(cli: Cli) -> Result<()> {
@@ -1000,12 +924,15 @@ fn run(cli: Cli) -> Result<()> {
             forever,
             no_wait,
             max_bytes,
+            compress,
+            rtk,
             job_id,
         } => {
             let effective_wait = if no_wait { false } else { wait };
             let effective_until_seconds = if no_wait { 0 } else { until };
             let effective_forever = if no_wait { false } else { forever };
             let cfg = agent_exec::config::resolve_config(None)?;
+            let compression_mode = resolve_compression_or_exit(compress, rtk, &cfg);
             agent_exec::start::execute(agent_exec::start::StartOpts {
                 job_id: &job_id,
                 root: root.as_deref(),
@@ -1018,6 +945,7 @@ fn run(cli: Cli) -> Result<()> {
                 until_seconds: effective_until_seconds,
                 forever: effective_forever,
                 max_bytes,
+                compression_mode,
             })?;
         }
 
@@ -1033,12 +961,15 @@ fn run(cli: Cli) -> Result<()> {
             forever,
             no_wait,
             max_bytes,
+            compress,
+            rtk,
             job_id,
         } => {
             let effective_wait = if no_wait { false } else { wait };
             let effective_until_seconds = if no_wait { 0 } else { until };
             let effective_forever = if no_wait { false } else { forever };
             let cfg = agent_exec::config::resolve_config(None)?;
+            let compression_mode = resolve_compression_or_exit(compress, rtk, &cfg);
             agent_exec::restart::execute(agent_exec::restart::RestartOpts {
                 job_id: &job_id,
                 root: root.as_deref(),
@@ -1052,6 +983,7 @@ fn run(cli: Cli) -> Result<()> {
                 until_seconds: effective_until_seconds,
                 forever: effective_forever,
                 max_bytes,
+                compression_mode,
             })?;
         }
 
@@ -1088,6 +1020,8 @@ fn run(cli: Cli) -> Result<()> {
             forever,
             no_wait,
             max_bytes,
+            compress,
+            rtk,
             command,
         } => {
             // --inherit-env and --no-inherit-env are mutually exclusive (enforced by clap).
@@ -1104,6 +1038,7 @@ fn run(cli: Cli) -> Result<()> {
             let effective_until_seconds = if no_wait { 0 } else { until };
             let effective_forever = if no_wait { false } else { forever };
             let cfg = agent_exec::config::resolve_config(config.as_deref())?;
+            let compression_mode = resolve_compression_or_exit(compress, rtk, &cfg);
             agent_exec::run::execute(agent_exec::run::RunOpts {
                 command,
                 root: root.as_deref(),
@@ -1116,6 +1051,7 @@ fn run(cli: Cli) -> Result<()> {
                 until_seconds: effective_until_seconds,
                 forever: effective_forever,
                 max_bytes,
+                compression_mode,
                 timeout_ms: timeout.saturating_mul(1000),
                 kill_after_ms: kill_after.saturating_mul(1000),
                 cwd: cwd.as_deref(),
@@ -1149,13 +1085,18 @@ fn run(cli: Cli) -> Result<()> {
         Command::Tail {
             tail_lines,
             max_bytes,
+            compress,
+            rtk,
             job_id,
         } => {
+            let cfg = agent_exec::config::resolve_config(None)?;
+            let compression_mode = resolve_compression_or_exit(compress, rtk, &cfg);
             agent_exec::tail::execute(agent_exec::tail::TailOpts {
                 job_id: &job_id,
                 root: root.as_deref(),
                 tail_lines,
                 max_bytes,
+                compression_mode,
             })?;
         }
 

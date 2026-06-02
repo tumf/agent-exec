@@ -67,6 +67,7 @@ pub struct RunOpts<'a> {
     pub forever: bool,
     /// Maximum bytes to include from the head of each stream.
     pub max_bytes: u64,
+    pub compression_mode: crate::compress::CompressionMode,
     /// Timeout in milliseconds; 0 = no timeout.
     pub timeout_ms: u64,
     /// Milliseconds after SIGTERM before SIGKILL; 0 = immediate SIGKILL.
@@ -125,6 +126,7 @@ impl<'a> Default for RunOpts<'a> {
             until_seconds: 10,
             forever: false,
             max_bytes: 65536,
+            compression_mode: crate::compress::CompressionMode::default(),
             timeout_ms: 0,
             kill_after_ms: 0,
             cwd: None,
@@ -622,6 +624,14 @@ pub fn execute(opts: RunOpts) -> Result<()> {
         opts.max_bytes,
     )?;
     let elapsed_ms = elapsed_start.elapsed().as_millis() as u64;
+    let compression = crate::compress::compress(crate::compress::CompressionInput {
+        command: &opts.command,
+        stdout: &observation.stdout,
+        stderr: &observation.stderr,
+        stdout_original_bytes: observation.stdout_total_bytes,
+        stderr_original_bytes: observation.stderr_total_bytes,
+        mode: opts.compression_mode,
+    });
 
     if !opts.no_auto_gc {
         let mut auto_cfg = opts.auto_gc_config.clone();
@@ -661,6 +671,7 @@ pub fn execute(opts: RunOpts) -> Result<()> {
             finished_at: observation.finished_at,
             signal: observation.signal,
             duration_ms: observation.duration_ms,
+            compression,
         },
     );
     response.print();

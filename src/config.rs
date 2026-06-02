@@ -6,6 +6,19 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
+use crate::compress::CompressionMode;
+
+#[derive(Debug)]
+pub struct ConfigError(pub String);
+
+impl std::fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for ConfigError {}
+
 /// Top-level config struct for `config.toml`.
 #[derive(Debug, Default, Deserialize)]
 pub struct AgentExecConfig {
@@ -13,6 +26,19 @@ pub struct AgentExecConfig {
     pub shell: ShellConfig,
     #[serde(default)]
     pub gc: GcConfig,
+    #[serde(default)]
+    pub compression: CompressionConfig,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct CompressionConfig {
+    pub default: Option<CompressionMode>,
+}
+
+impl CompressionConfig {
+    pub fn default_mode(&self) -> CompressionMode {
+        self.default.unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -71,8 +97,12 @@ pub fn load_config(path: &Path) -> Result<Option<AgentExecConfig>> {
     }
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("read config file {}", path.display()))?;
-    let cfg: AgentExecConfig =
-        toml::from_str(&raw).with_context(|| format!("parse config file {}", path.display()))?;
+    let cfg: AgentExecConfig = toml::from_str(&raw).map_err(|e| {
+        anyhow::Error::new(ConfigError(format!(
+            "parse config file {}: {e}",
+            path.display()
+        )))
+    })?;
     Ok(Some(cfg))
 }
 
@@ -210,6 +240,36 @@ unix = ["bash", "-lc"]
             cfg.shell.unix,
             Some(vec!["bash".to_string(), "-lc".to_string()])
         );
+    }
+
+    #[test]
+    fn compression_default_is_route_when_missing() {
+        let cfg = AgentExecConfig::default();
+        assert_eq!(cfg.compression.default_mode(), CompressionMode::Route);
+    }
+
+    #[test]
+    fn load_config_parses_compression_off_and_route() {
+        for (raw, expected) in [
+            ("[compression]\ndefault = \"off\"\n", CompressionMode::Off),
+            (
+                "[compression]\ndefault = \"route\"\n",
+                CompressionMode::Route,
+            ),
+        ] {
+            let tmp = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(tmp.path(), raw).unwrap();
+            let cfg = load_config(tmp.path()).unwrap().unwrap();
+            assert_eq!(cfg.compression.default_mode(), expected);
+        }
+    }
+
+    #[test]
+    fn load_config_rejects_invalid_compression_mode() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), "[compression]\ndefault = \"auto\"\n").unwrap();
+        let err = load_config(tmp.path()).unwrap_err();
+        assert!(err.to_string().contains("parse config file"));
     }
 
     #[test]

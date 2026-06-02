@@ -6,7 +6,11 @@
   "definitions": {
     "Envelope": {
       "type": "object",
-      "required": ["schema_version", "ok", "type"],
+      "required": [
+        "schema_version",
+        "ok",
+        "type"
+      ],
       "properties": {
         "schema_version": {
           "type": "string",
@@ -25,7 +29,11 @@
     },
     "ErrorDetail": {
       "type": "object",
-      "required": ["code", "message", "retryable"],
+      "required": [
+        "code",
+        "message",
+        "retryable"
+      ],
       "properties": {
         "code": {
           "type": "string",
@@ -43,14 +51,24 @@
     },
     "ErrorResponse": {
       "allOf": [
-        { "$ref": "#/definitions/Envelope" },
+        {
+          "$ref": "#/definitions/Envelope"
+        },
         {
           "type": "object",
-          "required": ["error"],
+          "required": [
+            "error"
+          ],
           "properties": {
-            "ok": { "const": false },
-            "type": { "const": "error" },
-            "error": { "$ref": "#/definitions/ErrorDetail" }
+            "ok": {
+              "const": false
+            },
+            "type": {
+              "const": "error"
+            },
+            "error": {
+              "$ref": "#/definitions/ErrorDetail"
+            }
           }
         }
       ]
@@ -58,174 +76,458 @@
     "Snapshot": {
       "type": "object",
       "required": [
-        "stdout_tail", "stderr_tail", "truncated", "encoding",
-        "stdout_observed_bytes", "stderr_observed_bytes",
-        "stdout_included_bytes", "stderr_included_bytes"
+        "stdout_tail",
+        "stderr_tail",
+        "truncated",
+        "encoding",
+        "stdout_observed_bytes",
+        "stderr_observed_bytes",
+        "stdout_included_bytes",
+        "stderr_included_bytes"
       ],
       "properties": {
-        "stdout_tail": { "type": "string" },
-        "stderr_tail": { "type": "string" },
-        "truncated": { "type": "boolean" },
-        "encoding": { "type": "string" },
-        "stdout_observed_bytes": { "type": "integer", "minimum": 0 },
-        "stderr_observed_bytes": { "type": "integer", "minimum": 0 },
-        "stdout_included_bytes": { "type": "integer", "minimum": 0 },
-        "stderr_included_bytes": { "type": "integer", "minimum": 0 }
+        "stdout_tail": {
+          "type": "string"
+        },
+        "stderr_tail": {
+          "type": "string"
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "encoding": {
+          "type": "string"
+        },
+        "stdout_observed_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "stderr_observed_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "stdout_included_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "stderr_included_bytes": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "CompressionData": {
+      "type": "object",
+      "required": [
+        "mode", "applied", "detected_kind", "stdout", "stderr",
+        "stdout_original_bytes", "stderr_original_bytes",
+        "stdout_compressed_bytes", "stderr_compressed_bytes", "omitted", "strategy"
+      ],
+      "properties": {
+        "mode": { "type": "string", "enum": ["off", "route", "errors", "tests", "logs", "git", "json", "summary"] },
+        "applied": { "type": "boolean" },
+        "detected_kind": { "type": "string" },
+        "stdout": { "type": "string" },
+        "stderr": { "type": "string" },
+        "stdout_original_bytes": { "type": "integer", "minimum": 0 },
+        "stderr_original_bytes": { "type": "integer", "minimum": 0 },
+        "stdout_compressed_bytes": { "type": "integer", "minimum": 0 },
+        "stderr_compressed_bytes": { "type": "integer", "minimum": 0 },
+        "omitted": { "type": "boolean" },
+        "strategy": { "type": "array", "items": { "type": "string" } }
       }
     },
     "RunLikeResponse": {
       "allOf": [
-        { "$ref": "#/definitions/Envelope" },
+        {
+          "$ref": "#/definitions/Envelope"
+        },
         {
           "type": "object",
           "required": [
-            "job_id", "state",
-            "stdout_log_path", "stderr_log_path",
-            "waited_ms", "elapsed_ms"
+            "job_id",
+            "state",
+            "stdout_log_path",
+            "stderr_log_path",
+            "waited_ms",
+            "elapsed_ms",
+            "stdout",
+            "stderr",
+            "stdout_range",
+            "stderr_range",
+            "stdout_total_bytes",
+            "stderr_total_bytes",
+            "encoding"
           ],
           "properties": {
-            "type": { "enum": ["run", "restart"] },
-            "job_id": { "type": "string" },
+            "type": {
+              "enum": [
+                "run",
+                "restart"
+              ]
+            },
+            "job_id": {
+              "type": "string"
+            },
             "state": {
               "type": "string",
-              "enum": ["running", "exited", "killed", "failed", "unknown"]
+              "enum": [
+                "running",
+                "exited",
+                "killed",
+                "failed",
+                "unknown"
+              ]
             },
             "env_vars": {
               "type": "array",
-              "items": { "type": "string" },
+              "items": {
+                "type": "string"
+              },
               "description": "KEY=VALUE strings with masked values replaced by ***."
             },
-            "snapshot": { "$ref": "#/definitions/Snapshot" },
-            "stdout_log_path": { "type": "string" },
-            "stderr_log_path": { "type": "string" },
-            "waited_ms": { "type": "integer", "minimum": 0 },
-            "elapsed_ms": { "type": "integer", "minimum": 0 }
+            "snapshot": {
+              "$ref": "#/definitions/Snapshot"
+            },
+            "stdout_log_path": {
+              "type": "string"
+            },
+            "stderr_log_path": {
+              "type": "string"
+            },
+            "waited_ms": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "elapsed_ms": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "stdout_range": {
+              "type": "array",
+              "items": {
+                "type": "integer"
+              },
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "stderr_range": {
+              "type": "array",
+              "items": {
+                "type": "integer"
+              },
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "stdout_total_bytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "stderr_total_bytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "encoding": {
+              "type": "string"
+            },
+            "compression": {
+              "$ref": "#/definitions/CompressionData"
+            }
           }
         }
       ]
     },
     "StatusResponse": {
       "allOf": [
-        { "$ref": "#/definitions/Envelope" },
+        {
+          "$ref": "#/definitions/Envelope"
+        },
         {
           "type": "object",
-          "required": ["job_id", "state", "started_at"],
+          "required": [
+            "job_id",
+            "state",
+            "started_at"
+          ],
           "properties": {
-            "type": { "const": "status" },
-            "job_id": { "type": "string" },
+            "type": {
+              "const": "status"
+            },
+            "job_id": {
+              "type": "string"
+            },
             "state": {
               "type": "string",
-              "enum": ["running", "exited", "killed", "failed", "unknown"]
+              "enum": [
+                "running",
+                "exited",
+                "killed",
+                "failed",
+                "unknown"
+              ]
             },
-            "exit_code": { "type": ["integer", "null"] },
-            "started_at": { "type": "string", "format": "date-time" },
-            "finished_at": { "type": ["string", "null"], "format": "date-time" }
+            "exit_code": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "started_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "finished_at": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "date-time"
+            }
           }
         }
       ]
     },
     "TailResponse": {
       "allOf": [
-        { "$ref": "#/definitions/Envelope" },
+        {
+          "$ref": "#/definitions/Envelope"
+        },
         {
           "type": "object",
           "required": [
-            "job_id", "stdout_tail", "stderr_tail", "truncated", "encoding",
-            "stdout_log_path", "stderr_log_path",
-            "stdout_observed_bytes", "stderr_observed_bytes",
-            "stdout_included_bytes", "stderr_included_bytes"
+            "job_id",
+            "stdout",
+            "stderr",
+            "encoding",
+            "stdout_log_path",
+            "stderr_log_path",
+            "stdout_range",
+            "stderr_range",
+            "stdout_total_bytes",
+            "stderr_total_bytes"
           ],
           "properties": {
-            "type": { "const": "tail" },
-            "job_id": { "type": "string" },
-            "stdout_tail": { "type": "string" },
-            "stderr_tail": { "type": "string" },
-            "truncated": { "type": "boolean" },
-            "encoding": { "type": "string" },
-            "stdout_log_path": { "type": "string" },
-            "stderr_log_path": { "type": "string" },
-            "stdout_observed_bytes": { "type": "integer", "minimum": 0 },
-            "stderr_observed_bytes": { "type": "integer", "minimum": 0 },
-            "stdout_included_bytes": { "type": "integer", "minimum": 0 },
-            "stderr_included_bytes": { "type": "integer", "minimum": 0 }
+            "type": {
+              "const": "tail"
+            },
+            "job_id": {
+              "type": "string"
+            },
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "encoding": {
+              "type": "string"
+            },
+            "stdout_log_path": {
+              "type": "string"
+            },
+            "stderr_log_path": {
+              "type": "string"
+            },
+            "stdout_range": {
+              "type": "array",
+              "items": {
+                "type": "integer"
+              },
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "stderr_range": {
+              "type": "array",
+              "items": {
+                "type": "integer"
+              },
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "stdout_total_bytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "stderr_total_bytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "compression": {
+              "$ref": "#/definitions/CompressionData"
+            }
           }
         }
       ]
     },
     "WaitResponse": {
       "allOf": [
-        { "$ref": "#/definitions/Envelope" },
+        {
+          "$ref": "#/definitions/Envelope"
+        },
         {
           "type": "object",
-          "required": ["job_id", "state"],
+          "required": [
+            "job_id",
+            "state"
+          ],
           "properties": {
-            "type": { "const": "wait" },
-            "job_id": { "type": "string" },
+            "type": {
+              "const": "wait"
+            },
+            "job_id": {
+              "type": "string"
+            },
             "state": {
               "type": "string",
-              "enum": ["running", "exited", "killed", "failed", "unknown"]
+              "enum": [
+                "running",
+                "exited",
+                "killed",
+                "failed",
+                "unknown"
+              ]
             },
-            "exit_code": { "type": ["integer", "null"] }
+            "exit_code": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
           }
         }
       ]
     },
     "KillResponse": {
       "allOf": [
-        { "$ref": "#/definitions/Envelope" },
+        {
+          "$ref": "#/definitions/Envelope"
+        },
         {
           "type": "object",
-          "required": ["job_id", "signal"],
+          "required": [
+            "job_id",
+            "signal"
+          ],
           "properties": {
-            "type": { "const": "kill" },
-            "job_id": { "type": "string" },
-            "signal": { "type": "string" }
+            "type": {
+              "const": "kill"
+            },
+            "job_id": {
+              "type": "string"
+            },
+            "signal": {
+              "type": "string"
+            }
           }
         }
       ]
     },
     "JobSummary": {
       "type": "object",
-      "required": ["job_id", "state", "started_at"],
+      "required": [
+        "job_id",
+        "state",
+        "started_at"
+      ],
       "properties": {
-        "job_id": { "type": "string" },
+        "job_id": {
+          "type": "string"
+        },
         "state": {
           "type": "string",
-          "enum": ["running", "exited", "killed", "failed", "unknown"]
+          "enum": [
+            "running",
+            "exited",
+            "killed",
+            "failed",
+            "unknown"
+          ]
         },
-        "exit_code": { "type": ["integer", "null"] },
-        "started_at": { "type": "string", "format": "date-time" },
-        "finished_at": { "type": ["string", "null"], "format": "date-time" },
-        "updated_at": { "type": ["string", "null"], "format": "date-time" }
+        "exit_code": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "started_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "finished_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "updated_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
       }
     },
     "ListResponse": {
       "allOf": [
-        { "$ref": "#/definitions/Envelope" },
+        {
+          "$ref": "#/definitions/Envelope"
+        },
         {
           "type": "object",
-          "required": ["root", "jobs", "truncated", "skipped"],
+          "required": [
+            "root",
+            "jobs",
+            "truncated",
+            "skipped"
+          ],
           "properties": {
-            "type": { "const": "list" },
-            "root": { "type": "string" },
+            "type": {
+              "const": "list"
+            },
+            "root": {
+              "type": "string"
+            },
             "jobs": {
               "type": "array",
-              "items": { "$ref": "#/definitions/JobSummary" }
+              "items": {
+                "$ref": "#/definitions/JobSummary"
+              }
             },
-            "truncated": { "type": "boolean" },
-            "skipped": { "type": "integer", "minimum": 0 }
+            "truncated": {
+              "type": "boolean"
+            },
+            "skipped": {
+              "type": "integer",
+              "minimum": 0
+            }
           }
         }
       ]
     },
     "SchemaResponse": {
       "allOf": [
-        { "$ref": "#/definitions/Envelope" },
+        {
+          "$ref": "#/definitions/Envelope"
+        },
         {
           "type": "object",
-          "required": ["schema_format", "schema", "generated_at"],
+          "required": [
+            "schema_format",
+            "schema",
+            "generated_at"
+          ],
           "properties": {
-            "type": { "const": "schema" },
+            "type": {
+              "const": "schema"
+            },
             "schema_format": {
               "type": "string",
               "const": "json-schema-draft-07",
@@ -242,16 +544,100 @@
           }
         }
       ]
+    },
+    "Compression": {
+      "type": "object",
+      "required": [
+        "mode",
+        "applied",
+        "detected_kind",
+        "stdout",
+        "stderr",
+        "stdout_original_bytes",
+        "stderr_original_bytes",
+        "stdout_compressed_bytes",
+        "stderr_compressed_bytes",
+        "omitted",
+        "strategy"
+      ],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "off",
+            "route",
+            "errors",
+            "tests",
+            "logs",
+            "git",
+            "json",
+            "summary"
+          ]
+        },
+        "applied": {
+          "type": "boolean"
+        },
+        "detected_kind": {
+          "type": "string"
+        },
+        "stdout": {
+          "type": "string"
+        },
+        "stderr": {
+          "type": "string"
+        },
+        "stdout_original_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "stderr_original_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "stdout_compressed_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "stderr_compressed_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "omitted": {
+          "type": "boolean"
+        },
+        "strategy": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
     }
   },
   "oneOf": [
-    { "$ref": "#/definitions/ErrorResponse" },
-    { "$ref": "#/definitions/RunLikeResponse" },
-    { "$ref": "#/definitions/StatusResponse" },
-    { "$ref": "#/definitions/TailResponse" },
-    { "$ref": "#/definitions/WaitResponse" },
-    { "$ref": "#/definitions/KillResponse" },
-    { "$ref": "#/definitions/ListResponse" },
-    { "$ref": "#/definitions/SchemaResponse" }
+    {
+      "$ref": "#/definitions/ErrorResponse"
+    },
+    {
+      "$ref": "#/definitions/RunLikeResponse"
+    },
+    {
+      "$ref": "#/definitions/StatusResponse"
+    },
+    {
+      "$ref": "#/definitions/TailResponse"
+    },
+    {
+      "$ref": "#/definitions/WaitResponse"
+    },
+    {
+      "$ref": "#/definitions/KillResponse"
+    },
+    {
+      "$ref": "#/definitions/ListResponse"
+    },
+    {
+      "$ref": "#/definitions/SchemaResponse"
+    }
   ]
 }
