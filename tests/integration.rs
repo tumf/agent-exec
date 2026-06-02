@@ -7352,19 +7352,53 @@ fn compression_modes_have_behavior_for_errors_logs_and_json() {
             .contains("repeated 20x")
     );
 
+    let raw_json = "{\"a\":\"012345678901234567890123456789012345678901234567890123456789\",\"b\":[2,3,4,5,6,7,8,9,10,11]}";
     let json = h.run(&[
         "run",
         "--compress",
         "json",
         "sh",
         "-c",
-        "printf '{\\\"a\\\":\\\"012345678901234567890123456789\\\",\\\"b\\\":[2,3,4,5]}'",
+        &format!("printf '{raw_json}'"),
     ]);
+    assert_eq!(json["compression"]["applied"].as_bool(), Some(true));
+    assert_eq!(json["stdout"].as_str(), Some(raw_json));
     assert!(
         json["compression"]["stdout"]
             .as_str()
             .unwrap_or("")
             .contains("object keys=2")
+    );
+    assert!(
+        json["compression"]["stdout"].as_str().unwrap_or("").len()
+            < json["stdout"].as_str().unwrap_or("").len(),
+        "json compression should be smaller than raw output: {json}"
+    );
+}
+
+#[test]
+fn compression_json_expansion_guard() {
+    let h = TestHarness::new();
+    let raw_json = "{\"a\":1}";
+    let json = h.run(&[
+        "run",
+        "--compress",
+        "json",
+        "sh",
+        "-c",
+        "printf '{\\\"a\\\":1}'",
+    ]);
+    assert_envelope(&json, "run", true);
+    assert_eq!(json["stdout"].as_str(), Some(raw_json));
+    assert_eq!(json["compression"]["applied"].as_bool(), Some(false));
+    assert_eq!(json["compression"]["stdout"].as_str(), Some(""));
+    assert!(
+        json["compression"]["strategy"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|strategy| strategy.as_str() == Some("expansion-guard")),
+        "json compression should report expansion guard: {json}"
     );
 }
 
