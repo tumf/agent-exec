@@ -27,7 +27,7 @@ help:
 	@echo "  make fmt-check          - Check formatting (no changes)"
 	@echo "  make lint              - Run clippy linter (CI style)"
 	@echo "  make check             - Run fmt-check, lint, and test"
-	@echo "  make index             - Build Serena symbol index (.serena/cache)"
+	@echo "  make index             - Build fast indexes (LEANN + TLDR warm cache)"
 	@echo "  make setup             - Setup development environment"
 	@echo "  make pre-commit        - Run prek on all files (matches CI)"
 	@echo "  make pre-commit-hooks  - Install git pre-commit hooks (prek)"
@@ -83,18 +83,10 @@ lint:
 check: fmt-check lint test
 	@echo "All checks passed!"
 
-# Build Serena symbol index under .serena/cache
-#index:
-#	@echo "Indexing project for Serena..."
-#	@command -v serena >/dev/null 2>&1 || (echo "serena CLI not found. Install it first (e.g. 'uv tool install serena')." && exit 1)
-#	serena project index . --log-level INFO
-#	@echo "Serena index complete."
-
 # Create fast indexes (LEANN + TLDR warm cache) - runs in parallel
 index:
 	@echo "Starting parallel index creation..."
 	@( \
-		(echo "[Serena] Creating index..." && uvx --from git+https://github.com/oraios/serena serena project index && echo "[Serena] ✓ Complete" || echo "[Serena] ✗ Failed") & \
 		(echo "[LEANN] Creating index..." && leann build openspec-spec --docs ./openspec/specs --force && echo "[LEANN] ✓ Complete" || echo "[LEANN] ✗ Failed") & \
 		(echo "[TLDR] Warming cache..." && tldr warm . --lang rust && echo "[TLDR] ✓ Complete" || echo "[TLDR] ✗ Failed") & \
 		wait; \
