@@ -29,6 +29,24 @@ Resolved mode が `off` 以外の場合、レスポンスは `compression` objec
 
 Compression は、compressed view が対象 raw observed output より大きい、または同じ大きさになる場合、その compressed text をレスポンスへ含めてはならない（MUST NOT）。この expansion guard が発動した場合、レスポンスは bounded な `compression` object を含み、`compression.applied=false` と guard reason を示す strategy を返さなければならない（MUST）。
 
+
+#### Scenario: json compression applies when shape summary is smaller than raw output
+
+**Given**: a command emits a JSON object whose raw observed output is larger than the JSON shape summary
+**When**: `agent-exec run --compress json -- <cmd>` is executed
+**Then**: the response includes `compression.applied=true`
+**And**: `compression.stdout` contains an object shape summary such as `object keys=2`
+**And**: canonical raw `stdout` still contains the original JSON output
+
+#### Scenario: json compression guard suppresses non-smaller shape summary
+
+**Given**: a command emits a short JSON object whose JSON shape summary would be greater than or equal to the raw observed output size
+**When**: `agent-exec run --compress json -- <cmd>` is executed
+**Then**: the response includes `compression.applied=false`
+**And**: `compression.strategy` includes `expansion-guard`
+**And**: `compression.stdout` is empty
+**And**: canonical raw `stdout` still contains the original JSON output
+
 #### Scenario: tail が末尾観測 API である
 
 **Given**: 実行中または完了済みのジョブが存在する
