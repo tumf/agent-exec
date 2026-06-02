@@ -7013,6 +7013,81 @@ fn ps_all_includes_running_jobs_from_other_cwds() {
     h.run(&["kill", &job_b_id]);
 }
 
+#[test]
+fn ps_excludes_stale_running_job_with_dead_pid() {
+    let h = TestHarness::new();
+    let cwd = std::env::current_dir()
+        .expect("current dir")
+        .canonicalize()
+        .expect("canonicalize current dir");
+    let cwd = cwd.to_str().expect("cwd utf-8");
+
+    let mut dead_child = Command::new(if cfg!(windows) { "cmd" } else { "sh" });
+    if cfg!(windows) {
+        dead_child.args(["/C", "exit", "0"]);
+    } else {
+        dead_child.args(["-c", "exit 0"]);
+    }
+    let mut dead_child = dead_child.spawn().expect("spawn short-lived child");
+    let dead_pid = dead_child.id();
+    let status = dead_child.wait().expect("wait short-lived child");
+    assert!(status.success(), "short-lived child should exit cleanly");
+
+    let stale_job_id = "stale-running-dead-pid";
+    let job_dir = std::path::Path::new(h.root()).join(stale_job_id);
+    std::fs::create_dir_all(&job_dir).expect("create stale job dir");
+    let meta = serde_json::json!({
+        "job": { "id": stale_job_id },
+        "schema_version": "0.1",
+        "command": ["sleep", "999"],
+        "created_at": "2026-01-01T00:00:00Z",
+        "root": h.root(),
+        "env_keys": [],
+        "cwd": cwd,
+        "tags": [],
+        "inherit_env": true,
+    });
+    std::fs::write(job_dir.join("meta.json"), meta.to_string()).expect("write meta.json");
+    let state = serde_json::json!({
+        "job": {
+            "id": stale_job_id,
+            "status": "running",
+            "started_at": "2026-01-01T00:00:01Z"
+        },
+        "result": {
+            "exit_code": null,
+            "signal": null,
+            "duration_ms": null
+        },
+        "pid": dead_pid,
+        "updated_at": "2026-01-01T00:00:02Z"
+    });
+    std::fs::write(job_dir.join("state.json"), state.to_string()).expect("write state.json");
+
+    let ps_v = h.run(&["ps", "--all"]);
+    assert_envelope(&ps_v, "list", true);
+    let ps_jobs = ps_v["jobs"].as_array().expect("ps jobs missing");
+    assert!(
+        !ps_jobs
+            .iter()
+            .any(|j| j["job_id"].as_str() == Some(stale_job_id)),
+        "ps --all should exclude stale running job: {ps_v}"
+    );
+
+    let list_v = h.run(&["list", "--all"]);
+    assert_envelope(&list_v, "list", true);
+    let list_jobs = list_v["jobs"].as_array().expect("list jobs missing");
+    let stale_job = list_jobs
+        .iter()
+        .find(|j| j["job_id"].as_str() == Some(stale_job_id))
+        .unwrap_or_else(|| panic!("list --all should include stale job: {list_v}"));
+    assert_eq!(
+        stale_job["state"].as_str().unwrap_or(""),
+        "unknown",
+        "list --all should report stale running job as unknown: {list_v}"
+    );
+}
+
 /// `ps --cwd <PATH>` scopes to that directory, matching `list --state running --cwd`.
 #[test]
 fn ps_cwd_flag_scopes_to_directory() {
