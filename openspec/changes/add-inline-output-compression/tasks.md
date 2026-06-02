@@ -25,3 +25,6 @@
 
 Archive validation itself is the authoritative final OpenSpec validation gate.
 Expected archive gate: `cflx openspec validate add-inline-output-compression --archive-gate`.
+
+## Acceptance #1 Failure Follow-up
+- [x] cargo test --all failed, violating proposal.md:63 and tasks.md:17 final verification. Evidence: fixed the ambiguous `run --progress-every 1 sleep 5` invocation in `tests/integration.rs` to use `--` and added a diagnostic `job_id` assertion; verification passed with `agent-exec` job `0c3fbb76049fbede2740691e74da50c6` exiting code 0 for `cargo test --all`.

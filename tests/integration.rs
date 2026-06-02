@@ -1152,9 +1152,13 @@ fn run_timeout_terminates_child() {
 fn run_progress_every_updates_state() {
     let h = TestHarness::new();
 
-    // Run a long sleep with progress-every=1s.
-    let run_v = h.run(&["run", "--progress-every", "1", "sleep", "5"]);
-    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+    // Run a long sleep with progress-every=1s. Use `--` so the child command
+    // is never interpreted as an agent-exec option when the CLI surface changes.
+    let run_v = h.run(&["run", "--progress-every", "1", "--", "sleep", "5"]);
+    let job_id = run_v["job_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("run response missing job_id: {run_v}"))
+        .to_string();
 
     // Wait for at least one progress tick.
     std::thread::sleep(std::time::Duration::from_millis(1500));
