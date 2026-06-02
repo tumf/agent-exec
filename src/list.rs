@@ -32,8 +32,69 @@ use tracing::debug;
 use crate::jobstore::resolve_root;
 use crate::jobstore::short_job_id;
 use crate::run::resolve_effective_cwd;
-use crate::schema::{JobSummary, ListData, Response};
+use crate::schema::{JobStatus, JobSummary, ListData, Response};
 use crate::tag::{matches_all_patterns, validate_filter_pattern};
+
+#[cfg(unix)]
+fn pid_is_alive(pid: u32) -> bool {
+    let ret = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    if ret == 0 {
+        return true;
+    }
+
+    let err = std::io::Error::last_os_error();
+    matches!(err.raw_os_error(), Some(libc::EPERM))
+}
+
+#[cfg(windows)]
+fn pid_is_alive(pid: u32) -> bool {
+    use windows::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    let handle = match unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) } {
+        Ok(handle) => handle,
+        Err(_) => return false,
+    };
+
+    let mut exit_code = 0u32;
+    let ok = unsafe { GetExitCodeProcess(handle, &mut exit_code) }.is_ok();
+    unsafe {
+        let _ = CloseHandle(handle);
+    }
+    ok && exit_code == STILL_ACTIVE.0
+}
+
+#[cfg(not(any(unix, windows)))]
+fn pid_is_alive(_pid: u32) -> bool {
+    true
+}
+
+fn effective_state(state: &crate::schema::JobState) -> String {
+    if *state.status() != JobStatus::Running {
+        return state.status().as_str().to_string();
+    }
+
+    match state.pid {
+        Some(pid) if pid_is_alive(pid) => "running".to_string(),
+        Some(pid) => {
+            debug!(
+                job_id = %state.job_id(),
+                pid,
+                "list: persisted running job has dead pid; presenting as unknown"
+            );
+            "unknown".to_string()
+        }
+        None => {
+            debug!(
+                job_id = %state.job_id(),
+                "list: persisted running job has no pid; presenting as unknown"
+            );
+            "unknown".to_string()
+        }
+    }
+}
 
 /// Options for the `list` sub-command.
 #[derive(Debug)]
@@ -181,7 +242,7 @@ pub fn execute(opts: ListOpts) -> Result<()> {
 
         let (state_str, exit_code, finished_at, updated_at) = if let Some(ref s) = state_opt {
             (
-                s.status().as_str().to_string(),
+                effective_state(s),
                 s.exit_code(),
                 s.finished_at.clone(),
                 Some(s.updated_at.clone()),
