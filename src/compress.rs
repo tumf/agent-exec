@@ -153,9 +153,9 @@ fn guard_expansion(
     raw_stdout: &str,
     raw_stderr: &str,
 ) -> crate::schema::CompressionData {
-    let raw_bytes = raw_stdout.len() + raw_stderr.len();
-    let compressed_bytes = data.stdout.len() + data.stderr.len();
-    if raw_bytes > 0 && compressed_bytes >= raw_bytes {
+    let stdout_expands = !raw_stdout.is_empty() && data.stdout.len() >= raw_stdout.len();
+    let stderr_expands = !raw_stderr.is_empty() && data.stderr.len() >= raw_stderr.len();
+    if stdout_expands || stderr_expands {
         data.applied = false;
         data.stdout.clear();
         data.stderr.clear();
@@ -415,5 +415,24 @@ mod tests {
         assert!(data.applied);
         assert!(data.stdout.len() < raw.len());
         assert!(data.strategy.contains(&"truncation".to_string()));
+    }
+
+    #[test]
+    fn expansion_guard_suppresses_when_one_stream_expands() {
+        let stdout = "ok\n";
+        let stderr = format!("{}tail\n", "line\n".repeat(50));
+        let data = compress(CompressionInput {
+            command: &[],
+            stdout,
+            stderr: &stderr,
+            stdout_original_bytes: stdout.len() as u64,
+            stderr_original_bytes: stderr.len() as u64,
+            mode: CompressionMode::Summary,
+        })
+        .unwrap();
+        assert!(!data.applied);
+        assert_eq!(data.stdout, "");
+        assert_eq!(data.stderr, "");
+        assert_eq!(data.strategy, vec!["expansion-guard"]);
     }
 }

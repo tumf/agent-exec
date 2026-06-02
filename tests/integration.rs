@@ -7412,7 +7412,7 @@ fn compression_smaller_output_still_applies() {
         "logs",
         "sh",
         "-c",
-        "for i in $(seq 1 40); do printf 'repeat-me\\n'; done",
+        "for i in $(seq 1 40); do printf 'repeat-me\n'; done",
     ]);
     assert_envelope(&v, "run", true);
     assert_eq!(v["compression"]["applied"].as_bool(), Some(true));
@@ -7425,6 +7425,29 @@ fn compression_smaller_output_still_applies() {
     assert!(
         compressed.len() < raw.len(),
         "compressed output must be smaller: {v}"
+    );
+}
+
+#[test]
+fn compression_expansion_guard_applies_per_stream() {
+    let h = TestHarness::new();
+    let v = h.run(&[
+        "run",
+        "--compress",
+        "summary",
+        "sh",
+        "-c",
+        "printf 'ok\\n'; for i in $(seq 1 50); do printf 'line\\n' >&2; done; printf 'tail\\n' >&2",
+    ]);
+    assert_envelope(&v, "run", true);
+    assert_eq!(v["stdout"].as_str(), Some("ok\n"));
+    assert!(v["stderr"].as_str().unwrap_or("").contains("tail\n"));
+    assert_eq!(v["compression"]["applied"].as_bool(), Some(false));
+    assert_eq!(v["compression"]["stdout"].as_str(), Some(""));
+    assert_eq!(v["compression"]["stderr"].as_str(), Some(""));
+    assert_eq!(
+        v["compression"]["strategy"].as_array().unwrap(),
+        &[serde_json::Value::String("expansion-guard".to_string())]
     );
 }
 
