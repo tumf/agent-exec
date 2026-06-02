@@ -7289,7 +7289,12 @@ fn compression_config_default_and_cli_precedence() {
 #[test]
 fn compression_is_wired_for_start_restart_and_tail() {
     let h = TestHarness::new();
-    let create = h.run(&["create", "sh", "-c", "printf 'same\\nsame\\n'"]);
+    let create = h.run(&[
+        "create",
+        "sh",
+        "-c",
+        "for i in $(seq 1 20); do printf 'same\\n'; done",
+    ]);
     let job_id = create["job_id"].as_str().unwrap().to_string();
 
     let start = h.run(&["start", "--compress", "logs", &job_id]);
@@ -7303,7 +7308,7 @@ fn compression_is_wired_for_start_restart_and_tail() {
         tail["compression"]["stdout"]
             .as_str()
             .unwrap_or("")
-            .contains("repeated 2x"),
+            .contains("repeated 20x"),
         "tail logs compression should deduplicate: {tail}"
     );
 
@@ -7338,13 +7343,13 @@ fn compression_modes_have_behavior_for_errors_logs_and_json() {
         "logs",
         "sh",
         "-c",
-        "printf 'x\\nx\\ny\\n'",
+        "for i in $(seq 1 20); do printf 'x\\n'; done; printf 'y\\n'",
     ]);
     assert!(
         logs["compression"]["stdout"]
             .as_str()
             .unwrap_or("")
-            .contains("repeated 2x")
+            .contains("repeated 20x")
     );
 
     let json = h.run(&[
@@ -7353,13 +7358,104 @@ fn compression_modes_have_behavior_for_errors_logs_and_json() {
         "json",
         "sh",
         "-c",
-        "printf '{\\\"a\\\":1,\\\"b\\\":[2]}'",
+        "printf '{\\\"a\\\":\\\"012345678901234567890123456789\\\",\\\"b\\\":[2,3,4,5]}'",
     ]);
     assert!(
         json["compression"]["stdout"]
             .as_str()
             .unwrap_or("")
             .contains("object keys=2")
+    );
+}
+
+#[test]
+fn compression_expansion_guard_suppresses_ndjson_tail_payload() {
+    let h = TestHarness::new();
+    let run = h.run(&[
+        "run",
+        "--compress",
+        "off",
+        "sh",
+        "-c",
+        "printf '{\"a\":1}\\n{\"b\":2}\\n'",
+    ]);
+    assert_envelope(&run, "run", true);
+    let job_id = run["job_id"].as_str().unwrap().to_string();
+    wait_until_terminal(&h, &job_id);
+
+    let tail = h.run(&["tail", &job_id]);
+    assert_envelope(&tail, "tail", true);
+    assert_eq!(tail["stdout"].as_str(), Some("{\"a\":1}\n{\"b\":2}\n"));
+    assert_eq!(tail["compression"]["applied"].as_bool(), Some(false));
+    assert_eq!(
+        tail["compression"]["strategy"].as_array().unwrap(),
+        &[serde_json::Value::String("expansion-guard".to_string())]
+    );
+    assert_eq!(tail["compression"]["stdout"].as_str(), Some(""));
+    assert!(
+        tail["compression"].to_string().len() < tail["stdout"].as_str().unwrap().len() + 250,
+        "guard fallback should stay bounded: {tail}"
+    );
+    assert_eq!(
+        tail["stdout_range"][1].as_u64(),
+        tail["stdout_total_bytes"].as_u64()
+    );
+    assert_eq!(tail["encoding"].as_str(), Some("utf-8-lossy"));
+}
+
+#[test]
+fn compression_smaller_output_still_applies() {
+    let h = TestHarness::new();
+    let v = h.run(&[
+        "run",
+        "--compress",
+        "logs",
+        "sh",
+        "-c",
+        "for i in $(seq 1 40); do printf 'repeat-me\n'; done",
+    ]);
+    assert_envelope(&v, "run", true);
+    assert_eq!(v["compression"]["applied"].as_bool(), Some(true));
+    let raw = v["stdout"].as_str().unwrap();
+    let compressed = v["compression"]["stdout"].as_str().unwrap();
+    assert!(
+        compressed.contains("repeated 40x"),
+        "unexpected compression: {v}"
+    );
+    assert!(
+        compressed.len() < raw.len(),
+        "compressed output must be smaller: {v}"
+    );
+}
+
+#[test]
+fn compression_expansion_guard_applies_per_stream() {
+    let h = TestHarness::new();
+    let v = h.run(&[
+        "run",
+        "--compress",
+        "summary",
+        "sh",
+        "-c",
+        "printf 'ok\\n'; for i in $(seq 1 50); do printf 'line\\n' >&2; done; printf 'tail\\n' >&2",
+    ]);
+    assert_envelope(&v, "run", true);
+    assert_eq!(v["stdout"].as_str(), Some("ok\n"));
+    assert!(v["stderr"].as_str().unwrap_or("").contains("tail\n"));
+    assert_eq!(v["compression"]["applied"].as_bool(), Some(false));
+    assert_eq!(v["compression"]["stdout"].as_str(), Some(""));
+    assert_eq!(v["compression"]["stderr"].as_str(), Some(""));
+    assert_eq!(
+        v["compression"]["stdout_compressed_bytes"].as_u64(),
+        Some(0)
+    );
+    assert_eq!(
+        v["compression"]["stderr_compressed_bytes"].as_u64(),
+        Some(0)
+    );
+    assert_eq!(
+        v["compression"]["strategy"].as_array().unwrap(),
+        &[serde_json::Value::String("expansion-guard".to_string())]
     );
 }
 
