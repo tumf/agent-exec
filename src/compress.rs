@@ -124,23 +124,48 @@ pub fn compress(input: CompressionInput<'_>) -> Option<crate::schema::Compressio
 
     let stdout = fallback_if_empty(stdout, input.stdout);
     let stderr = fallback_if_empty(stderr, input.stderr);
-    if stdout.len() < input.stdout.len() || stderr.len() < input.stderr.len() {
+    let omitted = stdout.len() < input.stdout.len() || stderr.len() < input.stderr.len();
+    if omitted {
         strategy.push("truncation".to_string());
     }
 
-    Some(crate::schema::CompressionData {
-        mode: input.mode.as_str().to_string(),
-        applied: true,
-        detected_kind: kind.as_str().to_string(),
-        stdout_compressed_bytes: stdout.len() as u64,
-        stderr_compressed_bytes: stderr.len() as u64,
-        stdout_original_bytes: input.stdout_original_bytes,
-        stderr_original_bytes: input.stderr_original_bytes,
-        omitted: stdout.len() < input.stdout.len() || stderr.len() < input.stderr.len(),
-        strategy,
-        stdout,
-        stderr,
-    })
+    Some(guard_expansion(
+        crate::schema::CompressionData {
+            mode: input.mode.as_str().to_string(),
+            applied: true,
+            detected_kind: kind.as_str().to_string(),
+            stdout_compressed_bytes: stdout.len() as u64,
+            stderr_compressed_bytes: stderr.len() as u64,
+            stdout_original_bytes: input.stdout_original_bytes,
+            stderr_original_bytes: input.stderr_original_bytes,
+            omitted,
+            strategy,
+            stdout,
+            stderr,
+        },
+        input.stdout,
+        input.stderr,
+    ))
+}
+
+fn guard_expansion(
+    mut data: crate::schema::CompressionData,
+    raw_stdout: &str,
+    raw_stderr: &str,
+) -> crate::schema::CompressionData {
+    let raw_bytes = raw_stdout.len() + raw_stderr.len();
+    let compressed_bytes = data.stdout.len() + data.stderr.len();
+    if raw_bytes > 0 && compressed_bytes >= raw_bytes {
+        data.applied = false;
+        data.stdout.clear();
+        data.stderr.clear();
+        data.stdout_compressed_bytes = 0;
+        data.stderr_compressed_bytes = 0;
+        data.omitted = false;
+        data.strategy.clear();
+        data.strategy.push("expansion-guard".to_string());
+    }
+    data
 }
 
 fn mode_kind(mode: CompressionMode) -> DetectedKind {
@@ -323,15 +348,72 @@ mod tests {
 
     #[test]
     fn logs_mode_deduplicates_lines() {
+        let raw = format!("{}other\n", "same\n".repeat(20));
         let data = compress(CompressionInput {
             command: &[],
-            stdout: "same\nsame\nother\n",
+            stdout: &raw,
             stderr: "",
-            stdout_original_bytes: 16,
+            stdout_original_bytes: raw.len() as u64,
             stderr_original_bytes: 0,
             mode: CompressionMode::Logs,
         })
         .unwrap();
-        assert!(data.stdout.contains("repeated 2x"));
+        assert!(data.applied);
+        assert!(data.stdout.contains("repeated 20x"));
+        assert!(data.stdout.len() < raw.len());
+    }
+
+    #[test]
+    fn expansion_guard_suppresses_larger_candidate() {
+        let raw = "same\nsame\nother\n";
+        let data = compress(CompressionInput {
+            command: &[],
+            stdout: raw,
+            stderr: "",
+            stdout_original_bytes: raw.len() as u64,
+            stderr_original_bytes: 0,
+            mode: CompressionMode::Logs,
+        })
+        .unwrap();
+        assert!(!data.applied);
+        assert_eq!(data.stdout, "");
+        assert_eq!(data.stderr, "");
+        assert_eq!(data.stdout_compressed_bytes, 0);
+        assert_eq!(data.stderr_compressed_bytes, 0);
+        assert_eq!(data.strategy, vec!["expansion-guard"]);
+    }
+
+    #[test]
+    fn expansion_guard_suppresses_equal_size_candidate() {
+        let raw = "short";
+        let data = compress(CompressionInput {
+            command: &[],
+            stdout: raw,
+            stderr: "",
+            stdout_original_bytes: raw.len() as u64,
+            stderr_original_bytes: 0,
+            mode: CompressionMode::Summary,
+        })
+        .unwrap();
+        assert!(!data.applied);
+        assert_eq!(data.stdout, "");
+        assert_eq!(data.strategy, vec!["expansion-guard"]);
+    }
+
+    #[test]
+    fn expansion_guard_allows_smaller_candidate() {
+        let raw = format!("{}tail\n", "line\n".repeat(50));
+        let data = compress(CompressionInput {
+            command: &[],
+            stdout: &raw,
+            stderr: "",
+            stdout_original_bytes: raw.len() as u64,
+            stderr_original_bytes: 0,
+            mode: CompressionMode::Summary,
+        })
+        .unwrap();
+        assert!(data.applied);
+        assert!(data.stdout.len() < raw.len());
+        assert!(data.strategy.contains(&"truncation".to_string()));
     }
 }
