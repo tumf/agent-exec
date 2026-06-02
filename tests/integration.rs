@@ -7445,8 +7445,14 @@ fn compression_expansion_guard_applies_per_stream() {
     assert_eq!(v["compression"]["applied"].as_bool(), Some(false));
     assert_eq!(v["compression"]["stdout"].as_str(), Some(""));
     assert_eq!(v["compression"]["stderr"].as_str(), Some(""));
-    assert_eq!(v["compression"]["stdout_compressed_bytes"].as_u64(), Some(0));
-    assert_eq!(v["compression"]["stderr_compressed_bytes"].as_u64(), Some(0));
+    assert_eq!(
+        v["compression"]["stdout_compressed_bytes"].as_u64(),
+        Some(0)
+    );
+    assert_eq!(
+        v["compression"]["stderr_compressed_bytes"].as_u64(),
+        Some(0)
+    );
     assert_eq!(
         v["compression"]["strategy"].as_array().unwrap(),
         &[serde_json::Value::String("expansion-guard".to_string())]
