@@ -14,6 +14,7 @@ pub struct TailOpts<'a> {
     pub tail_lines: u64,
     /// Maximum bytes to read from the end of each log.
     pub max_bytes: u64,
+    pub compression_mode: crate::compress::CompressionMode,
 }
 
 impl<'a> Default for TailOpts<'a> {
@@ -23,6 +24,7 @@ impl<'a> Default for TailOpts<'a> {
             root: None,
             tail_lines: 50,
             max_bytes: 65536,
+            compression_mode: crate::compress::CompressionMode::default(),
         }
     }
 }
@@ -38,6 +40,15 @@ pub fn execute(opts: TailOpts) -> Result<()> {
     // Use the shared helper so that byte metric calculation is in one place.
     let stdout = job_dir.read_tail_metrics("stdout.log", opts.tail_lines, opts.max_bytes);
     let stderr = job_dir.read_tail_metrics("stderr.log", opts.tail_lines, opts.max_bytes);
+    let meta = job_dir.read_meta()?;
+    let compression = crate::compress::compress(crate::compress::CompressionInput {
+        command: &meta.command,
+        stdout: &stdout.tail,
+        stderr: &stderr.tail,
+        stdout_original_bytes: stdout.observed_bytes,
+        stderr_original_bytes: stderr.observed_bytes,
+        mode: opts.compression_mode,
+    });
 
     let response = Response::new(
         "tail",
@@ -52,6 +63,7 @@ pub fn execute(opts: TailOpts) -> Result<()> {
             stderr_range: stderr.range,
             stdout_total_bytes: stdout.observed_bytes,
             stderr_total_bytes: stderr.observed_bytes,
+            compression,
         },
     );
     response.print();

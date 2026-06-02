@@ -33,6 +33,18 @@ behavior is the main product.
 
 This separation lets agents parse stdout reliably without filtering log noise.
 
+## Inline Output Compression
+
+`run`, `start`, `restart`, and `tail` include a built-in compressed view by default. The raw `stdout`, `stderr`, range, byte-count, `encoding`, and log-path fields remain canonical and unchanged.
+
+- Default mode: `route`
+- CLI override: `--compress <mode>` or alias `--rtk <mode>`
+- Supported modes: `off`, `route`, `errors`, `tests`, `logs`, `git`, `json`, `summary`
+- Compatibility: `--compress off` omits the `compression` field
+- Config default: `[compression].default = "off"` or any supported mode in `config.toml`
+
+Precedence is CLI `--compress`/`--rtk`, config `[compression].default`, then built-in `route`.
+
 ## Installation
 
 ```bash
@@ -111,7 +123,20 @@ Example output of `run`:
   "stderr_range": [0, 0],
   "stdout_total_bytes": 12,
   "stderr_total_bytes": 0,
-  "encoding": "utf-8-lossy"
+  "encoding": "utf-8-lossy",
+  "compression": {
+    "mode": "route",
+    "applied": true,
+    "detected_kind": "summary",
+    "stdout": "hello world\n",
+    "stderr": "",
+    "stdout_original_bytes": 12,
+    "stderr_original_bytes": 0,
+    "stdout_compressed_bytes": 12,
+    "stderr_compressed_bytes": 0,
+    "omitted": false,
+    "strategy": ["bounded-summary"]
+  }
 }
 ```
 

@@ -437,6 +437,7 @@ fn run_exec_inner(p: ExecParams) -> Result<serde_json::Value> {
             finished_at: observation.finished_at,
             signal: observation.signal,
             duration_ms: observation.duration_ms,
+            compression: None,
         },
     );
 
@@ -505,6 +506,7 @@ async fn tail_handler(State(state): State<Arc<AppState>>, Path(id): Path<String>
                 stderr_range: stderr.range,
                 stdout_total_bytes: stdout.observed_bytes,
                 stderr_total_bytes: stderr.observed_bytes,
+                compression: None,
             },
         );
         Ok::<_, anyhow::Error>(serde_json::to_value(&response)?)

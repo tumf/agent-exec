@@ -128,6 +128,21 @@ pub struct CreateData {
     pub stderr_log_path: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompressionData {
+    pub mode: String,
+    pub applied: bool,
+    pub detected_kind: String,
+    pub stdout: String,
+    pub stderr: String,
+    pub stdout_original_bytes: u64,
+    pub stderr_original_bytes: u64,
+    pub stdout_compressed_bytes: u64,
+    pub stderr_compressed_bytes: u64,
+    pub omitted: bool,
+    pub strategy: Vec<String>,
+}
+
 /// Response for `run` command.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RunData {
@@ -174,6 +189,8 @@ pub struct RunData {
     /// Wall-clock milliseconds from started_at to finished_at.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compression: Option<CompressionData>,
 }
 
 /// Response for `status` command.
@@ -211,6 +228,8 @@ pub struct TailData {
     pub stdout_total_bytes: u64,
     /// Total bytes currently observed in stderr.log.
     pub stderr_total_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compression: Option<CompressionData>,
 }
 
 /// Response for `wait` command.
@@ -806,6 +825,7 @@ mod tests {
             finished_at: finished_at.map(|s| s.to_string()),
             signal: signal.map(|s| s.to_string()),
             duration_ms,
+            compression: None,
         }
     }
 

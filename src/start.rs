@@ -38,6 +38,7 @@ pub struct StartOpts<'a> {
     pub forever: bool,
     /// Maximum bytes to include from the head of each stream.
     pub max_bytes: u64,
+    pub compression_mode: crate::compress::CompressionMode,
 }
 
 /// Execute `start`: launch a created job and return JSON.
@@ -131,6 +132,14 @@ pub fn execute(opts: StartOpts) -> Result<()> {
         opts.forever,
         opts.max_bytes,
     )?;
+    let compression = crate::compress::compress(crate::compress::CompressionInput {
+        command: &meta.command,
+        stdout: &observation.stdout,
+        stderr: &observation.stderr,
+        stdout_original_bytes: observation.stdout_total_bytes,
+        stderr_original_bytes: observation.stderr_total_bytes,
+        mode: opts.compression_mode,
+    });
 
     Response::new(
         "start",
@@ -154,6 +163,7 @@ pub fn execute(opts: StartOpts) -> Result<()> {
             finished_at: observation.finished_at,
             signal: observation.signal,
             duration_ms: observation.duration_ms,
+            compression,
         },
     )
     .print();

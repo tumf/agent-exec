@@ -42,6 +42,7 @@ pub struct RestartOpts<'a> {
     pub forever: bool,
     /// Maximum bytes to include from the head of each stream.
     pub max_bytes: u64,
+    pub compression_mode: crate::compress::CompressionMode,
 }
 
 /// Execute `restart`: replace an existing job's current run and return JSON.
@@ -137,6 +138,14 @@ pub fn execute(opts: RestartOpts) -> Result<()> {
         opts.max_bytes,
     )?;
     let elapsed_ms = elapsed_start.elapsed().as_millis() as u64;
+    let compression = crate::compress::compress(crate::compress::CompressionInput {
+        command: &meta.command,
+        stdout: &observation.stdout,
+        stderr: &observation.stderr,
+        stdout_original_bytes: observation.stdout_total_bytes,
+        stderr_original_bytes: observation.stderr_total_bytes,
+        mode: opts.compression_mode,
+    });
 
     Response::new(
         "restart",
@@ -160,6 +169,7 @@ pub fn execute(opts: RestartOpts) -> Result<()> {
             finished_at: observation.finished_at,
             signal: observation.signal,
             duration_ms: observation.duration_ms,
+            compression,
         },
     )
     .print();
