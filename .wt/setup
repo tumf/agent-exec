@@ -1,18 +1,33 @@
-#!/bin/sh
-# Worktree setup script for testing
+#!/usr/bin/env bash
+set -euo pipefail
+
+root_worktree_path="${ROOT_WORKTREE_PATH:-}"
+if [ -z "$root_worktree_path" ]; then
+  echo "ROOT_WORKTREE_PATH is required" 1>&2
+  exit 1
+fi
+
 echo "=== Worktree Setup Script ==="
 echo "Running in: $(pwd)"
-echo "Root worktree: $ROOT_WORKTREE_PATH"
+echo "Root worktree: $root_worktree_path"
 echo "Creating test marker file..."
 touch .setup-completed
 
 echo "Copying llm-tldr cache into worktree..."
-if [ -d "${ROOT_WORKTREE_PATH}/.tldr/cache" ]; then
+if [ -d "${root_worktree_path}/.tldr/cache" ]; then
   mkdir -p .tldr
   rm -rf .tldr/cache
-  cp -R "${ROOT_WORKTREE_PATH}/.tldr/cache" .tldr/cache
+  cp -R "${root_worktree_path}/.tldr/cache" .tldr/cache
 else
-  echo "llm-tldr cache not found at ${ROOT_WORKTREE_PATH}/.tldr/cache; skipping copy" 1>&2
+  echo "llm-tldr cache not found at ${root_worktree_path}/.tldr/cache; skipping copy" 1>&2
+fi
+
+echo "Copying graphify output into worktree..."
+if [ -d "${root_worktree_path}/graphify-out" ]; then
+  rm -rf graphify-out
+  cp -R "${root_worktree_path}/graphify-out" graphify-out
+else
+  echo "graphify output not found at ${root_worktree_path}/graphify-out; skipping copy" 1>&2
 fi
 
 hooks_dir="$(git rev-parse --git-dir 2>/dev/null)/hooks"

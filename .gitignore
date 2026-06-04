@@ -3,4 +3,7 @@ skills/dist/
 **/*.rs.bk
 .leann
 .tldr
+graphify-out/
 /.serena/project.yml
+.wt/setup.local
+.wt/worktrees/
