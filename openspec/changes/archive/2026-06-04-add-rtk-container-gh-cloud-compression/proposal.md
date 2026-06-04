@@ -2,7 +2,6 @@
 change_type: implementation
 priority: medium
 dependencies:
-  - add-rtk-compression-routing
   - add-rtk-system-log-json-compression
 references:
   - src/compress.rs
