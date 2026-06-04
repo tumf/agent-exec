@@ -88,13 +88,36 @@ fn extract_error_lines(text: &str) -> String {
 }
 
 fn extract_test_lines(text: &str) -> String {
-    filter_lines(text, |line| {
+    let mut kept = Vec::new();
+    let mut in_failure_section = false;
+
+    for line in text.lines() {
         let lower = line.to_ascii_lowercase();
-        lower.contains("test")
-            || lower.contains("fail")
-            || lower.contains("passed")
+        let is_failure_header = lower.contains("failures:")
             || lower.contains("failed")
-    })
+            || lower.contains("failure")
+            || lower.contains("panic")
+            || lower.contains("assert");
+        if is_failure_header {
+            in_failure_section = true;
+        }
+
+        let is_summary = lower.contains("test result:")
+            || lower.contains(" passed")
+            || lower.contains(" failed")
+            || lower.contains(" skipped")
+            || lower.contains(" ignored");
+        let is_passing_test_line = lower.starts_with("test ") && lower.ends_with(" ... ok");
+        if in_failure_section || is_summary || (lower.contains("test") && !is_passing_test_line) {
+            kept.push(line);
+        }
+
+        if kept.len() >= 80 {
+            break;
+        }
+    }
+
+    kept.join("\n")
 }
 
 fn filter_lines(text: &str, keep: impl Fn(&str) -> bool) -> String {
