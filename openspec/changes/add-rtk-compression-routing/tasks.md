@@ -15,3 +15,7 @@
 ## Final Validation
 
 Expected archive gate: `cflx openspec validate add-rtk-compression-routing --archive-gate`
+
+## Acceptance #1 Failure Follow-up
+- [x] コミット経路ブロッカーを解消: `src/run.rs` の `--progress-every` watcher が `state.json` を `std::fs::write` で直接上書きしており、並行する `run`/`status`/`wait` が空または途中状態の `state.json` を読んで `EOF while parsing a value at line 1 column 0` になる競合を修正した。watcher の進捗更新を `JobDir::write_state` 経由の atomic write に統一した。検証: `agent-exec run -- cargo test --test integration create_with_stdin_dash_materializes_input_for_later_start -- --nocapture` job `87983aacfe7db9648786e0fc6350bf2d` exit_code=0、`agent-exec run -- cargo test --test integration run_progress_every_updates_state -- --nocapture` job `f8df0c2442e8762dc1c5f3a5d14e8069` exit_code=0。
+- [x] archive commitability を再検証: `agent-exec run -- cargo fmt --all -- --check` job `68e2103c819b691889e4ae9bbfa5d069` exit_code=0、`agent-exec run -- cargo clippy --all-targets --all-features -- -D warnings` job `7972e7086eb203198c81e07d84521b91` exit_code=0、`agent-exec run -- cargo test --all` job `484b2b11b2f341daa0bb7b7fc8c66c94` exit_code=0。

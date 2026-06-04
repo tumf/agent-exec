@@ -1444,7 +1444,10 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
     let timeout_ms = opts.timeout_ms;
     let kill_after_ms = opts.kill_after_ms;
     let progress_every_ms = opts.progress_every_ms;
-    let state_path = job_dir.state_path();
+    let watcher_job_dir = JobDir {
+        path: job_dir.path.clone(),
+        job_id: job_id.to_string(),
+    };
     let job_id_str = job_id.to_string();
 
     // Use an atomic flag to signal the watcher thread when the child has exited.
@@ -1452,7 +1455,6 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
     let child_done = Arc::new(AtomicBool::new(false));
 
     let watcher = if timeout_ms > 0 || progress_every_ms > 0 {
-        let state_path_clone = state_path.clone();
         let child_done_clone = Arc::clone(&child_done);
         Some(std::thread::spawn(move || {
             let start = std::time::Instant::now();
@@ -1514,15 +1516,11 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
                     let pd_ms = pd.as_millis() as u64;
                     let poll_ms = poll_interval.as_millis() as u64;
                     if elapsed_ms % pd_ms < poll_ms {
-                        // Read, update updated_at, write back.
-                        if let Ok(raw) = std::fs::read(&state_path_clone)
-                            && let Ok(mut st) =
-                                serde_json::from_slice::<crate::schema::JobState>(&raw)
-                        {
+                        // Read, update updated_at, write back atomically so concurrent
+                        // status/wait/run observers never parse a truncated state file.
+                        if let Ok(mut st) = watcher_job_dir.read_state() {
                             st.updated_at = now_rfc3339();
-                            if let Ok(s) = serde_json::to_string_pretty(&st) {
-                                let _ = std::fs::write(&state_path_clone, s);
-                            }
+                            let _ = watcher_job_dir.write_state(&st);
                         }
                     }
                 }
