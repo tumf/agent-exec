@@ -7570,6 +7570,89 @@ fn compression_route_reports_search_and_docker_logs_detected_kinds() {
 }
 
 #[test]
+fn compression_system_log_json_env_route_preserves_raw_and_compresses() {
+    let h = TestHarness::new();
+
+    let list = h.run(&["run", "--compress", "route", "find", "src", "-type", "f"]);
+    assert_eq!(list["compression"]["detected_kind"].as_str(), Some("list"));
+    assert!(list["stdout"].as_str().unwrap_or("").contains("src/"));
+    assert!(
+        list["compression"]["stdout"]
+            .as_str()
+            .unwrap_or("")
+            .contains(':')
+    );
+    assert!(
+        list["compression"]["stdout"].as_str().unwrap_or("").len()
+            < list["stdout"].as_str().unwrap_or("").len()
+    );
+
+    let search = h.run(&[
+        "run",
+        "--stdin",
+        "needle one\nneedle two\nother\nneedle three\n",
+        "--compress",
+        "route",
+        "grep",
+        "-Hn",
+        "needle",
+        "/dev/stdin",
+    ]);
+    assert_eq!(
+        search["compression"]["detected_kind"].as_str(),
+        Some("search")
+    );
+    assert!(
+        search["compression"]["stdout"]
+            .as_str()
+            .unwrap_or("")
+            .contains("/dev/stdin: 3 match(es)")
+    );
+
+    let json = h.run(&[
+        "run",
+        "--compress",
+        "route",
+        "sh",
+        "-c",
+        "printf '[{\"id\":1,\"name\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},{\"id\":2,\"name\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}]'",
+    ]);
+    assert_eq!(
+        json["compression"]["detected_kind"].as_str(),
+        Some("json-structure")
+    );
+    assert!(
+        json["compression"]["stdout"]
+            .as_str()
+            .unwrap_or("")
+            .contains("array len=2")
+    );
+    assert!(
+        json["compression"]["stdout"].as_str().unwrap_or("").len()
+            < json["stdout"].as_str().unwrap_or("").len()
+    );
+
+    let env = h.run(&[
+        "run",
+        "--compress",
+        "route",
+        "env",
+        "SECRET_TOKEN=super_secret_value",
+        "AWS_REGION=us-east-1",
+    ]);
+    assert_eq!(env["compression"]["detected_kind"].as_str(), Some("env"));
+    let compressed_env = env["compression"]["stdout"].as_str().unwrap_or("");
+    assert!(compressed_env.contains("SECRET_TOKEN=***"));
+    assert!(!compressed_env.contains("super_secret_value"));
+    assert!(
+        env["stdout"]
+            .as_str()
+            .unwrap_or("")
+            .contains("super_secret_value")
+    );
+}
+
+#[test]
 fn compression_schema_and_help_list_modes_without_auto() {
     let h = TestHarness::new();
     let schema = h.run(&["schema"]);

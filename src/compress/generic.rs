@@ -1,7 +1,7 @@
 use crate::compress::route::DetectedKind;
 use crate::compress::util::{
-    CompressionCandidate, dedup_lines, diagnostic_blocks, fallback_if_empty, json_shape_summary,
-    summarize_text, table_rows,
+    CompressionCandidate, dedup_log_lines, diagnostic_blocks, env_summary, fallback_if_empty,
+    json_shape_summary, list_summary, search_summary, summarize_text, text_file_summary,
 };
 
 pub fn compress_kind(
@@ -21,9 +21,9 @@ pub fn compress_kind(
             vec!["test-failure-focus".to_string()],
         ),
         DetectedKind::Logs | DetectedKind::DockerLogs => (
-            dedup_lines(raw_stdout),
-            dedup_lines(raw_stderr),
-            vec!["dedupe-repeated-lines".to_string()],
+            dedup_log_lines(raw_stdout),
+            dedup_log_lines(raw_stderr),
+            vec!["dedupe-normalized-log-lines".to_string()],
         ),
         DetectedKind::Git | DetectedKind::GitLog => (
             summarize_git(raw_stdout),
@@ -36,9 +36,24 @@ pub fn compress_kind(
             vec!["json-structure".to_string()],
         ),
         DetectedKind::Search => (
-            summarize_search(raw_stdout),
-            summarize_search(raw_stderr),
+            search_summary(raw_stdout),
+            search_summary(raw_stderr),
             vec!["search-summary".to_string()],
+        ),
+        DetectedKind::List => (
+            list_summary(raw_stdout),
+            list_summary(raw_stderr),
+            vec!["directory-grouping".to_string()],
+        ),
+        DetectedKind::FileText => (
+            text_file_summary(raw_stdout),
+            text_file_summary(raw_stderr),
+            vec!["head-tail-text-summary".to_string()],
+        ),
+        DetectedKind::Env => (
+            env_summary(raw_stdout),
+            env_summary(raw_stderr),
+            vec!["env-mask-and-prefix-group".to_string()],
         ),
         DetectedKind::Summary => (
             summarize_text(raw_stdout),
@@ -117,19 +132,6 @@ fn summarize_git(text: &str) -> String {
             || trimmed.starts_with("commit ")
             || trimmed.contains("changed")
     })
-}
-
-fn summarize_search(text: &str) -> String {
-    let rows = table_rows(text);
-    if !rows.is_empty() {
-        return rows
-            .into_iter()
-            .take(40)
-            .map(|row| row.join(" | "))
-            .collect::<Vec<_>>()
-            .join("\n");
-    }
-    summarize_text(text)
 }
 
 #[cfg(test)]
