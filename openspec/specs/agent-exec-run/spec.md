@@ -29,6 +29,31 @@ Resolved mode が `off` 以外の場合、レスポンスは `compression` objec
 
 Compression は、compressed view が対象 raw observed output より大きい、または同じ大きさになる場合、その compressed text をレスポンスへ含めてはならない（MUST NOT）。この expansion guard が発動した場合、レスポンスは bounded な `compression` object を含み、`compression.applied=false` と guard reason を示す strategy を返さなければならない（MUST）。
 
+Rust build/test outputs and common test-runner outputs routed through `route` or explicit `tests`/`errors` compression must focus on failures, diagnostics, and summaries rather than passing-test or progress noise (MUST). Compression must preserve enough failure and diagnostic context to identify the failing test, assertion or panic message, diagnostic code, file location, and primary error text (MUST). Compression must not replace canonical raw observation fields (MUST NOT).
+
+#### Scenario: cargo diagnostics preserve actionable error context
+
+**Given**: a `cargo build`, `cargo check`, or `cargo clippy` output contains compiler diagnostics
+**When**: route compression classifies the command as a Rust diagnostic command
+**Then**: `compression.stdout` or `compression.stderr` preserves diagnostic code or severity
+**And**: file and line information is preserved when present
+**And**: compile progress noise is omitted or aggregated
+
+#### Scenario: cargo test focuses on failures
+
+**Given**: a `cargo test` output contains many passing tests and one or more failures
+**When**: test compression is applied
+**Then**: failing test names and failure details are preserved
+**And**: passing tests are summarized by count rather than listed individually
+**And**: bounded panic/backtrace context is preserved when present
+
+#### Scenario: generic test runners summarize pass output
+
+**Given**: a common test runner output contains pass/fail/skip lines
+**When**: route compression classifies it as test output
+**Then**: final counts are preserved
+**And**: failure sections are preserved
+**And**: passing test lists are collapsed into a compact summary
 
 #### Scenario: json compression applies when shape summary is smaller than raw output
 
