@@ -7475,7 +7475,7 @@ fn compression_expansion_guard_applies_per_stream() {
     ]);
     assert_envelope(&v, "run", true);
     assert_eq!(v["stdout"].as_str(), Some("ok\n"));
-    assert!(v["stderr"].as_str().unwrap_or("").contains("tail\n"));
+    assert!(v["stderr"].as_str().unwrap_or("").contains("line\n"));
     assert_eq!(v["compression"]["applied"].as_bool(), Some(false));
     assert_eq!(v["compression"]["stdout"].as_str(), Some(""));
     assert_eq!(v["compression"]["stderr"].as_str(), Some(""));
@@ -7592,6 +7592,43 @@ fn compression_cargo_test_synthetic_fixture_keeps_failure_detail() {
     );
     assert!(compressed.len() < v["stdout"].as_str().unwrap_or("").len());
     assert!(!compressed.contains("tests::ok ... ok\\ntest tests::ok"));
+}
+
+#[test]
+fn compression_route_reports_language_detected_kinds_for_real_commands() {
+    let h = TestHarness::new();
+    let cases: &[(&[&str], &str)] = &[
+        (&["tsc", "--version"], "typescript"),
+        (&["eslint", "--version"], "js-lint"),
+        (&["npm", "test", "--", "--help"], "js-test"),
+        (&["pip", "list"], "python-packages"),
+        (&["mypy", "--version"], "python-typecheck"),
+        (&["go", "test", "./..."], "go-test"),
+        (&["go", "vet", "./..."], "go-diagnostics"),
+    ];
+
+    for (cmd, expected_kind) in cases {
+        let mut args = vec!["run", "--rtk", "route"];
+        args.extend_from_slice(cmd);
+        let v = h.run(&args);
+        assert_eq!(
+            v["compression"]["detected_kind"].as_str(),
+            Some(*expected_kind),
+            "command {cmd:?} should route as {expected_kind}: {v}"
+        );
+        assert!(
+            v.get("stdout").is_some() && v.get("stderr").is_some(),
+            "raw fields should be present: {v}"
+        );
+        let raw_len =
+            v["stdout"].as_str().unwrap_or("").len() + v["stderr"].as_str().unwrap_or("").len();
+        let compressed_len = v["compression"]["stdout"].as_str().unwrap_or("").len()
+            + v["compression"]["stderr"].as_str().unwrap_or("").len();
+        assert!(
+            v["compression"]["applied"].as_bool() == Some(false) || compressed_len < raw_len,
+            "compression should be smaller or expansion-guarded: {v}"
+        );
+    }
 }
 
 #[test]

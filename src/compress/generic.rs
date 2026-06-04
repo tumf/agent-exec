@@ -15,7 +15,7 @@ pub fn compress_kind(
             extract_error_lines(raw_stderr),
             vec!["failure-focus".to_string()],
         ),
-        DetectedKind::Tests | DetectedKind::CargoTest | DetectedKind::Pytest => (
+        DetectedKind::Tests | DetectedKind::CargoTest => (
             extract_test_lines(raw_stdout),
             extract_test_lines(raw_stderr),
             vec!["test-failure-focus".to_string()],
@@ -34,6 +34,25 @@ pub fn compress_kind(
             json_shape_summary(raw_stdout),
             json_shape_summary(raw_stderr),
             vec!["json-structure".to_string()],
+        ),
+        DetectedKind::TypeScript
+        | DetectedKind::JsLint
+        | DetectedKind::PythonLint
+        | DetectedKind::PythonTypecheck
+        | DetectedKind::GoDiagnostics => (
+            extract_error_lines(raw_stdout),
+            extract_error_lines(raw_stderr),
+            vec!["failure-focus".to_string()],
+        ),
+        DetectedKind::JsTest | DetectedKind::PythonTest | DetectedKind::GoTest => (
+            extract_test_lines(raw_stdout),
+            extract_test_lines(raw_stderr),
+            vec!["test-failure-focus".to_string()],
+        ),
+        DetectedKind::JsPackages | DetectedKind::PythonPackages => (
+            summarize_text(raw_stdout),
+            summarize_text(raw_stderr),
+            vec!["package-summary".to_string()],
         ),
         DetectedKind::Search => (
             summarize_search(raw_stdout),
