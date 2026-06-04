@@ -37,6 +37,42 @@ Git command outputs routed through `route` or explicit `git` compression must us
 
 Rust build/test outputs and common test-runner outputs routed through `route` or explicit `tests`/`errors` compression must focus on failures, diagnostics, and summaries rather than passing-test or progress noise (MUST). Compression must preserve enough failure and diagnostic context to identify the failing test, assertion or panic message, diagnostic code, file location, and primary error text (MUST). Compression must not replace canonical raw observation fields (MUST NOT).
 
+System, search, log, JSON, and env-like outputs routed through `route` compression must use structure-aware compact views when recognized (MUST). Compression must group large listings and search results, deduplicate repetitive logs, summarize JSON structure without large values, and mask secret-like values in env-like compressed views (MUST). Compression must not mutate or replace canonical raw observation fields (MUST NOT).
+
+#### Scenario: search output is grouped by file
+
+**Given**: observed `rg` or `grep` output contains many matching lines across files
+**When**: search compression is applied
+**Then**: matches are grouped by file
+**And**: match counts are preserved
+**And**: representative lines are bounded
+
+#### Scenario: repeated logs are deduplicated
+
+**Given**: observed log output contains repeated or timestamp-varied duplicate messages
+**When**: log compression is applied
+**Then**: duplicate messages are collapsed with counts when safe
+**And**: error-bearing lines remain visible
+**And**: progress noise is omitted or summarized
+
+#### Scenario: JSON output is summarized by shape
+
+**Given**: observed output contains a large JSON object, array, or NDJSON stream
+**When**: JSON compression is applied
+**Then**: object keys, value types, array lengths, or record counts are summarized
+**And**: large scalar values are omitted from the compressed view
+**And**: raw canonical stdout still contains the observed JSON text
+
+#### Scenario: env-like compressed output masks secrets
+
+**Given**: observed env-like output contains keys such as `TOKEN`, `PASSWORD`, or `SECRET`
+**When**: env compression is applied
+**Then**: `compression.stdout` masks secret-like values
+**And**: non-secret keys may be summarized or grouped
+**And**: raw canonical stdout remains unchanged
+
+#### Scenario: json compression applies when shape summary is smaller than raw output
+
 #### Scenario: cargo diagnostics preserve actionable error context
 
 **Given**: a `cargo build`, `cargo check`, or `cargo clippy` output contains compiler diagnostics

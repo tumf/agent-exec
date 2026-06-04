@@ -19,6 +19,9 @@ pub enum DetectedKind {
     Search,
     DockerLogs,
     JsonStructure,
+    List,
+    FileText,
+    Env,
 }
 
 impl DetectedKind {
@@ -43,6 +46,9 @@ impl DetectedKind {
             Self::Search => "search",
             Self::DockerLogs => "docker-logs",
             Self::JsonStructure => "json-structure",
+            Self::List => "list",
+            Self::FileText => "file-text",
+            Self::Env => "env",
         }
     }
 }
@@ -109,6 +115,10 @@ fn route_command(tokens: &[String]) -> Option<RouteMatch> {
             Some("test".to_string()),
         )),
         "rg" | "grep" => Some(matched(DetectedKind::Search, "search", None)),
+        "ls" | "tree" | "find" => Some(matched(DetectedKind::List, "system", None)),
+        "cat" | "head" | "tail" => Some(matched(DetectedKind::FileText, "system", None)),
+        "jq" => Some(matched(DetectedKind::JsonStructure, "json", None)),
+        "env" | "printenv" => Some(matched(DetectedKind::Env, "system", None)),
         "docker" if tokens.get(1).is_some_and(|token| token == "logs") => Some(matched(
             DetectedKind::DockerLogs,
             "containers",
@@ -207,8 +217,29 @@ mod tests {
 
     #[test]
     fn classifies_search() {
-        let route = route(&cmd(&["rg", "needle"]), "", "");
-        assert_eq!(route.kind, DetectedKind::Search);
+        let rg_route = route(&cmd(&["rg", "needle"]), "", "");
+        assert_eq!(rg_route.kind, DetectedKind::Search);
+        let grep_route = route(&cmd(&["grep", "-R", "needle", "."]), "", "");
+        assert_eq!(grep_route.kind, DetectedKind::Search);
+    }
+
+    #[test]
+    fn classifies_system_list_read_json_and_env_commands() {
+        for args in [
+            &["ls", "src"][..],
+            &["tree", "src"][..],
+            &["find", ".", "-type", "f"][..],
+        ] {
+            assert_eq!(route(&cmd(args), "", "").kind, DetectedKind::List);
+        }
+        for args in [&["cat", "Cargo.toml"][..], &["tail", "-n", "20", "log"][..]] {
+            assert_eq!(route(&cmd(args), "", "").kind, DetectedKind::FileText);
+        }
+        assert_eq!(
+            route(&cmd(&["jq", ".items"]), "", "").kind,
+            DetectedKind::JsonStructure
+        );
+        assert_eq!(route(&cmd(&["env"]), "", "").kind, DetectedKind::Env);
     }
 
     #[test]

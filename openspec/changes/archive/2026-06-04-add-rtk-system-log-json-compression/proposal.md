@@ -1,8 +1,7 @@
 ---
 change_type: implementation
 priority: medium
-dependencies:
-  - add-rtk-compression-routing
+dependencies: []
 references:
   - src/compress.rs
   - tests/integration.rs
@@ -36,7 +35,7 @@ Representative fixture tests demonstrate smaller compressed outputs for large li
 
 ## Dependencies
 
-Requires `add-rtk-compression-routing`.
+Previously required `add-rtk-compression-routing`, which has already been archived.
 
 ## Out of Scope
 
