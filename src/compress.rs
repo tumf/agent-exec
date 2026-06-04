@@ -512,6 +512,10 @@ fn flush_diff_stats(out: &mut Vec<String>, has_file: bool, plus: &mut usize, min
 }
 
 fn summarize_git_push(text: &str) -> String {
+    if contains_git_error(text) {
+        return error_bearing_git_lines(text);
+    }
+
     let kept: Vec<&str> = text
         .lines()
         .filter(|line| {
@@ -553,6 +557,19 @@ fn summarize_git_pull(text: &str) -> String {
 fn contains_git_error(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
     lower.contains("fatal:") || lower.contains("error:")
+}
+
+fn error_bearing_git_lines(text: &str) -> String {
+    text.lines()
+        .filter(|line| {
+            let trimmed = line.trim_start().to_ascii_lowercase();
+            trimmed.starts_with("error:")
+                || trimmed.starts_with("fatal:")
+                || trimmed.starts_with("remote: error:")
+                || trimmed.starts_with("remote: fatal:")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn summarize_git_branch(text: &str) -> String {
@@ -810,6 +827,20 @@ mod tests {
         assert_eq!(
             summarize_git(GitKind::Push, "Everything up-to-date\n"),
             "ok (up-to-date)"
+        );
+        assert_eq!(
+            summarize_git(
+                GitKind::Push,
+                "Enumerating objects: 1, done.\nerror: failed to push some refs\nhint: Updates were rejected\nfatal: the remote end hung up unexpectedly\n"
+            ),
+            "error: failed to push some refs\nfatal: the remote end hung up unexpectedly"
+        );
+        assert_eq!(
+            summarize_git(
+                GitKind::Pull,
+                "remote: Counting objects: 100% (1/1), done.\nerror: Your local changes would be overwritten by merge\nhint: Commit your changes\n"
+            ),
+            "error: Your local changes would be overwritten by merge"
         );
         assert_eq!(
             summarize_git(
