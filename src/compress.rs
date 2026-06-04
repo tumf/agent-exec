@@ -38,6 +38,9 @@ pub enum DetectedKind {
     Git,
     Json,
     Summary,
+    CargoTest,
+    CargoBuild,
+    TestRunner,
 }
 
 impl DetectedKind {
@@ -49,6 +52,9 @@ impl DetectedKind {
             Self::Git => "git",
             Self::Json => "json",
             Self::Summary => "summary",
+            Self::CargoTest => "cargo-test",
+            Self::CargoBuild => "cargo-build",
+            Self::TestRunner => "test-runner",
         }
     }
 }
@@ -96,9 +102,24 @@ pub fn compress(input: CompressionInput<'_>) -> Option<crate::schema::Compressio
             vec!["failure-focus".to_string()],
         ),
         DetectedKind::Tests => (
-            extract_test_lines(input.stdout),
-            extract_test_lines(input.stderr),
+            compress_test_output(input.stdout),
+            compress_test_output(input.stderr),
             vec!["test-failure-focus".to_string()],
+        ),
+        DetectedKind::CargoTest => (
+            compress_cargo_test_output(input.stdout),
+            compress_cargo_test_output(input.stderr),
+            vec!["cargo-test-failure-focus".to_string()],
+        ),
+        DetectedKind::CargoBuild => (
+            compress_rust_diagnostics(input.stdout),
+            compress_rust_diagnostics(input.stderr),
+            vec!["rust-diagnostic-focus".to_string()],
+        ),
+        DetectedKind::TestRunner => (
+            compress_test_output(input.stdout),
+            compress_test_output(input.stderr),
+            vec!["generic-test-failure-focus".to_string()],
         ),
         DetectedKind::Logs => (
             dedup_lines(input.stdout),
@@ -182,11 +203,21 @@ fn mode_kind(mode: CompressionMode) -> DetectedKind {
 
 fn detect_kind(command: &[String], stdout: &str, stderr: &str) -> DetectedKind {
     let command_text = command.join(" ").to_ascii_lowercase();
+    let program = command.first().map(|s| s.as_str()).unwrap_or_default();
     let text = format!("{stdout}\n{stderr}").to_ascii_lowercase();
-    if command_text.contains("git ") || command.first().is_some_and(|s| s == "git") {
+
+    if program == "git" || command_text.contains("git ") {
         DetectedKind::Git
+    } else if is_cargo_test_command(command) {
+        DetectedKind::CargoTest
+    } else if is_cargo_build_command(command) {
+        DetectedKind::CargoBuild
+    } else if is_generic_test_command(command) {
+        DetectedKind::TestRunner
     } else if looks_like_json(stdout) || looks_like_json(stderr) {
         DetectedKind::Json
+    } else if looks_like_rust_diagnostics(&text) {
+        DetectedKind::CargoBuild
     } else if text.contains("test") && (text.contains("fail") || text.contains("passed")) {
         DetectedKind::Tests
     } else if text.contains("error") || text.contains("panic") || text.contains("traceback") {
@@ -196,6 +227,309 @@ fn detect_kind(command: &[String], stdout: &str, stderr: &str) -> DetectedKind {
     } else {
         DetectedKind::Summary
     }
+}
+
+fn is_cargo_test_command(command: &[String]) -> bool {
+    command.first().is_some_and(|s| s == "cargo") && command.iter().any(|s| s == "test")
+}
+
+fn is_cargo_build_command(command: &[String]) -> bool {
+    command.first().is_some_and(|s| s == "cargo")
+        && command
+            .iter()
+            .any(|s| matches!(s.as_str(), "build" | "check" | "clippy"))
+}
+
+fn is_generic_test_command(command: &[String]) -> bool {
+    let first = command.first().map(|s| s.as_str()).unwrap_or_default();
+    matches!(first, "pytest" | "vitest" | "jest")
+        || (matches!(first, "npm" | "pnpm") && command.iter().any(|s| s == "test"))
+        || (first == "go" && command.iter().any(|s| s == "test"))
+}
+
+fn looks_like_rust_diagnostics(text: &str) -> bool {
+    text.contains("error[") || text.contains("warning[") || text.contains(" --> ")
+}
+
+fn compress_rust_diagnostics(text: &str) -> String {
+    let mut out = Vec::new();
+    let mut diagnostic_count = 0usize;
+    let mut omitted_progress = 0usize;
+    let mut in_block = false;
+    let mut block_lines = 0usize;
+
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if is_cargo_progress_line(trimmed) {
+            omitted_progress += 1;
+            continue;
+        }
+        if is_rust_diagnostic_start(trimmed) {
+            diagnostic_count += 1;
+            if diagnostic_count > 6 {
+                continue;
+            }
+            in_block = true;
+            block_lines = 0;
+            out.push(line.to_string());
+            continue;
+        }
+        if in_block {
+            if is_block_continuation(trimmed) {
+                if block_lines < 28 {
+                    out.push(line.to_string());
+                }
+                block_lines += 1;
+            } else if trimmed.is_empty() {
+                if block_lines < 28 {
+                    out.push(String::new());
+                }
+            } else {
+                in_block = false;
+            }
+        }
+        if !in_block && is_rust_summary_line(trimmed) {
+            out.push(line.to_string());
+        }
+    }
+
+    if diagnostic_count > 6 {
+        out.push(format!(
+            "... omitted {} additional diagnostics ...",
+            diagnostic_count - 6
+        ));
+    }
+    if omitted_progress > 0 {
+        out.push(format!(
+            "... omitted {omitted_progress} cargo progress lines ..."
+        ));
+    }
+    out.join("\n")
+}
+
+fn is_cargo_progress_line(trimmed: &str) -> bool {
+    [
+        "Compiling ",
+        "Checking ",
+        "Finished ",
+        "Running ",
+        "Fresh ",
+        "Blocking ",
+        "Waiting ",
+    ]
+    .iter()
+    .any(|prefix| trimmed.starts_with(prefix))
+}
+
+fn is_rust_diagnostic_start(trimmed: &str) -> bool {
+    trimmed.starts_with("error[")
+        || trimmed.starts_with("warning[")
+        || trimmed.starts_with("error:")
+        || trimmed.starts_with("warning:")
+}
+
+fn is_block_continuation(trimmed: &str) -> bool {
+    trimmed.starts_with("-->")
+        || trimmed.starts_with("|")
+        || trimmed.starts_with("=")
+        || trimmed.starts_with("note:")
+        || trimmed.starts_with("help:")
+        || trimmed.starts_with("::")
+        || trimmed.chars().next().is_some_and(|c| c.is_ascii_digit())
+}
+
+fn is_rust_summary_line(trimmed: &str) -> bool {
+    trimmed.starts_with("error: could not compile")
+        || trimmed.starts_with("error: aborting")
+        || trimmed.starts_with("warning:") && trimmed.contains("warning emitted")
+}
+
+fn compress_cargo_test_output(text: &str) -> String {
+    let mut out = compress_test_output(text);
+    let diagnostics = compress_rust_diagnostics(text);
+    if !diagnostics.is_empty() && !out.contains(&diagnostics) {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&diagnostics);
+    }
+    out
+}
+
+fn compress_test_output(text: &str) -> String {
+    let mut out = Vec::new();
+    let mut passed = 0usize;
+    let mut failed = 0usize;
+    let mut ignored = 0usize;
+    let mut failed_names = Vec::new();
+    let mut in_failure = false;
+    let mut failure_lines = 0usize;
+    let mut backtrace_lines = 0usize;
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        let lower = trimmed.to_ascii_lowercase();
+        if is_skip_line(trimmed) {
+            ignored += 1;
+            continue;
+        }
+        if is_pass_line(trimmed) {
+            passed += 1;
+            continue;
+        }
+        if is_fail_line(trimmed) {
+            failed += 1;
+            if let Some(name) = extract_failure_name(trimmed) {
+                failed_names.push(name);
+            }
+            out.push(line.to_string());
+            in_failure = true;
+            failure_lines = 0;
+            continue;
+        }
+        if lower.contains("test result:")
+            || lower.starts_with("failed ")
+            || lower.contains(" failed,")
+            || lower.contains(" passed")
+        {
+            out.push(line.to_string());
+            continue;
+        }
+        if starts_failure_section(trimmed) {
+            in_failure = true;
+            failure_lines = 0;
+            out.push(line.to_string());
+            continue;
+        }
+        if is_panic_or_assertion_line(trimmed) {
+            in_failure = true;
+            if failure_lines < 80 {
+                out.push(line.to_string());
+            }
+            failure_lines += 1;
+            continue;
+        }
+        if in_failure {
+            if is_stack_frame(trimmed) {
+                if backtrace_lines < 12 {
+                    out.push(line.to_string());
+                }
+                backtrace_lines += 1;
+            } else if (failure_lines < 80 && should_keep_failure_context(trimmed))
+                || (failure_lines < 12 && !trimmed.is_empty() && !is_cargo_progress_line(trimmed))
+            {
+                out.push(line.to_string());
+            } else if trimmed.is_empty() && failure_lines < 80 {
+                out.push(String::new());
+            } else if is_pass_line(trimmed) || is_cargo_progress_line(trimmed) {
+                in_failure = false;
+            }
+            failure_lines += 1;
+        }
+    }
+
+    let mut header = Vec::new();
+    if passed + failed + ignored > 0 {
+        header.push(format!(
+            "test summary: passed={passed} failed={failed} skipped={ignored}"
+        ));
+    }
+    if !failed_names.is_empty() {
+        header.push(format!("failed tests: {}", failed_names.join(", ")));
+    }
+    if backtrace_lines > 12 {
+        out.push(format!(
+            "... omitted {} backtrace frames ...",
+            backtrace_lines - 12
+        ));
+    }
+    header.extend(out);
+    header.join("\n")
+}
+
+fn is_pass_line(trimmed: &str) -> bool {
+    let lower = trimmed.to_ascii_lowercase();
+    lower.starts_with("test ") && (lower.ends_with(" ... ok") || lower.contains(" ok"))
+        || lower.starts_with("pass ")
+        || lower.starts_with("✓")
+        || lower.starts_with("ok  ")
+        || lower == "ok"
+}
+
+fn is_skip_line(trimmed: &str) -> bool {
+    let lower = trimmed.to_ascii_lowercase();
+    lower.contains("ignored")
+        || lower.contains("skipped")
+        || lower.starts_with("skip ")
+        || lower.starts_with("--- skip:")
+}
+
+fn is_fail_line(trimmed: &str) -> bool {
+    let lower = trimmed.to_ascii_lowercase();
+    (lower.starts_with("test ") && (lower.ends_with(" ... failed") || lower.contains(" failed")))
+        || lower.starts_with("fail ")
+        || lower.starts_with("failed ")
+        || lower.starts_with("--- fail:")
+        || lower.contains(" failed") && lower.contains("::")
+}
+
+fn extract_failure_name(trimmed: &str) -> Option<String> {
+    if let Some(rest) = trimmed.strip_prefix("test ") {
+        return rest.split_whitespace().next().map(ToString::to_string);
+    }
+    if let Some(rest) = trimmed.strip_prefix("FAIL ") {
+        return Some(rest.trim().to_string());
+    }
+    if let Some(rest) = trimmed.strip_prefix("FAILED ") {
+        return Some(rest.trim().to_string());
+    }
+    if let Some(rest) = trimmed.strip_prefix("--- FAIL:") {
+        return rest.split_whitespace().next().map(ToString::to_string);
+    }
+    None
+}
+
+fn starts_failure_section(trimmed: &str) -> bool {
+    trimmed == "failures:"
+        || trimmed.starts_with("---- ")
+        || trimmed.starts_with("FAILURES")
+        || trimmed.starts_with("FAILED TESTS")
+}
+
+fn is_panic_or_assertion_line(trimmed: &str) -> bool {
+    let lower = trimmed.to_ascii_lowercase();
+    lower.contains("panicked at")
+        || lower.contains("panic:")
+        || lower.contains("assertion")
+        || lower.contains("traceback")
+        || lower.contains("expected") && lower.contains("actual")
+        || lower.contains("thread '")
+}
+
+fn should_keep_failure_context(trimmed: &str) -> bool {
+    let lower = trimmed.to_ascii_lowercase();
+    !trimmed.is_empty()
+        && (lower.contains("error")
+            || lower.contains("failed")
+            || lower.contains("failure")
+            || lower.contains("panic")
+            || lower.contains("assert")
+            || lower.contains("expected")
+            || lower.contains("actual")
+            || lower.contains(" at ")
+            || lower.contains(" --> ")
+            || trimmed.starts_with('|')
+            || trimmed.starts_with("left:")
+            || trimmed.starts_with("right:"))
+}
+
+fn is_stack_frame(trimmed: &str) -> bool {
+    trimmed.starts_with("at ")
+        || trimmed.starts_with("File ")
+        || trimmed
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_digit() && trimmed.contains(':'))
 }
 
 fn extract_error_lines(text: &str) -> String {
@@ -211,16 +545,6 @@ fn extract_error_lines(text: &str) -> String {
     filter_lines(text, |line| {
         let lower = line.to_ascii_lowercase();
         keywords.iter().any(|k| lower.contains(k))
-    })
-}
-
-fn extract_test_lines(text: &str) -> String {
-    filter_lines(text, |line| {
-        let lower = line.to_ascii_lowercase();
-        lower.contains("test")
-            || lower.contains("fail")
-            || lower.contains("passed")
-            || lower.contains("FAILED")
     })
 }
 
@@ -339,11 +663,130 @@ fn has_repeated_adjacent_lines(text: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn compressed_for(
+        command: &[&str],
+        stdout: &str,
+        stderr: &str,
+    ) -> crate::schema::CompressionData {
+        let command = command.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        compress(CompressionInput {
+            command: &command,
+            stdout,
+            stderr,
+            stdout_original_bytes: stdout.len() as u64,
+            stderr_original_bytes: stderr.len() as u64,
+            mode: CompressionMode::Route,
+        })
+        .unwrap()
+    }
+
     #[test]
     fn conflicting_cli_modes_are_rejected() {
         let err = resolve_cli_mode(Some(CompressionMode::Errors), Some(CompressionMode::Logs))
             .unwrap_err();
         assert!(err.contains("conflicts"));
+    }
+
+    #[test]
+    fn classifier_detects_rust_and_common_test_commands() {
+        assert_eq!(
+            detect_kind(&["cargo".into(), "test".into()], "", "").as_str(),
+            "cargo-test"
+        );
+        assert_eq!(
+            detect_kind(&["cargo".into(), "build".into()], "", "").as_str(),
+            "cargo-build"
+        );
+        assert_eq!(
+            detect_kind(&["cargo".into(), "check".into()], "", "").as_str(),
+            "cargo-build"
+        );
+        assert_eq!(
+            detect_kind(&["cargo".into(), "clippy".into()], "", "").as_str(),
+            "cargo-build"
+        );
+        assert_eq!(
+            detect_kind(&["pytest".into()], "", "").as_str(),
+            "test-runner"
+        );
+        assert_eq!(
+            detect_kind(&["npm".into(), "test".into()], "", "").as_str(),
+            "test-runner"
+        );
+        assert_eq!(
+            detect_kind(&["go".into(), "test".into()], "", "").as_str(),
+            "test-runner"
+        );
+    }
+
+    #[test]
+    fn rust_diagnostics_keep_essence_and_drop_progress() {
+        let raw = &format!(
+            "{}error[E0425]: cannot find value `x` in this scope\n --> src/main.rs:2:14\n  |\n2 |     println!(\"{{x}}\");\n  |                ^ not found in this scope\n  = note: important note\n  = help: define `x` first\nwarning: unused variable: `y`\n --> src/main.rs:3:9\nerror: could not compile `demo` due to previous error\n",
+            "   Compiling demo v0.1.0\n".repeat(20)
+        );
+        let data = compressed_for(&["cargo", "check"], "", raw);
+        assert!(data.applied);
+        assert_eq!(data.detected_kind, "cargo-build");
+        assert!(data.stderr.contains("error[E0425]"));
+        assert!(data.stderr.contains("src/main.rs:2:14"));
+        assert!(data.stderr.contains("important note"));
+        assert!(data.stderr.contains("define `x` first"));
+        assert!(!data.stderr.contains("Compiling demo"));
+    }
+
+    #[test]
+    fn cargo_test_summarizes_passes_and_keeps_failures() {
+        let raw = format!(
+            "running 52 tests\n{}test tests::broken ... FAILED\n\nfailures:\n\n---- tests::broken stdout ----\nthread 'tests::broken' panicked at src/lib.rs:7:9:\nassertion `left == right` failed\n  left: 1\n right: 2\nstack backtrace:\n{}\ntest result: FAILED. 51 passed; 1 failed; 0 ignored; finished in 0.01s\n",
+            "test tests::ok ... ok\n".repeat(51),
+            "   0: frame\n".repeat(30)
+        );
+        let data = compressed_for(&["cargo", "test"], &raw, "");
+        assert!(data.applied);
+        assert_eq!(data.detected_kind, "cargo-test");
+        assert!(data.stdout.contains("test summary: passed=51 failed=1"));
+        assert!(data.stdout.contains("tests::broken"));
+        assert!(data.stdout.contains("assertion `left == right` failed"));
+        assert!(data.stdout.contains("omitted 18 backtrace frames"));
+        assert!(!data.stdout.contains("tests::ok ... ok\ntest tests::ok"));
+    }
+
+    #[test]
+    fn generic_test_compression_preserves_failures_only() {
+        let raw = format!(
+            "{}FAIL tests/widget.test.ts > renders button\nAssertionError: expected 'a' to equal 'b'\n    at tests/widget.test.ts:9:3\n{}\n",
+            "PASS tests/ok.test.ts\n".repeat(40),
+            "✓ skipped thing\n".repeat(5)
+        );
+        let data = compressed_for(&["vitest"], &raw, "");
+        assert!(data.applied);
+        assert_eq!(data.detected_kind, "test-runner");
+        assert!(
+            data.stdout
+                .contains("test summary: passed=40 failed=1 skipped=5")
+        );
+        assert!(data.stdout.contains("renders button"));
+        assert!(data.stdout.contains("AssertionError"));
+        assert!(
+            !data
+                .stdout
+                .contains("PASS tests/ok.test.ts\nPASS tests/ok.test.ts")
+        );
+    }
+
+    #[test]
+    fn panic_backtrace_is_bounded() {
+        let raw = format!(
+            "test panic_case ... FAILED\n\nfailures:\nthread 'panic_case' panicked at src/main.rs:10:5:\nboom happened\nstack backtrace:\n{}test result: FAILED. 0 passed; 1 failed; 0 ignored\n",
+            "   1: repeated::frame\n".repeat(40)
+        );
+        let data = compressed_for(&["cargo", "test"], &raw, "");
+        assert!(data.applied);
+        assert!(data.stdout.contains("boom happened"));
+        assert!(data.stdout.contains("src/main.rs:10:5"));
+        assert!(data.stdout.contains("omitted 28 backtrace frames"));
+        assert!(data.stdout.len() < raw.len());
     }
 
     #[test]

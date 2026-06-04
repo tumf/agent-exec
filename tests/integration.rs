@@ -7494,6 +7494,53 @@ fn compression_expansion_guard_applies_per_stream() {
 }
 
 #[test]
+fn compression_cargo_test_synthetic_fixture_keeps_failure_detail() {
+    let h = TestHarness::new();
+    let passing = "test tests::ok ... ok\\n".repeat(80);
+    let script = format!(
+        "printf '%b' '{}test tests::broken ... FAILED\\n\\nfailures:\\n---- tests::broken stdout ----\\nthread '\''tests::broken'\'' panicked at src/lib.rs:9:5:\\nassertion `left == right` failed\\n  left: 1\\n right: 2\\n{}test result: FAILED. 80 passed; 1 failed; 0 ignored; finished in 0.01s\\n'",
+        passing,
+        "   1: frame\\n".repeat(40)
+    );
+    let v = h.run(&["run", "--rtk", "tests", "--", "sh", "-c", &script]);
+    assert_envelope(&v, "run", true);
+    assert_eq!(v["compression"]["applied"].as_bool(), Some(true));
+    let compressed = v["compression"]["stdout"].as_str().unwrap_or("");
+    assert!(
+        compressed.contains("tests::broken"),
+        "missing failure name: {v}"
+    );
+    assert!(
+        compressed.contains("assertion `left == right` failed"),
+        "missing assertion: {v}"
+    );
+    assert!(compressed.len() < v["stdout"].as_str().unwrap_or("").len());
+    assert!(!compressed.contains("tests::ok ... ok\\ntest tests::ok"));
+}
+
+#[test]
+fn compression_route_small_cargo_version_like_output_is_guarded() {
+    let h = TestHarness::new();
+    let v = h.run(&[
+        "run",
+        "--rtk",
+        "route",
+        "--",
+        "sh",
+        "-c",
+        "printf 'cargo 1.75.0\\n'",
+    ]);
+    assert_envelope(&v, "run", true);
+    assert_eq!(v["stdout"].as_str(), Some("cargo 1.75.0\n"));
+    assert_eq!(v["compression"]["applied"].as_bool(), Some(false));
+    assert_eq!(
+        v["compression"]["strategy"][0].as_str(),
+        Some("expansion-guard")
+    );
+    assert_eq!(v["compression"]["stdout"].as_str(), Some(""));
+}
+
+#[test]
 fn compression_schema_and_help_list_modes_without_auto() {
     let h = TestHarness::new();
     let schema = h.run(&["schema"]);
