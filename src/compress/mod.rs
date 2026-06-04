@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 mod generic;
+mod language;
 mod route;
 mod util;
 
@@ -73,7 +74,8 @@ pub fn compress(input: CompressionInput<'_>) -> Option<crate::schema::Compressio
         mode_kind(input.mode)
     };
 
-    let candidate = generic::compress_kind(kind, input.stdout, input.stderr);
+    let candidate = language::compress_kind(kind, input.stdout, input.stderr)
+        .unwrap_or_else(|| generic::compress_kind(kind, input.stdout, input.stderr));
     Some(guard_expansion(
         into_data(candidate, &input, kind),
         input.stdout,

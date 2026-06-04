@@ -97,6 +97,34 @@ System, search, log, JSON, and env-like outputs routed through `route` compressi
 **And**: failure sections are preserved
 **And**: passing test lists are collapsed into a compact summary
 
+JS/TS, Python, and Go tool outputs routed through `route` compression must use language-family-specific compact views when the observed command and output shape are recognized (MUST). These compact views must preserve actionable diagnostics, failure identities, file/package/rule grouping, and final summaries while removing progress noise and redundant pass lists (MUST). Compression must not inject JSON flags or rewrite commands (MUST NOT).
+
+#### Scenario: TypeScript and linter diagnostics are grouped
+
+**Given**: observed output from `tsc`, `eslint`, or `biome` contains many diagnostics
+**When**: language-family compression is applied
+**Then**: diagnostics are grouped by file and rule or code when present
+**And**: representative messages and locations are preserved
+**And**: repeated or redundant diagnostic text is bounded
+
+#### Scenario: Python tool output is compacted by structure
+
+**Given**: observed output from `ruff`, `mypy`, `pytest`, or `pip` is large
+**When**: Python compression is applied
+**Then**: lint/type errors are grouped by rule or file when present
+**And**: test failures are preserved while pass output is summarized
+**And**: package lists are bounded and summarized
+
+#### Scenario: Go output supports diagnostics and NDJSON events
+
+**Given**: observed output from `go test`, `go build`, `go vet`, or `golangci-lint` contains text diagnostics or NDJSON events
+**When**: Go compression is applied
+**Then**: package-level summaries are preserved
+**And**: failures or lint issues are grouped by package, file, rule, or test name
+**And**: passing package/test noise is collapsed
+
+#### Scenario: json compression applies when shape summary is smaller than raw output
+
 #### Scenario: git status preserves repository state
 
 **Given**: a `git status` output describes a dirty tree or an in-progress rebase/merge/cherry-pick state

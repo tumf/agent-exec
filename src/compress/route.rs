@@ -15,7 +15,16 @@ pub enum DetectedKind {
     Json,
     Summary,
     CargoTest,
-    Pytest,
+    TypeScript,
+    JsLint,
+    JsTest,
+    JsPackages,
+    PythonLint,
+    PythonTypecheck,
+    PythonTest,
+    PythonPackages,
+    GoDiagnostics,
+    GoTest,
     Search,
     DockerLogs,
     JsonStructure,
@@ -42,7 +51,16 @@ impl DetectedKind {
             Self::Json => "json",
             Self::Summary => "summary",
             Self::CargoTest => "cargo-test",
-            Self::Pytest => "pytest",
+            Self::TypeScript => "typescript",
+            Self::JsLint => "js-lint",
+            Self::JsTest => "js-test",
+            Self::JsPackages => "js-packages",
+            Self::PythonLint => "python-lint",
+            Self::PythonTypecheck => "python-typecheck",
+            Self::PythonTest => "python-test",
+            Self::PythonPackages => "python-packages",
+            Self::GoDiagnostics => "go-diagnostics",
+            Self::GoTest => "go-test",
             Self::Search => "search",
             Self::DockerLogs => "docker-logs",
             Self::JsonStructure => "json-structure",
@@ -109,10 +127,55 @@ fn route_command(tokens: &[String]) -> Option<RouteMatch> {
             "rust",
             Some("test".to_string()),
         )),
+        "tsc" => Some(matched(
+            DetectedKind::TypeScript,
+            "javascript",
+            Some("tsc".to_string()),
+        )),
+        "eslint" | "biome" => Some(matched(
+            DetectedKind::JsLint,
+            "javascript",
+            Some(executable.to_string()),
+        )),
+        "prettier" if tokens.iter().any(|token| token == "--check") => Some(matched(
+            DetectedKind::JsLint,
+            "javascript",
+            Some("prettier-check".to_string()),
+        )),
+        "next" if tokens.get(1).is_some_and(|token| token == "build") => Some(matched(
+            DetectedKind::TypeScript,
+            "javascript",
+            Some("next-build".to_string()),
+        )),
+        "npm" | "pnpm" | "yarn" => route_node_package_manager(executable, tokens),
         "pytest" | "py.test" => Some(matched(
-            DetectedKind::Pytest,
+            DetectedKind::PythonTest,
             "python",
             Some("test".to_string()),
+        )),
+        "ruff"
+            if tokens
+                .get(1)
+                .is_some_and(|token| token == "check" || token == "format") =>
+        {
+            Some(matched(
+                DetectedKind::PythonLint,
+                "python",
+                tokens.get(1).cloned(),
+            ))
+        }
+        "mypy" => Some(matched(
+            DetectedKind::PythonTypecheck,
+            "python",
+            Some("mypy".to_string()),
+        )),
+        "pip" => route_pip(tokens),
+        "uv" if tokens.get(1).is_some_and(|token| token == "pip") => route_uv_pip(tokens),
+        "go" => route_go(tokens),
+        "golangci-lint" if tokens.get(1).is_some_and(|token| token == "run") => Some(matched(
+            DetectedKind::GoDiagnostics,
+            "go",
+            Some("golangci-lint".to_string()),
         )),
         "rg" | "grep" => Some(matched(DetectedKind::Search, "search", None)),
         "ls" | "tree" | "find" => Some(matched(DetectedKind::List, "system", None)),
@@ -144,6 +207,65 @@ fn git_subcommand(tokens: &[String]) -> Option<String> {
         }
         Some(token.clone())
     })
+}
+
+fn route_node_package_manager(executable: &str, tokens: &[String]) -> Option<RouteMatch> {
+    match tokens.get(1).map(String::as_str) {
+        Some("test") => Some(matched(
+            DetectedKind::JsTest,
+            "javascript",
+            Some("test".to_string()),
+        )),
+        Some("run") if tokens.get(2).is_some_and(|token| token == "test") => Some(matched(
+            DetectedKind::JsTest,
+            "javascript",
+            Some("test".to_string()),
+        )),
+        Some("install" | "add" | "list" | "ls" | "outdated") => Some(matched(
+            DetectedKind::JsPackages,
+            "javascript",
+            Some(format!("{executable}-packages")),
+        )),
+        _ => None,
+    }
+}
+
+fn route_pip(tokens: &[String]) -> Option<RouteMatch> {
+    match tokens.get(1).map(String::as_str) {
+        Some("list" | "outdated" | "freeze") => Some(matched(
+            DetectedKind::PythonPackages,
+            "python",
+            Some("pip-packages".to_string()),
+        )),
+        _ => None,
+    }
+}
+
+fn route_uv_pip(tokens: &[String]) -> Option<RouteMatch> {
+    match tokens.get(2).map(String::as_str) {
+        Some("list" | "outdated" | "freeze") => Some(matched(
+            DetectedKind::PythonPackages,
+            "python",
+            Some("uv-pip-packages".to_string()),
+        )),
+        _ => None,
+    }
+}
+
+fn route_go(tokens: &[String]) -> Option<RouteMatch> {
+    match tokens.get(1).map(String::as_str) {
+        Some("test") => Some(matched(
+            DetectedKind::GoTest,
+            "go",
+            Some("test".to_string()),
+        )),
+        Some("build" | "vet") => Some(matched(
+            DetectedKind::GoDiagnostics,
+            "go",
+            tokens.get(1).cloned(),
+        )),
+        _ => None,
+    }
 }
 
 fn command_tokens(command: &[String]) -> Vec<String> {
@@ -212,7 +334,91 @@ mod tests {
     #[test]
     fn classifies_pytest() {
         let route = route(&cmd(&["pytest", "tests"]), "", "");
-        assert_eq!(route.kind, DetectedKind::Pytest);
+        assert_eq!(route.kind, DetectedKind::PythonTest);
+    }
+
+    #[test]
+    fn classifies_javascript_tooling() {
+        assert_eq!(
+            route(&cmd(&["tsc", "--noEmit"]), "", "").kind,
+            DetectedKind::TypeScript
+        );
+        assert_eq!(
+            route(&cmd(&["eslint", "."]), "", "").kind,
+            DetectedKind::JsLint
+        );
+        assert_eq!(
+            route(&cmd(&["biome", "check", "."]), "", "").kind,
+            DetectedKind::JsLint
+        );
+        assert_eq!(
+            route(&cmd(&["next", "build"]), "", "").kind,
+            DetectedKind::TypeScript
+        );
+        assert_eq!(
+            route(&cmd(&["prettier", "--check", "."]), "", "").kind,
+            DetectedKind::JsLint
+        );
+        assert_eq!(
+            route(&cmd(&["npm", "test"]), "", "").kind,
+            DetectedKind::JsTest
+        );
+        assert_eq!(
+            route(&cmd(&["yarn", "run", "test"]), "", "").kind,
+            DetectedKind::JsTest
+        );
+        assert_eq!(
+            route(&cmd(&["npm", "install"]), "", "").kind,
+            DetectedKind::JsPackages
+        );
+        assert_eq!(
+            route(&cmd(&["pnpm", "list"]), "", "").kind,
+            DetectedKind::JsPackages
+        );
+    }
+
+    #[test]
+    fn classifies_python_tooling() {
+        assert_eq!(
+            route(&cmd(&["ruff", "check", "."]), "", "").kind,
+            DetectedKind::PythonLint
+        );
+        assert_eq!(
+            route(&cmd(&["ruff", "format", "."]), "", "").kind,
+            DetectedKind::PythonLint
+        );
+        assert_eq!(
+            route(&cmd(&["mypy", "src"]), "", "").kind,
+            DetectedKind::PythonTypecheck
+        );
+        assert_eq!(
+            route(&cmd(&["pip", "list"]), "", "").kind,
+            DetectedKind::PythonPackages
+        );
+        assert_eq!(
+            route(&cmd(&["uv", "pip", "outdated"]), "", "").kind,
+            DetectedKind::PythonPackages
+        );
+    }
+
+    #[test]
+    fn classifies_go_tooling() {
+        assert_eq!(
+            route(&cmd(&["go", "test", "./..."]), "", "").kind,
+            DetectedKind::GoTest
+        );
+        assert_eq!(
+            route(&cmd(&["go", "build", "./..."]), "", "").kind,
+            DetectedKind::GoDiagnostics
+        );
+        assert_eq!(
+            route(&cmd(&["go", "vet", "./..."]), "", "").kind,
+            DetectedKind::GoDiagnostics
+        );
+        assert_eq!(
+            route(&cmd(&["golangci-lint", "run"]), "", "").kind,
+            DetectedKind::GoDiagnostics
+        );
     }
 
     #[test]
