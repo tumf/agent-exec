@@ -615,6 +615,14 @@ mod tests {
     }
 
     #[test]
+    fn classifies_stderr_timestamp_normalized_repeated_error_logs_before_errors() {
+        let stderr =
+            "2026-01-01T00:00:00Z ERROR retry failed\n2026-01-01T00:00:01Z ERROR retry failed\n";
+        let route = route(&cmd(&["tool"]), "", stderr);
+        assert_eq!(route.kind, DetectedKind::Logs);
+    }
+
+    #[test]
     fn classifies_single_error_as_errors() {
         let route = route(&cmd(&["tool"]), "ERROR one-off failure\n", "");
         assert_eq!(route.kind, DetectedKind::Errors);
