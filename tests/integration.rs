@@ -7494,6 +7494,82 @@ fn compression_expansion_guard_applies_per_stream() {
 }
 
 #[test]
+fn compression_route_reports_specific_detected_kinds() {
+    let h = TestHarness::new();
+
+    let git_log = h.run(&[
+        "run",
+        "--compress",
+        "route",
+        "git",
+        "log",
+        "--oneline",
+        "-3",
+    ]);
+    assert_eq!(
+        git_log["compression"]["detected_kind"].as_str(),
+        Some("git-log")
+    );
+
+    let cargo_test = h.run(&[
+        "run",
+        "--compress",
+        "route",
+        "cargo",
+        "test",
+        "definitely_missing_compression_route_test_filter",
+    ]);
+    assert_eq!(
+        cargo_test["compression"]["detected_kind"].as_str(),
+        Some("cargo-test")
+    );
+
+    let json = h.run(&[
+        "run",
+        "--compress",
+        "route",
+        "sh",
+        "-c",
+        "printf '{\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\":1,\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\":2}'",
+    ]);
+    assert_eq!(
+        json["compression"]["detected_kind"].as_str(),
+        Some("json-structure")
+    );
+}
+
+#[test]
+fn compression_route_reports_search_and_docker_logs_detected_kinds() {
+    let h = TestHarness::new();
+
+    let search = h.run(&[
+        "run",
+        "--compress",
+        "route",
+        "rg",
+        "definitely_missing_compression_route_pattern",
+        "src",
+    ]);
+    assert_eq!(
+        search["compression"]["detected_kind"].as_str(),
+        Some("search")
+    );
+
+    let docker_logs = h.run(&[
+        "run",
+        "--compress",
+        "route",
+        "docker",
+        "logs",
+        "definitely_missing_compression_route_container",
+    ]);
+    assert_eq!(
+        docker_logs["compression"]["detected_kind"].as_str(),
+        Some("docker-logs")
+    );
+}
+
+#[test]
 fn compression_schema_and_help_list_modes_without_auto() {
     let h = TestHarness::new();
     let schema = h.run(&["schema"]);
