@@ -300,6 +300,10 @@ mod tests {
             DetectedKind::JsLint
         );
         assert_eq!(
+            route(&cmd(&["biome", "check", "."]), "", "").kind,
+            DetectedKind::JsLint
+        );
+        assert_eq!(
             route(&cmd(&["next", "build"]), "", "").kind,
             DetectedKind::TypeScript
         );
@@ -310,6 +314,14 @@ mod tests {
         assert_eq!(
             route(&cmd(&["npm", "test"]), "", "").kind,
             DetectedKind::JsTest
+        );
+        assert_eq!(
+            route(&cmd(&["yarn", "run", "test"]), "", "").kind,
+            DetectedKind::JsTest
+        );
+        assert_eq!(
+            route(&cmd(&["npm", "install"]), "", "").kind,
+            DetectedKind::JsPackages
         );
         assert_eq!(
             route(&cmd(&["pnpm", "list"]), "", "").kind,
