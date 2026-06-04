@@ -7386,7 +7386,7 @@ fn compression_json_expansion_guard() {
         "json",
         "sh",
         "-c",
-        "printf '{\\\"a\\\":1}'",
+        "printf '%s' '{\"a\":1}'",
     ]);
     assert_envelope(&json, "run", true);
     assert_eq!(json["stdout"].as_str(), Some(raw_json));
