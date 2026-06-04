@@ -543,6 +543,10 @@ fn summarize_git_push(text: &str) -> String {
 }
 
 fn summarize_git_pull(text: &str) -> String {
+    if contains_git_error(text) {
+        return error_bearing_git_lines(text);
+    }
+
     if let Some((files, insertions, deletions)) =
         text.lines().find_map(|line| parse_shortstat(line.trim()))
     {
@@ -841,6 +845,13 @@ mod tests {
                 "remote: Counting objects: 100% (1/1), done.\nerror: Your local changes would be overwritten by merge\nhint: Commit your changes\n"
             ),
             "error: Your local changes would be overwritten by merge"
+        );
+        assert_eq!(
+            summarize_git(
+                GitKind::Pull,
+                "error: Your local changes would be overwritten by merge\n 2 files changed, 4 insertions(+), 1 deletion(-)\nfatal: merge failed\n"
+            ),
+            "error: Your local changes would be overwritten by merge\nfatal: merge failed"
         );
         assert_eq!(
             summarize_git(
