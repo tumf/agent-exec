@@ -23,11 +23,15 @@ And any accepted fix must be verified against this workload-liveness case, not o
 
 `run`/`start`/`restart`/`tail` は inline/tail 観測レスポンスに built-in compression view を追加できなければならない（MUST）。Compression は `--compress <mode>` または alias `--rtk <mode>` で制御できなければならず、外部 `rtk` コマンドを呼び出してはならない（MUST NOT）。Supported modes は `off|route|errors|tests|logs|git|json|summary` であり、`auto` を supported mode として受け付けてはならない（MUST NOT）。
 
-Compression の built-in default は `route` でなければならない（MUST）。Config `[compression].default` が存在する場合は CLI 未指定時の既定 mode として使わなければならない（MUST）。Effective mode の優先順位は CLI `--compress`/`--rtk`、config `[compression].default`、built-in `route` でなければならない（MUST）。
+Git command outputs routed through `route` or explicit `git` compression must use Git-specific compact views when the observed command is a supported Git subcommand (MUST). Git compression must preserve the information needed to understand repository state, commit identity, changed files, diff context, and push/pull outcome while removing progress noise, repeated boilerplate, and excessive hunks (MUST). Git compression must not rewrite commands or replace canonical raw observation fields (MUST NOT).
 
-Resolved mode が `off` 以外の場合、レスポンスは `compression` object を含まなければならない（MUST）。Resolved mode が `off` の場合、レスポンスは `compression` object を省略しなければならない（MUST）。Compression は canonical raw `stdout`/`stderr` fields または raw byte range fields を置換・変更してはならない（MUST NOT）。
+#### Scenario: git log stat output is summarized by commit
 
-Compression は、compressed view が対象 raw observed output より大きい、または同じ大きさになる場合、その compressed text をレスポンスへ含めてはならない（MUST NOT）。この expansion guard が発動した場合、レスポンスは bounded な `compression` object を含み、`compression.applied=false` と guard reason を示す strategy を返さなければならない（MUST）。
+**Given**: `agent-exec run --rtk route -- git log --stat -30` observes multi-commit Git log output
+**When**: route compression classifies the command as `git-log`
+**Then**: `compression.stdout` preserves commit hashes and subjects for retained commits
+**And**: per-commit file/insertion/deletion stats are summarized compactly
+**And**: the compressed output is smaller than the raw observed stdout when enough commits are present
 
 `route` compression は command argv と output shape から command family を分類できなければならない（MUST）。分類は外部 `rtk` command の実行やユーザー command の書き換えに依存してはならない（MUST NOT）。分類結果は `compression.detected_kind` に stable string として表現されなければならず、raw observation fields の互換性を壊してはならない（MUST NOT）。
 
@@ -57,101 +61,30 @@ Rust build/test outputs and common test-runner outputs routed through `route` or
 **And**: failure sections are preserved
 **And**: passing test lists are collapsed into a compact summary
 
-#### Scenario: json compression applies when shape summary is smaller than raw output
+#### Scenario: git status preserves repository state
 
-**Given**: a command emits a JSON object whose raw observed output is larger than the JSON shape summary
-**When**: `agent-exec run --compress json -- <cmd>` is executed
-**Then**: the response includes `compression.applied=true`
-**And**: `compression.stdout` contains an object shape summary such as `object keys=2`
-**And**: canonical raw `stdout` still contains the original JSON output
+**Given**: a `git status` output describes a dirty tree or an in-progress rebase/merge/cherry-pick state
+**When**: Git status compression is applied
+**Then**: branch or detached HEAD information is preserved
+**And**: in-progress state information is preserved
+**And**: git hint prose such as `use "git add"` is removed from the compressed view
 
-#### Scenario: json compression guard suppresses non-smaller shape summary
+#### Scenario: git diff preserves file and hunk context
 
-**Given**: a command emits a short JSON object whose JSON shape summary would be greater than or equal to the raw observed output size
-**When**: `agent-exec run --compress json -- <cmd>` is executed
-**Then**: the response includes `compression.applied=false`
-**And**: `compression.strategy` includes `expansion-guard`
-**And**: `compression.stdout` is empty
-**And**: canonical raw `stdout` still contains the original JSON output
+**Given**: a `git diff` or `git show` output contains multiple changed files and hunks
+**When**: Git diff compression is applied
+**Then**: changed file names are preserved
+**And**: hunk headers are preserved
+**And**: per-file additions and deletions are summarized
+**And**: excessive hunk body lines are bounded
 
-#### Scenario: tail が末尾観測 API である
+#### Scenario: git push and pull remove progress noise
 
-**Given**: 実行中または完了済みのジョブが存在する
-**When**: `agent-exec tail --tail-lines 10 --max-bytes 1024 <job_id>` を実行する
-**Then**: `stdout`/`stderr` と `encoding="utf-8-lossy"` が返る
-**And**: `stdout_range`/`stderr_range` が返る
-
-#### Scenario: default route compression is included
-
-**Given**: config に `[compression].default` が設定されていない
-**When**: `agent-exec run -- sh -c "printf 'error: bad\\n'"` を実行する
-**Then**: stdout は JSON-only の単一 object である
-**And**: レスポンスは `compression.mode = "route"` を含む
-**And**: canonical `stdout` と `stdout_range` は raw head 観測を表す
-
-#### Scenario: rtk alias behaves like compress
-
-**Given**: 同じ job output を生成するコマンドがある
-**When**: `agent-exec run --compress errors -- <cmd>` と `agent-exec run --rtk errors -- <cmd>` を実行する
-**Then**: 両レスポンスの effective compression mode は `errors` である
-**And**: 両レスポンスは同じ compression strategy family を使う
-
-#### Scenario: conflicting compression flags are rejected
-
-**Given**: `--compress errors` と `--rtk logs` が同時に指定される
-**When**: `agent-exec run --compress errors --rtk logs -- echo hi` を実行する
-**Then**: コマンドは usage error として終了コード 2 で失敗する
-
-#### Scenario: config default can disable compression
-
-**Given**: config file に `[compression] default = "off"` が設定されている
-**When**: その config を使って `agent-exec run -- echo hi` を実行する
-**Then**: レスポンスは canonical raw observation fields を含む
-**And**: レスポンスは `compression` object を含まない
-
-#### Scenario: CLI compression mode overrides config default
-
-**Given**: config file に `[compression] default = "off"` が設定されている
-**When**: その config を使って `agent-exec run --compress route -- echo hi` を実行する
-**Then**: レスポンスは `compression.mode = "route"` を含む
-
-#### Scenario: invalid config compression mode fails with structured error
-
-**Given**: config file に `[compression] default = "auto"` が設定されている
-**When**: その config を使って `agent-exec run -- echo hi` を実行する
-**Then**: stdout は JSON-only の error response である
-**And**: `error.code` は config validation failure を示す stable code である
-
-#### Scenario: off mode preserves compatibility shape
-
-**Given**: `agent-exec run --compress off -- echo hi` を実行する
-**When**: コマンドが返る
-**Then**: レスポンスは canonical raw observation fields を含む
-**And**: レスポンスは `compression` object を含まない
-
-#### Scenario: compressed output does not replace raw output
-
-**Given**: コマンドが repeated log lines と error lines を出力する
-**When**: `agent-exec run --compress logs -- <cmd>` を実行する
-**Then**: canonical `stdout` または `stderr` は raw head 観測を含む
-**And**: `compression.stdout` または `compression.stderr` は repeated lines を集約した compact view を含む
-**And**: `stdout_range` と `stderr_range` は raw byte range を表す
-
-#### Scenario: expansion guard suppresses larger compressed tail text
-
-**Given**: コマンド出力が JSON/NDJSON-like text であり、route compression の compressed candidate が raw observed output 以上の byte size になる
-**When**: `agent-exec tail <job_id>` を実行する
-**Then**: レスポンスは canonical raw `stdout`/`stderr` と range fields を含む
-**And**: レスポンスは `compression.applied=false` を含む
-**And**: `compression.strategy` は expansion guard reason を含む
-**And**: `compression.stdout` と `compression.stderr` は raw observed output より大きい text を含まない
-
-#### Scenario: useful smaller compression still applies
-
-**Given**: コマンド出力が repeated log lines を含み、logs compression が raw observed output より小さい compact view を生成できる
-**When**: `agent-exec run --compress logs -- <cmd>` を実行する
-**Then**: レスポンスは `compression.applied=true` を含む
-**And**: `compression.stdout` または `compression.stderr` は repeated line summary を含む
+**Given**: `git push` or `git pull` output includes progress lines and a final outcome
+**When**: Git transport compression is applied
+**Then**: progress boilerplate such as object enumeration and compression lines is omitted
+**And**: a successful outcome is summarized in one compact line
+**And**: failure output still preserves the error-bearing lines
 
 #### Scenario: route compression classifies command family without command rewrite
 

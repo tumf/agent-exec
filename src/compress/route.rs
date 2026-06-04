@@ -4,9 +4,16 @@ pub enum DetectedKind {
     Tests,
     Logs,
     Git,
+    GitStatus,
+    GitLog,
+    GitDiff,
+    GitShow,
+    GitPush,
+    GitPull,
+    GitBranch,
+    GitStash,
     Json,
     Summary,
-    GitLog,
     CargoTest,
     Pytest,
     Search,
@@ -21,9 +28,16 @@ impl DetectedKind {
             Self::Tests => "tests",
             Self::Logs => "logs",
             Self::Git => "git",
+            Self::GitStatus => "git-status",
+            Self::GitLog => "git-log",
+            Self::GitDiff => "git-diff",
+            Self::GitShow => "git-show",
+            Self::GitPush => "git-push",
+            Self::GitPull => "git-pull",
+            Self::GitBranch => "git-branch",
+            Self::GitStash => "git-stash",
             Self::Json => "json",
             Self::Summary => "summary",
-            Self::GitLog => "git-log",
             Self::CargoTest => "cargo-test",
             Self::Pytest => "pytest",
             Self::Search => "search",
@@ -70,11 +84,17 @@ fn route_command(tokens: &[String]) -> Option<RouteMatch> {
     let executable = tokens.first()?.as_str();
     match executable {
         "git" => {
-            let subcommand = tokens.get(1).cloned();
-            let kind = if subcommand.as_deref() == Some("log") {
-                DetectedKind::GitLog
-            } else {
-                DetectedKind::Git
+            let subcommand = git_subcommand(tokens);
+            let kind = match subcommand.as_deref() {
+                Some("status") => DetectedKind::GitStatus,
+                Some("log") => DetectedKind::GitLog,
+                Some("diff") => DetectedKind::GitDiff,
+                Some("show") => DetectedKind::GitShow,
+                Some("push") => DetectedKind::GitPush,
+                Some("pull") => DetectedKind::GitPull,
+                Some("branch") => DetectedKind::GitBranch,
+                Some("stash") => DetectedKind::GitStash,
+                _ => DetectedKind::Git,
             };
             Some(matched(kind, "git", subcommand))
         }
@@ -96,6 +116,24 @@ fn route_command(tokens: &[String]) -> Option<RouteMatch> {
         )),
         _ => None,
     }
+}
+
+fn git_subcommand(tokens: &[String]) -> Option<String> {
+    let mut skip_value = false;
+    tokens.iter().skip(1).find_map(|token| {
+        if skip_value {
+            skip_value = false;
+            return None;
+        }
+        if matches!(token.as_str(), "-C" | "-c" | "--git-dir" | "--work-tree") {
+            skip_value = true;
+            return None;
+        }
+        if token.starts_with('-') || token.contains('=') {
+            return None;
+        }
+        Some(token.clone())
+    })
 }
 
 fn command_tokens(command: &[String]) -> Vec<String> {
