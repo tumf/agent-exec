@@ -1,13 +1,13 @@
 ## Implementation Tasks
 
-- [ ] Add Git subcommand detection for `status`, `log`, `diff`, `show`, `push`, `pull`, `branch`, and `stash` (verification: unit - classifier tests map representative argv arrays to `git-*` detected kinds).
-- [ ] Implement `git log` block summarization that preserves hash/subject, keeps up to three meaningful body lines, removes common trailers, aggregates `N files changed`, `insertions`, and `deletions`, and caps commit count (verification: integration - `agent-exec run --rtk route -- git log --stat -30` produces smaller `compression.stdout` with commit hashes and stat summaries).
-- [ ] Implement `git status` filtering that removes git hints while preserving branch/detached state and rebase/merge/cherry-pick/bisect/am state text when present (verification: unit - fixtures for clean tree, dirty tree, detached HEAD, and rebase state).
-- [ ] Implement `git diff` and `git show` summarization by changed file, hunk header, bounded hunk content, and per-file addition/deletion counts (verification: integration - fixture command output compresses to file/hunk summaries and remains smaller than raw).
-- [ ] Implement `git push` and `git pull` progress-noise filtering with success and failure summaries (verification: unit - push progress fixture returns `ok <ref>` or `ok (up-to-date)`; pull fixture returns `ok N files +X -Y`).
-- [ ] Implement `git branch` and `git stash` compact list/result summaries without hiding errors (verification: unit - branch list and stash list fixtures are compacted with counts and current item preserved).
-- [ ] Ensure all Git compressors go through shared expansion guard and leave raw fields untouched (verification: integration - small Git output triggers guard or omits oversized candidate while canonical stdout remains raw).
-- [ ] Run repository verification commands and fix regressions (verification: manual - `cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo test --all`).
+- [x] Add Git subcommand detection for `status`, `log`, `diff`, `show`, `push`, `pull`, `branch`, and `stash` (verification: unit - `src/compress.rs::tests::git_classifier_maps_representative_argv`, run by `cargo test git_`).
+- [x] Implement `git log` block summarization that preserves hash/subject, keeps up to three meaningful body lines, removes common trailers, aggregates `N files changed`, `insertions`, and `deletions`, and caps commit count (verification: integration - `tests/integration.rs::compression_git_log_stat_is_smaller_and_preserves_commits`, run by `cargo test git_`).
+- [x] Implement `git status` filtering that removes git hints while preserving branch/detached state and rebase/merge/cherry-pick/bisect/am state text when present (verification: unit - `src/compress.rs::tests::git_status_keeps_state_and_removes_hints` and `git_status_keeps_detached_and_rebase_state`, run by `cargo test git_`).
+- [x] Implement `git diff` and `git show` summarization by changed file, hunk header, bounded hunk content, and per-file addition/deletion counts (verification: integration - `tests/integration.rs::compression_git_diff_summarizes_files_hunks_and_keeps_raw_stdout`, run by `cargo test git_`).
+- [x] Implement `git push` and `git pull` progress-noise filtering with success and failure summaries (verification: unit - `src/compress.rs::tests::git_push_pull_branch_and_stash_summarize`, run by `cargo test git_`).
+- [x] Implement `git branch` and `git stash` compact list/result summaries without hiding errors (verification: unit - `src/compress.rs::tests::git_push_pull_branch_and_stash_summarize`, run by `cargo test git_`).
+- [x] Ensure all Git compressors go through shared expansion guard and leave raw fields untouched (verification: integration - `tests/integration.rs::compression_git_small_output_uses_expansion_guard_and_preserves_raw`, run by `cargo test git_`).
+- [x] Run repository verification commands and fix regressions (verification: manual - `cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo test --all`).
 
 ## Future Work
 

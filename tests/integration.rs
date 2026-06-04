@@ -7493,6 +7493,154 @@ fn compression_expansion_guard_applies_per_stream() {
     );
 }
 
+fn run_in_dir_with_root(args: &[&str], root: &str, cwd: &std::path::Path) -> serde_json::Value {
+    let output = Command::new(binary())
+        .env("AGENT_EXEC_ROOT", root)
+        .current_dir(cwd)
+        .args(args)
+        .output()
+        .expect("run binary in cwd");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stdout.trim().is_empty(),
+        "stdout is empty (stderr: {stderr})\nargs: {args:?}"
+    );
+    serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+        panic!("stdout is not valid JSON: {e}\nstdout: {stdout}\nstderr: {stderr}\nargs: {args:?}")
+    })
+}
+
+fn git_fixture_repo() -> tempfile::TempDir {
+    let repo = tempfile::tempdir().expect("git repo tempdir");
+    let run_git = |args: &[&str]| {
+        let output = Command::new("git")
+            .current_dir(repo.path())
+            .args(args)
+            .output()
+            .expect("run git fixture command");
+        assert!(
+            output.status.success(),
+            "git {:?} failed\nstdout: {}\nstderr: {}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    run_git(&["init"]);
+    run_git(&["config", "user.email", "agent-exec@example.invalid"]);
+    run_git(&["config", "user.name", "Agent Exec"]);
+    for i in 0..8 {
+        std::fs::write(
+            repo.path().join(format!("file{i}.txt")),
+            format!("line {i}\nold {i}\n"),
+        )
+        .expect("write fixture file");
+        run_git(&["add", "."]);
+        run_git(&["commit", "-m", &format!("commit {i}")]);
+    }
+    repo
+}
+
+#[test]
+fn compression_git_log_stat_is_smaller_and_preserves_commits() {
+    let h = TestHarness::new();
+    let repo = git_fixture_repo();
+    let v = run_in_dir_with_root(
+        &["run", "--rtk", "route", "--", "git", "log", "--stat", "-30"],
+        h.root(),
+        repo.path(),
+    );
+    assert_envelope(&v, "run", true);
+    assert_eq!(v["compression"]["detected_kind"].as_str(), Some("git-log"));
+    let raw = v["stdout"].as_str().unwrap_or("");
+    let compressed = v["compression"]["stdout"].as_str().unwrap_or("");
+    assert!(
+        v["compression"]["applied"].as_bool().unwrap_or(false),
+        "{v}"
+    );
+    assert!(
+        compressed.len() < raw.len(),
+        "compressed log must be smaller: {v}"
+    );
+    assert!(compressed.contains("commit "), "commit hash missing: {v}");
+    assert!(
+        compressed.contains("files, +"),
+        "shortstat summary missing: {v}"
+    );
+}
+
+#[test]
+fn compression_git_diff_summarizes_files_hunks_and_keeps_raw_stdout() {
+    let h = TestHarness::new();
+    let repo = git_fixture_repo();
+    std::fs::write(repo.path().join("file1.txt"), "line 1\nnew 1\nadded\n")
+        .expect("modify fixture file");
+    let v = run_in_dir_with_root(
+        &["run", "--rtk", "route", "--", "git", "diff"],
+        h.root(),
+        repo.path(),
+    );
+    assert_envelope(&v, "run", true);
+    assert_eq!(v["compression"]["detected_kind"].as_str(), Some("git-diff"));
+    let raw = v["stdout"].as_str().unwrap_or("");
+    let compressed = v["compression"]["stdout"].as_str().unwrap_or("");
+    assert!(
+        raw.contains("diff --git"),
+        "raw stdout must remain unmodified: {v}"
+    );
+    assert!(
+        compressed.contains("file1.txt"),
+        "file summary missing: {v}"
+    );
+    assert!(compressed.contains("@@"), "hunk header missing: {v}");
+    assert!(
+        compressed.contains("+"),
+        "addition count/content missing: {v}"
+    );
+    assert!(
+        compressed.len() < raw.len(),
+        "compressed diff must be smaller: {v}"
+    );
+
+    let show = run_in_dir_with_root(
+        &[
+            "run", "--rtk", "route", "--", "git", "show", "--stat", "--patch", "HEAD",
+        ],
+        h.root(),
+        repo.path(),
+    );
+    assert_eq!(
+        show["compression"]["detected_kind"].as_str(),
+        Some("git-show")
+    );
+    assert!(
+        show["compression"]["stdout"]
+            .as_str()
+            .unwrap_or("")
+            .contains("file"),
+        "show file summary missing: {show}"
+    );
+}
+
+#[test]
+fn compression_git_small_output_uses_expansion_guard_and_preserves_raw() {
+    let h = TestHarness::new();
+    let repo = git_fixture_repo();
+    let v = run_in_dir_with_root(
+        &["run", "--rtk", "route", "--", "git", "branch"],
+        h.root(),
+        repo.path(),
+    );
+    assert_envelope(&v, "run", true);
+    assert!(v["stdout"].as_str().unwrap_or("").contains("*"));
+    assert_eq!(v["compression"]["applied"].as_bool(), Some(false));
+    assert_eq!(
+        v["compression"]["strategy"][0].as_str(),
+        Some("expansion-guard")
+    );
+}
+
 #[test]
 fn compression_schema_and_help_list_modes_without_auto() {
     let h = TestHarness::new();
