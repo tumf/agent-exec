@@ -20,10 +20,40 @@ pub fn compress_kind(
             extract_test_lines(raw_stderr),
             vec!["test-failure-focus".to_string()],
         ),
-        DetectedKind::Logs | DetectedKind::DockerLogs => (
+        DetectedKind::Logs | DetectedKind::DockerLogs | DetectedKind::KubernetesLogs => (
             dedup_lines(raw_stdout),
             dedup_lines(raw_stderr),
             vec!["dedupe-repeated-lines".to_string()],
+        ),
+        DetectedKind::DockerTable => (
+            summarize_table(raw_stdout, DOCKER_COLUMNS, ABNORMAL_WORDS),
+            summarize_table(raw_stderr, DOCKER_COLUMNS, ABNORMAL_WORDS),
+            vec!["docker-table-summary".to_string()],
+        ),
+        DetectedKind::KubernetesTable => (
+            summarize_table(raw_stdout, KUBERNETES_COLUMNS, ABNORMAL_WORDS),
+            summarize_table(raw_stderr, KUBERNETES_COLUMNS, ABNORMAL_WORDS),
+            vec!["kubernetes-table-summary".to_string()],
+        ),
+        DetectedKind::GitHubCli | DetectedKind::GitLabCli => (
+            summarize_issue_cli(raw_stdout),
+            summarize_issue_cli(raw_stderr),
+            vec![format!("{}-summary", kind.as_str())],
+        ),
+        DetectedKind::Aws => (
+            summarize_aws(raw_stdout),
+            summarize_aws(raw_stderr),
+            vec!["aws-safe-summary".to_string()],
+        ),
+        DetectedKind::HttpTransfer => (
+            summarize_http_transfer(raw_stdout),
+            summarize_http_transfer(raw_stderr),
+            vec!["http-progress-filter".to_string()],
+        ),
+        DetectedKind::PsqlTable => (
+            summarize_table(raw_stdout, PSQL_COLUMNS, ABNORMAL_WORDS),
+            summarize_table(raw_stderr, PSQL_COLUMNS, ABNORMAL_WORDS),
+            vec!["psql-table-summary".to_string()],
         ),
         DetectedKind::Git
         | DetectedKind::GitStatus
@@ -429,6 +459,334 @@ fn summarize_git_stash(text: &str) -> String {
     out.join("\n")
 }
 
+const DOCKER_COLUMNS: &[&str] = &[
+    "container id",
+    "name",
+    "names",
+    "image",
+    "status",
+    "state",
+    "ports",
+    "service",
+];
+const KUBERNETES_COLUMNS: &[&str] = &[
+    "namespace",
+    "name",
+    "ready",
+    "status",
+    "restarts",
+    "age",
+    "type",
+    "cluster-ip",
+    "external-ip",
+];
+const PSQL_COLUMNS: &[&str] = &[
+    "id", "name", "status", "state", "created", "updated", "error",
+];
+const ABNORMAL_WORDS: &[&str] = &[
+    "error",
+    "fail",
+    "crash",
+    "backoff",
+    "unhealthy",
+    "exited",
+    "pending",
+    "terminating",
+];
+
+fn summarize_table(text: &str, preferred_columns: &[&str], abnormal_words: &[&str]) -> String {
+    let Some((headers, rows)) = parse_table(text) else {
+        return summarize_text(text);
+    };
+    let keep = selected_column_indexes(&headers, preferred_columns);
+    if keep.is_empty() {
+        return summarize_text(text);
+    }
+
+    let mut prioritized = rows;
+    prioritized.sort_by_key(|row| !row_has_any(row, abnormal_words));
+    let mut out = Vec::new();
+    out.push(project_row(&headers, &keep));
+    out.extend(
+        prioritized
+            .iter()
+            .take(30)
+            .map(|row| project_row(row, &keep)),
+    );
+    if prioritized.len() > 30 {
+        out.push(format!("... +{} rows omitted", prioritized.len() - 30));
+    }
+    out.join("\n")
+}
+
+fn parse_table(text: &str) -> Option<(Vec<String>, Vec<Vec<String>>)> {
+    let lines: Vec<&str> = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    if lines.len() < 2 {
+        return None;
+    }
+    if lines[0].contains('|') {
+        let rows: Vec<Vec<String>> = lines
+            .iter()
+            .filter(|line| !line.trim().starts_with("+-") && !line.trim().starts_with("|-"))
+            .map(|line| {
+                line.split('|')
+                    .map(str::trim)
+                    .filter(|cell| !cell.is_empty() && !cell.chars().all(|c| c == '-'))
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .filter(|row| row.len() > 1)
+            .collect();
+        return split_header_rows(rows);
+    }
+
+    let (header, spans) = parse_fixed_width_header(lines[0]);
+    if header.len() < 2 || !header.iter().any(|cell| is_known_header(cell)) {
+        return None;
+    }
+    let rows = lines
+        .iter()
+        .skip(1)
+        .filter(|line| !line.trim_start().starts_with('('))
+        .map(|line| split_fixed_width_row(line, &spans))
+        .filter(|row| row.len() == header.len())
+        .collect::<Vec<_>>();
+    if rows.is_empty() {
+        None
+    } else {
+        Some((header, rows))
+    }
+}
+
+fn split_header_rows(rows: Vec<Vec<String>>) -> Option<(Vec<String>, Vec<Vec<String>>)> {
+    let mut iter = rows.into_iter();
+    let header = iter.next()?;
+    let rows = iter.collect::<Vec<_>>();
+    if rows.is_empty() {
+        None
+    } else {
+        Some((header, rows))
+    }
+}
+
+fn parse_fixed_width_header(line: &str) -> (Vec<String>, Vec<(usize, usize)>) {
+    let mut spans = Vec::new();
+    let bytes = line.as_bytes();
+    let mut idx = 0;
+    while idx < bytes.len() {
+        while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+            idx += 1;
+        }
+        if idx >= bytes.len() {
+            break;
+        }
+        let start = idx;
+        while idx < bytes.len() {
+            if idx + 1 < bytes.len()
+                && bytes[idx].is_ascii_whitespace()
+                && bytes[idx + 1].is_ascii_whitespace()
+            {
+                break;
+            }
+            idx += 1;
+        }
+        let end = idx;
+        spans.push((start, end));
+        while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+            idx += 1;
+        }
+    }
+    let headers = spans
+        .iter()
+        .map(|(start, end)| line[*start..*end].trim().to_string())
+        .collect();
+    (headers, spans)
+}
+
+fn split_fixed_width_row(line: &str, spans: &[(usize, usize)]) -> Vec<String> {
+    spans
+        .iter()
+        .enumerate()
+        .map(|(idx, (start, _end))| {
+            let end = spans
+                .get(idx + 1)
+                .map(|(next_start, _)| *next_start)
+                .unwrap_or(line.len())
+                .min(line.len());
+            if *start >= line.len() {
+                String::new()
+            } else {
+                line[*start..end].trim().to_string()
+            }
+        })
+        .collect()
+}
+
+fn selected_column_indexes(headers: &[String], preferred_columns: &[&str]) -> Vec<usize> {
+    headers
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, header)| {
+            let normalized = normalize_header(header);
+            preferred_columns
+                .iter()
+                .any(|preferred| normalize_header(preferred) == normalized)
+                .then_some(idx)
+        })
+        .collect()
+}
+
+fn normalize_header(header: &str) -> String {
+    header
+        .trim()
+        .trim_matches('-')
+        .to_ascii_lowercase()
+        .replace('_', "-")
+}
+
+fn is_known_header(header: &str) -> bool {
+    let normalized = normalize_header(header);
+    DOCKER_COLUMNS
+        .iter()
+        .chain(KUBERNETES_COLUMNS)
+        .chain(PSQL_COLUMNS)
+        .any(|known| normalize_header(known) == normalized)
+}
+
+fn project_row(row: &[String], keep: &[usize]) -> String {
+    keep.iter()
+        .filter_map(|idx| row.get(*idx))
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
+fn row_has_any(row: &[String], words: &[&str]) -> bool {
+    let lower = row.join(" ").to_ascii_lowercase();
+    words.iter().any(|word| lower.contains(word))
+}
+
+fn summarize_issue_cli(text: &str) -> String {
+    let keep_prefixes = [
+        "title:",
+        "state:",
+        "author:",
+        "labels:",
+        "assignees:",
+        "checks:",
+        "status:",
+        "url:",
+    ];
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        let lower = trimmed.to_ascii_lowercase();
+        let keep = trimmed.starts_with('#')
+            || lower.starts_with('!')
+            || keep_prefixes.iter().any(|prefix| lower.starts_with(prefix))
+            || lower.contains("failure")
+            || lower.contains("failed")
+            || lower.contains("error")
+            || lower.contains("passed")
+            || lower.contains("success");
+        if keep {
+            out.push(trimmed.to_string());
+        }
+        if out.len() >= 80 {
+            break;
+        }
+    }
+    fallback_if_empty(out.join("\n"), text)
+}
+
+fn summarize_aws(text: &str) -> String {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        return summarize_json_value(&value, 0).join("\n");
+    }
+    summarize_table(text, AWS_COLUMNS, ABNORMAL_WORDS)
+}
+
+const AWS_COLUMNS: &[&str] = &[
+    "name",
+    "id",
+    "arn",
+    "state",
+    "status",
+    "status-code",
+    "instanceid",
+    "functionname",
+    "stackname",
+    "resourcestatus",
+    "eventid",
+];
+
+fn summarize_json_value(value: &serde_json::Value, depth: usize) -> Vec<String> {
+    if depth > 2 {
+        return vec!["... nested value omitted".to_string()];
+    }
+    match value {
+        serde_json::Value::Object(map) => map
+            .iter()
+            .filter(|(key, value)| !is_sensitive_or_large_key(key, value))
+            .flat_map(|(key, value)| summarize_json_field(key, value, depth))
+            .take(80)
+            .collect(),
+        serde_json::Value::Array(items) => items
+            .iter()
+            .take(20)
+            .enumerate()
+            .flat_map(|(idx, item)| {
+                summarize_json_value(item, depth + 1)
+                    .into_iter()
+                    .map(move |line| format!("[{idx}] {line}"))
+            })
+            .collect(),
+        scalar => vec![scalar.to_string()],
+    }
+}
+
+fn summarize_json_field(key: &str, value: &serde_json::Value, depth: usize) -> Vec<String> {
+    if value.is_object() || value.is_array() {
+        summarize_json_value(value, depth + 1)
+            .into_iter()
+            .map(|line| format!("{key}.{line}"))
+            .collect()
+    } else {
+        vec![format!("{key}: {value}")]
+    }
+}
+
+fn is_sensitive_or_large_key(key: &str, value: &serde_json::Value) -> bool {
+    let lower = key.to_ascii_lowercase();
+    lower.contains("policy")
+        || lower.contains("secret")
+        || lower.contains("token")
+        || lower.contains("password")
+        || value.to_string().len() > 600
+}
+
+fn summarize_http_transfer(text: &str) -> String {
+    text.lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            !trimmed.starts_with('%')
+                && !trimmed.contains("--:--:--")
+                && !trimmed.contains("====>")
+                && !trimmed.contains("#")
+        })
+        .filter(|line| !line.trim().is_empty())
+        .take(80)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn summarize_search(text: &str) -> String {
     let rows = table_rows(text);
     if !rows.is_empty() {
@@ -459,5 +817,92 @@ mod tests {
                 .strategy
                 .contains(&"test-failure-focus".to_string())
         );
+    }
+
+    #[test]
+    fn docker_table_keeps_key_columns_and_abnormal_rows_first() {
+        let raw = "CONTAINER ID   IMAGE   COMMAND   CREATED   STATUS                     PORTS     NAMES\nabc            app:v1  run       1h        Up 1 hour                  80/tcp    web\ndef            db:v1   run       2h        Exited (1) 5 minutes ago   5432/tcp  db";
+        let candidate = compress_kind(DetectedKind::DockerTable, raw, "");
+        assert!(candidate.stdout.contains("IMAGE"));
+        assert!(candidate.stdout.contains("STATUS"));
+        assert!(candidate.stdout.contains("PORTS"));
+        assert!(candidate.stdout.contains("NAMES"));
+        assert!(
+            candidate
+                .stdout
+                .lines()
+                .nth(1)
+                .unwrap_or("")
+                .contains("Exited")
+        );
+        assert!(!candidate.stdout.contains("COMMAND"));
+    }
+
+    #[test]
+    fn kubernetes_table_keeps_readiness_status_and_restarts() {
+        let raw = "NAME        READY   STATUS             RESTARTS   AGE\napi-1       1/1     Running            0          1h\nworker-1    0/1     CrashLoopBackOff   4          5m";
+        let candidate = compress_kind(DetectedKind::KubernetesTable, raw, "");
+        assert!(
+            candidate
+                .stdout
+                .contains("NAME | READY | STATUS | RESTARTS | AGE")
+        );
+        assert!(
+            candidate
+                .stdout
+                .lines()
+                .nth(1)
+                .unwrap_or("")
+                .contains("CrashLoopBackOff")
+        );
+    }
+
+    #[test]
+    fn logs_routes_deduplicate_repeated_container_logs() {
+        let raw = "ok\nerror: failed to connect\nerror: failed to connect\n";
+        let candidate = compress_kind(DetectedKind::KubernetesLogs, raw, "");
+        assert!(
+            candidate
+                .stdout
+                .contains("error: failed to connect (repeated 2x)")
+        );
+    }
+
+    #[test]
+    fn gh_glab_summary_keeps_identity_state_checks_and_bounded_body() {
+        let raw = "title: Add feature\nstate: OPEN\nlabels: bug,ci\nchecks: failing\n# Body\nDetails\nnoise\nerror: check failed";
+        let candidate = compress_kind(DetectedKind::GitHubCli, raw, "");
+        assert!(candidate.stdout.contains("title: Add feature"));
+        assert!(candidate.stdout.contains("checks: failing"));
+        assert!(candidate.stdout.contains("# Body"));
+        assert!(candidate.stdout.contains("error: check failed"));
+    }
+
+    #[test]
+    fn aws_json_omits_policies_secrets_and_keeps_resource_status() {
+        let raw = r#"{"UserId":"AID","Account":"123","SecretAccessKey":"nope","PolicyDocument":{"Statement":[{"Effect":"Allow"}]},"Functions":[{"FunctionName":"fn","State":"Active","LastUpdateStatus":"Successful"}]}"#;
+        let candidate = compress_kind(DetectedKind::Aws, raw, "");
+        assert!(candidate.stdout.contains("UserId"));
+        assert!(candidate.stdout.contains("FunctionName"));
+        assert!(candidate.stdout.contains("State"));
+        assert!(!candidate.stdout.contains("PolicyDocument"));
+        assert!(!candidate.stdout.contains("nope"));
+    }
+
+    #[test]
+    fn curl_wget_progress_is_stripped_but_result_context_remains() {
+        let raw = "  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current\n100 1024  100 1024    0     0   10k      0 --:--:-- --:--:-- --:--:-- 10k\nHTTP/2 200\nserver: example";
+        let candidate = compress_kind(DetectedKind::HttpTransfer, raw, "");
+        assert!(candidate.stdout.contains("HTTP/2 200"));
+        assert!(!candidate.stdout.contains("--:--:--"));
+        assert!(!candidate.stdout.contains("% Total"));
+    }
+
+    #[test]
+    fn psql_table_keeps_identity_and_status_columns() {
+        let raw = " id | name | status | policy_document\n----+------+--------+----------------\n 1  | app  | ok     | very-large";
+        let candidate = compress_kind(DetectedKind::PsqlTable, raw, "");
+        assert!(candidate.stdout.contains("id | name | status"));
+        assert!(!candidate.stdout.contains("policy_document"));
     }
 }
