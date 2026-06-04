@@ -26,7 +26,15 @@ pub enum DetectedKind {
     GoDiagnostics,
     GoTest,
     Search,
+    DockerTable,
     DockerLogs,
+    KubernetesTable,
+    KubernetesLogs,
+    GitHubCli,
+    GitLabCli,
+    Aws,
+    HttpTransfer,
+    PsqlTable,
     JsonStructure,
     List,
     FileText,
@@ -62,7 +70,15 @@ impl DetectedKind {
             Self::GoDiagnostics => "go-diagnostics",
             Self::GoTest => "go-test",
             Self::Search => "search",
+            Self::DockerTable => "docker-table",
             Self::DockerLogs => "docker-logs",
+            Self::KubernetesTable => "kubernetes-table",
+            Self::KubernetesLogs => "kubernetes-logs",
+            Self::GitHubCli => "github-cli",
+            Self::GitLabCli => "gitlab-cli",
+            Self::Aws => "aws",
+            Self::HttpTransfer => "http-transfer",
+            Self::PsqlTable => "psql-table",
             Self::JsonStructure => "json-structure",
             Self::List => "list",
             Self::FileText => "file-text",
@@ -92,6 +108,9 @@ pub fn route(command: &[String], stdout: &str, stderr: &str) -> RouteMatch {
     }
     if looks_like_test_output(&combined) {
         return matched(DetectedKind::Tests, "tests", None);
+    }
+    if looks_like_psql_table(stdout) || looks_like_psql_table(stderr) {
+        return matched(DetectedKind::PsqlTable, "database", None);
     }
     if crate::compress::util::has_repeated_adjacent_lines(stdout)
         || crate::compress::util::has_repeated_adjacent_lines(stderr)
@@ -182,13 +201,73 @@ fn route_command(tokens: &[String]) -> Option<RouteMatch> {
         "cat" | "head" | "tail" => Some(matched(DetectedKind::FileText, "system", None)),
         "jq" => Some(matched(DetectedKind::JsonStructure, "json", None)),
         "env" | "printenv" => Some(matched(DetectedKind::Env, "system", None)),
-        "docker" if tokens.get(1).is_some_and(|token| token == "logs") => Some(matched(
-            DetectedKind::DockerLogs,
-            "containers",
-            Some("logs".to_string()),
+        "docker" => route_docker(tokens),
+        "kubectl" => route_kubectl(tokens),
+        "gh" => Some(matched(
+            DetectedKind::GitHubCli,
+            "github",
+            cli_subcommand(tokens),
+        )),
+        "glab" => Some(matched(
+            DetectedKind::GitLabCli,
+            "gitlab",
+            cli_subcommand(tokens),
+        )),
+        "aws" => Some(matched(DetectedKind::Aws, "aws", cli_subcommand(tokens))),
+        "curl" | "wget" => Some(matched(
+            DetectedKind::HttpTransfer,
+            "http-transfer",
+            Some(executable.to_string()),
+        )),
+        "psql" => Some(matched(
+            DetectedKind::PsqlTable,
+            "database",
+            cli_subcommand(tokens),
         )),
         _ => None,
     }
+}
+
+fn route_docker(tokens: &[String]) -> Option<RouteMatch> {
+    if tokens.get(1).is_some_and(|token| token == "logs") {
+        return Some(matched(
+            DetectedKind::DockerLogs,
+            "containers",
+            Some("logs".to_string()),
+        ));
+    }
+    if tokens.get(1).is_some_and(|token| token == "compose") {
+        let subcommand = tokens.get(2).cloned();
+        let kind = if subcommand.as_deref() == Some("logs") {
+            DetectedKind::DockerLogs
+        } else {
+            DetectedKind::DockerTable
+        };
+        return Some(matched(kind, "containers", subcommand));
+    }
+    Some(matched(
+        DetectedKind::DockerTable,
+        "containers",
+        cli_subcommand(tokens),
+    ))
+}
+
+fn route_kubectl(tokens: &[String]) -> Option<RouteMatch> {
+    let subcommand = cli_subcommand(tokens);
+    let kind = if subcommand.as_deref() == Some("logs") {
+        DetectedKind::KubernetesLogs
+    } else {
+        DetectedKind::KubernetesTable
+    };
+    Some(matched(kind, "kubernetes", subcommand))
+}
+
+fn cli_subcommand(tokens: &[String]) -> Option<String> {
+    tokens
+        .iter()
+        .skip(1)
+        .find(|token| !token.starts_with('-') && !token.contains('='))
+        .cloned()
 }
 
 fn git_subcommand(tokens: &[String]) -> Option<String> {
@@ -308,6 +387,21 @@ fn looks_like_test_output(text: &str) -> bool {
 fn looks_like_error_output(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
     lower.contains("error") || lower.contains("panic") || lower.contains("traceback")
+}
+
+fn looks_like_psql_table(text: &str) -> bool {
+    let mut has_separator = false;
+    let mut has_row_count = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.contains('|') && trimmed.contains("---") {
+            has_separator = true;
+        }
+        if trimmed.starts_with('(') && trimmed.ends_with("rows)") {
+            has_row_count = true;
+        }
+    }
+    has_separator || has_row_count
 }
 
 #[cfg(test)]
@@ -452,6 +546,50 @@ mod tests {
     fn classifies_docker_logs() {
         let route = route(&cmd(&["docker", "logs", "app"]), "", "");
         assert_eq!(route.kind, DetectedKind::DockerLogs);
+    }
+
+    #[test]
+    fn classifies_container_cloud_and_http_commands() {
+        assert_eq!(
+            route(&cmd(&["docker", "ps"]), "", "").kind,
+            DetectedKind::DockerTable
+        );
+        assert_eq!(
+            route(&cmd(&["docker", "compose", "ps"]), "", "").kind,
+            DetectedKind::DockerTable
+        );
+        assert_eq!(
+            route(&cmd(&["kubectl", "get", "pods"]), "", "").kind,
+            DetectedKind::KubernetesTable
+        );
+        assert_eq!(
+            route(&cmd(&["kubectl", "logs", "pod/app"]), "", "").kind,
+            DetectedKind::KubernetesLogs
+        );
+        assert_eq!(
+            route(&cmd(&["gh", "pr", "list"]), "", "").kind,
+            DetectedKind::GitHubCli
+        );
+        assert_eq!(
+            route(&cmd(&["glab", "issue", "view"]), "", "").kind,
+            DetectedKind::GitLabCli
+        );
+        assert_eq!(
+            route(&cmd(&["aws", "sts", "get-caller-identity"]), "", "").kind,
+            DetectedKind::Aws
+        );
+        assert_eq!(
+            route(&cmd(&["curl", "-I", "https://example.com"]), "", "").kind,
+            DetectedKind::HttpTransfer
+        );
+        assert_eq!(
+            route(&cmd(&["wget", "https://example.com"]), "", "").kind,
+            DetectedKind::HttpTransfer
+        );
+        assert_eq!(
+            route(&cmd(&["psql", "-c", "select 1"]), "", "").kind,
+            DetectedKind::PsqlTable
+        );
     }
 
     #[test]
