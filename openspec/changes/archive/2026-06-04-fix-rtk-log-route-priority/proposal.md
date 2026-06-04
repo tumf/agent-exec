@@ -1,9 +1,7 @@
 ---
 change_type: implementation
 priority: high
-dependencies:
-  - add-rtk-compression-routing
-  - add-rtk-system-log-json-compression
+dependencies: []
 references:
   - src/compress/route.rs
   - src/compress/generic.rs

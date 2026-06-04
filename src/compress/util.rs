@@ -334,6 +334,18 @@ pub fn has_repeated_adjacent_lines(text: &str) -> bool {
     false
 }
 
+pub fn has_repeated_normalized_log_lines(text: &str) -> bool {
+    let mut prev_key: Option<String> = None;
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        let line_key = normalize_log_line(line);
+        if prev_key.as_deref() == Some(line_key.as_str()) && line_key != line {
+            return true;
+        }
+        prev_key = Some(line_key);
+    }
+    false
+}
+
 fn split_path_for_summary(path: &str) -> (String, String) {
     let path = path.trim_start_matches("./");
     match path.rsplit_once('/') {
@@ -515,6 +527,16 @@ mod tests {
         let summary = dedup_log_lines(raw);
         assert!(summary.contains("repeated 2x"));
         assert!(summary.contains("ERROR failed"));
+    }
+
+    #[test]
+    fn repeated_normalized_log_detector_recognizes_timestamp_varied_errors() {
+        let raw =
+            "2026-01-01T00:00:00Z ERROR retry failed\n2026-01-01T00:00:01Z ERROR retry failed\n";
+        assert!(has_repeated_normalized_log_lines(raw));
+        assert!(!has_repeated_normalized_log_lines(
+            "ERROR one-off failure\n"
+        ));
     }
 
     #[test]

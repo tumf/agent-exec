@@ -7687,6 +7687,52 @@ fn compression_route_reports_specific_detected_kinds() {
 }
 
 #[test]
+fn compression_route_classifies_timestamp_varied_repeated_error_logs_as_logs() {
+    let h = TestHarness::new();
+    let v = h.run(&[
+        "run",
+        "--rtk",
+        "route",
+        "--",
+        "python3",
+        "-c",
+        "for i in range(80): print(\"2026-01-01T00:00:%02dZ ERROR retry failed\" % (i%10))",
+    ]);
+    assert_envelope(&v, "run", true);
+    assert_eq!(v["compression"]["detected_kind"].as_str(), Some("logs"));
+    assert!(
+        v["compression"]["strategy"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|strategy| strategy.as_str() == Some("dedupe-normalized-log-lines")),
+        "log compression strategy missing: {v}"
+    );
+    let raw = v["stdout"].as_str().unwrap_or("");
+    let compressed = v["compression"]["stdout"].as_str().unwrap_or("");
+    assert!(
+        compressed.len() * 2 < raw.len(),
+        "compressed output should be substantially smaller: {v}"
+    );
+}
+
+#[test]
+fn compression_route_preserves_single_error_as_errors() {
+    let h = TestHarness::new();
+    let v = h.run(&[
+        "run",
+        "--rtk",
+        "route",
+        "--",
+        "sh",
+        "-c",
+        "printf 'ERROR one-off failure\\n'",
+    ]);
+    assert_envelope(&v, "run", true);
+    assert_eq!(v["compression"]["detected_kind"].as_str(), Some("errors"));
+}
+
+#[test]
 fn compression_route_reports_search_and_docker_logs_detected_kinds() {
     let h = TestHarness::new();
 
