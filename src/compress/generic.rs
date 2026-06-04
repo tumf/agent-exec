@@ -461,6 +461,9 @@ fn summarize_git_stash(text: &str) -> String {
 
 const DOCKER_COLUMNS: &[&str] = &[
     "container id",
+    "repository",
+    "tag",
+    "image id",
     "name",
     "names",
     "image",
@@ -468,6 +471,7 @@ const DOCKER_COLUMNS: &[&str] = &[
     "state",
     "ports",
     "service",
+    "size",
 ];
 const KUBERNETES_COLUMNS: &[&str] = &[
     "namespace",
@@ -710,6 +714,18 @@ fn summarize_aws(text: &str) -> String {
     if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
         return summarize_json_value(&value, 0).join("\n");
     }
+
+    let json_line_summary = text
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line.trim()).ok())
+        .flat_map(|value| summarize_json_value(&value, 0))
+        .take(80)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !json_line_summary.is_empty() {
+        return json_line_summary;
+    }
+
     summarize_table(text, AWS_COLUMNS, ABNORMAL_WORDS)
 }
 
@@ -728,7 +744,7 @@ const AWS_COLUMNS: &[&str] = &[
 ];
 
 fn summarize_json_value(value: &serde_json::Value, depth: usize) -> Vec<String> {
-    if depth > 2 {
+    if depth > 4 {
         return vec!["... nested value omitted".to_string()];
     }
     match value {
@@ -904,5 +920,61 @@ mod tests {
         let candidate = compress_kind(DetectedKind::PsqlTable, raw, "");
         assert!(candidate.stdout.contains("id | name | status"));
         assert!(!candidate.stdout.contains("policy_document"));
+    }
+
+    #[test]
+    fn docker_compose_table_keeps_service_state_and_ports() {
+        let raw = "NAME                IMAGE          COMMAND   SERVICE   CREATED   STATUS                    PORTS\nproj-web-1          web:latest     run       web       2h        running                   0.0.0.0:8080->80/tcp\nproj-worker-1       worker:latest  run       worker    2h        unhealthy                 ";
+        let candidate = compress_kind(DetectedKind::DockerTable, raw, "");
+        assert!(candidate.stdout.contains("IMAGE"));
+        assert!(candidate.stdout.contains("STATUS"));
+        assert!(candidate.stdout.contains("PORTS"));
+        assert!(candidate.stdout.contains("SERVICE"));
+        assert!(
+            candidate
+                .stdout
+                .lines()
+                .nth(1)
+                .unwrap_or("")
+                .contains("unhealthy")
+        );
+        assert!(candidate.stdout.contains("0.0.0.0:8080->80/tcp"));
+        assert!(!candidate.stdout.contains("COMMAND"));
+    }
+
+    #[test]
+    fn docker_images_table_keeps_repository_identity_and_size_fallback() {
+        let raw = "REPOSITORY   TAG       IMAGE ID       CREATED        SIZE\napp          latest    7e1a2b3c4d5e   2 hours ago    120MB";
+        let candidate = compress_kind(DetectedKind::DockerTable, raw, "");
+        assert!(candidate.stdout.contains("REPOSITORY"));
+        assert!(candidate.stdout.contains("app"));
+        assert!(candidate.stdout.contains("120MB"));
+    }
+
+    #[test]
+    fn glab_summary_keeps_issue_identity_and_status() {
+        let raw = "title: Fix deploy\nstate: opened\nauthor: alice\nlabels: ci\nstatus: failed\n# Summary\nFailure details\nignored paragraph";
+        let candidate = compress_kind(DetectedKind::GitLabCli, raw, "");
+        assert!(candidate.stdout.contains("title: Fix deploy"));
+        assert!(candidate.stdout.contains("state: opened"));
+        assert!(candidate.stdout.contains("status: failed"));
+        assert!(candidate.stdout.contains("# Summary"));
+    }
+
+    #[test]
+    fn aws_representative_json_keeps_identity_status_and_omits_large_values() {
+        let sts = r#"{"UserId":"AIDACKCEVSQ6C2EXAMPLE","Account":"123456789012","Arn":"arn:aws:iam::123456789012:user/test"}"#;
+        let ec2 = r#"{"Reservations":[{"Instances":[{"InstanceId":"i-123","State":{"Name":"running"},"SecretToken":"hidden"}]}]}"#;
+        let cfn = r#"{"StackEvents":[{"EventId":"e1","StackName":"app","ResourceStatus":"CREATE_FAILED","ResourceStatusReason":"boom"}]}"#;
+        let logs = r#"{"events":[{"timestamp":1,"message":"ERROR failed"}],"policyDocument":{"Statement":[]}}"#;
+
+        let combined = [sts, ec2, cfn, logs].join("\n");
+        let candidate = compress_kind(DetectedKind::Aws, &combined, "");
+        assert!(candidate.stdout.contains("UserId"));
+        assert!(candidate.stdout.contains("InstanceId"));
+        assert!(candidate.stdout.contains("ResourceStatus"));
+        assert!(candidate.stdout.contains("ERROR failed"));
+        assert!(!candidate.stdout.contains("hidden"));
+        assert!(!candidate.stdout.contains("policyDocument"));
     }
 }
