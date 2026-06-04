@@ -1,9 +1,7 @@
 ---
 change_type: implementation
 priority: medium
-dependencies:
-  - add-rtk-compression-routing
-  - add-rtk-rust-test-compression
+dependencies: []
 references:
   - src/compress.rs
   - tests/integration.rs
