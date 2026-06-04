@@ -17,3 +17,8 @@
 ## Final Validation
 
 Expected archive gate: `cflx openspec validate add-rtk-system-log-json-compression --archive-gate`
+
+## Acceptance #1 Failure Follow-up
+- [x] Commit-path blocker rechecked: repository pre-commit hook remains active at /Users/tumf/work/agent-exec/.git/hooks/pre-commit and executes `prek hook-impl`; `prek.toml` includes `cargo test --all` as the `cargo-test` hook for Rust files (prek.toml:31-38), so archive commitability depends on the full test suite.
+- [x] Tasks checklist status rechecked: no unchecked `[ ]` items remain in active task sections after updating this follow-up.
+- [x] Verification failure resolved by rerun: `agent-exec run -- cargo test --test serve_integration test_auth_wrong_token_returns_401 -- --nocapture` exited 0 (job_id=6c20bba8301fc192f9aff7c82d5b8b8a) and `agent-exec run -- cargo test --all` exited 0 (job_id=50c947797357320adf8461f1e8f419da).
