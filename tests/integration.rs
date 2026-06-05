@@ -11,8 +11,8 @@ mod support;
 
 use support::{
     TestHarness, assert_envelope, assert_usage_error, binary, run_cmd_with_global_root_flag,
-    run_cmd_with_root, run_cmd_with_root_and_stdin, run_cmd_with_subcommand_root_flag,
-    run_raw_with_root_and_stdin,
+    run_cmd_with_root, run_cmd_with_root_and_cwd, run_cmd_with_root_and_stdin,
+    run_cmd_with_subcommand_root_flag, run_raw_with_root_and_stdin,
 };
 
 // ── run ────────────────────────────────────────────────────────────────────────
@@ -2015,36 +2015,6 @@ fn run_start_response_uses_inline_output_fields() {
 
 // run/start は起動専用。観測は wait/tail で行う。
 // ── filter-list-by-cwd: cwd filtering ─────────────────────────────────────────
-
-/// Helper that runs the binary with a custom working directory AND a custom root.
-fn run_cmd_with_root_and_cwd(
-    args: &[&str],
-    root: Option<&str>,
-    cwd: Option<&std::path::Path>,
-) -> (serde_json::Value, std::process::ExitStatus) {
-    let bin = binary();
-    let mut cmd = std::process::Command::new(&bin);
-    cmd.args(args);
-    if let Some(r) = root {
-        cmd.env("AGENT_EXEC_ROOT", r);
-    }
-    if let Some(d) = cwd {
-        cmd.current_dir(d);
-    }
-    let output = cmd.output().expect("run binary");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let value = if stdout.trim().is_empty() {
-        serde_json::json!({})
-    } else {
-        serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
-            panic!(
-                "stdout is not valid JSON: {e}\nstdout: {stdout}\nstderr: {stderr}\nargs: {args:?}"
-            )
-        })
-    };
-    (value, output.status)
-}
 
 /// Task 4.1: default `list` filters by the caller's current working directory.
 ///

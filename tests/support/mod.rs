@@ -66,11 +66,51 @@ pub fn run_raw_with_root_and_stdin(
     root: Option<&str>,
     stdin_bytes: Option<&[u8]>,
 ) -> Output {
+    run_raw_with_root_cwd_and_stdin(args, root, None, stdin_bytes)
+}
+
+pub fn run_cmd_with_root(args: &[&str], root: Option<&str>) -> serde_json::Value {
+    let output = run_raw_with_root_and_stdin(args, root, None);
+    parse_json_stdout(&output, args)
+}
+
+pub fn run_cmd_with_root_and_stdin(
+    args: &[&str],
+    root: Option<&str>,
+    stdin_bytes: &[u8],
+) -> serde_json::Value {
+    let output = run_raw_with_root_and_stdin(args, root, Some(stdin_bytes));
+    parse_json_stdout(&output, args)
+}
+
+pub fn run_cmd_with_root_and_cwd(
+    args: &[&str],
+    root: Option<&str>,
+    cwd: Option<&std::path::Path>,
+) -> (serde_json::Value, std::process::ExitStatus) {
+    let output = run_raw_with_root_cwd_and_stdin(args, root, cwd, None);
+    let value = if output.stdout.is_empty() {
+        serde_json::json!({})
+    } else {
+        parse_json_stdout(&output, args)
+    };
+    (value, output.status)
+}
+
+pub fn run_raw_with_root_cwd_and_stdin(
+    args: &[&str],
+    root: Option<&str>,
+    cwd: Option<&std::path::Path>,
+    stdin_bytes: Option<&[u8]>,
+) -> Output {
     let bin = binary();
     let mut cmd = Command::new(&bin);
     cmd.args(args);
     if let Some(r) = root {
         cmd.env("AGENT_EXEC_ROOT", r);
+    }
+    if let Some(d) = cwd {
+        cmd.current_dir(d);
     }
     if stdin_bytes.is_some() {
         cmd.stdin(Stdio::piped());
@@ -89,20 +129,6 @@ pub fn run_raw_with_root_and_stdin(
     }
 
     child.wait_with_output().expect("wait binary output")
-}
-
-pub fn run_cmd_with_root(args: &[&str], root: Option<&str>) -> serde_json::Value {
-    let output = run_raw_with_root_and_stdin(args, root, None);
-    parse_json_stdout(&output, args)
-}
-
-pub fn run_cmd_with_root_and_stdin(
-    args: &[&str],
-    root: Option<&str>,
-    stdin_bytes: &[u8],
-) -> serde_json::Value {
-    let output = run_raw_with_root_and_stdin(args, root, Some(stdin_bytes));
-    parse_json_stdout(&output, args)
 }
 
 /// Run a command expecting a clap usage error (exit code 2, empty stdout).
