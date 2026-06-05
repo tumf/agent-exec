@@ -1,10 +1,10 @@
 ## Implementation Tasks
 
-- [ ] Extract shared definition-time option mapping for `create` and `run`, preserving persisted metadata inputs and public clap annotations (verification: integration - add or retain tests in `tests/integration.rs` that compare representative `meta.json` fields for `create` and `run`).
-- [ ] Extract shared auto-GC option mapping for command dispatch paths that launch or restart jobs (verification: integration - existing auto-GC tests still pass and at least one path exercises the shared mapping).
-- [ ] Extract shared inline observation and compression option mapping for `run`, `start`, and `restart` dispatch paths (verification: integration - existing inline output and compression tests still pass for all supported commands).
-- [ ] Preserve usage-error behavior for conflicting flags and command-specific flags (verification: integration - existing clap usage-error tests continue to assert exit code 2 and empty stdout).
-- [ ] Run formatting, linting, and tests after refactor (verification: manual - `cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --all`).
+- [x] Extract shared definition-time option mapping for `create` and `run`, preserving persisted metadata inputs and public clap annotations (verification: integration - add or retain tests in `tests/integration.rs` that compare representative `meta.json` fields for `create` and `run`).
+- [x] Extract shared auto-GC option mapping for command dispatch paths that launch or restart jobs (verification: integration - `src/main.rs` `AutoGcOptions`; `cargo test --all`).
+- [x] Extract shared inline observation and compression option mapping for `run`, `start`, and `restart` dispatch paths (verification: integration - `src/main.rs` `InlineObservationOptions`; `cargo test --all`).
+- [x] Preserve usage-error behavior for conflicting flags and command-specific flags (verification: integration - `tests/integration.rs` usage-error tests; `cargo test --all`).
+- [x] Run formatting, linting, and tests after refactor (verification: manual - `cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --all`).
 
 ## Final Validation
 
