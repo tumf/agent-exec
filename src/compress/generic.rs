@@ -9,119 +9,212 @@ pub fn compress_kind(
     raw_stdout: &str,
     raw_stderr: &str,
 ) -> CompressionCandidate {
-    let (stdout, stderr, mut strategy) = match kind {
-        DetectedKind::Errors => (
-            extract_error_lines(raw_stdout),
-            extract_error_lines(raw_stderr),
-            vec!["failure-focus".to_string()],
-        ),
-        DetectedKind::Tests | DetectedKind::CargoTest => (
-            extract_test_lines(raw_stdout),
-            extract_test_lines(raw_stderr),
-            vec!["test-failure-focus".to_string()],
-        ),
-        DetectedKind::Logs | DetectedKind::DockerLogs | DetectedKind::KubernetesLogs => (
-            dedup_log_lines(raw_stdout),
-            dedup_log_lines(raw_stderr),
-            vec!["dedupe-normalized-log-lines".to_string()],
-        ),
-        DetectedKind::DockerTable => (
-            summarize_table(raw_stdout, DOCKER_COLUMNS, ABNORMAL_WORDS),
-            summarize_table(raw_stderr, DOCKER_COLUMNS, ABNORMAL_WORDS),
-            vec!["docker-table-summary".to_string()],
-        ),
-        DetectedKind::KubernetesTable => (
-            summarize_table(raw_stdout, KUBERNETES_COLUMNS, ABNORMAL_WORDS),
-            summarize_table(raw_stderr, KUBERNETES_COLUMNS, ABNORMAL_WORDS),
-            vec!["kubernetes-table-summary".to_string()],
-        ),
-        DetectedKind::GitHubCli | DetectedKind::GitLabCli => (
-            summarize_issue_cli(raw_stdout),
-            summarize_issue_cli(raw_stderr),
-            vec![format!("{}-summary", kind.as_str())],
-        ),
-        DetectedKind::Aws => (
-            summarize_aws(raw_stdout),
-            summarize_aws(raw_stderr),
-            vec!["aws-safe-summary".to_string()],
-        ),
-        DetectedKind::HttpTransfer => (
-            summarize_http_transfer(raw_stdout),
-            summarize_http_transfer(raw_stderr),
-            vec!["http-progress-filter".to_string()],
-        ),
-        DetectedKind::PsqlTable => (
-            summarize_table(raw_stdout, PSQL_COLUMNS, ABNORMAL_WORDS),
-            summarize_table(raw_stderr, PSQL_COLUMNS, ABNORMAL_WORDS),
-            vec!["psql-table-summary".to_string()],
-        ),
-        DetectedKind::Git
-        | DetectedKind::GitStatus
-        | DetectedKind::GitLog
-        | DetectedKind::GitDiff
-        | DetectedKind::GitShow
-        | DetectedKind::GitPush
-        | DetectedKind::GitPull
-        | DetectedKind::GitBranch
-        | DetectedKind::GitStash => (
-            summarize_git(kind, raw_stdout),
-            summarize_git(kind, raw_stderr),
-            vec![format!("{}-summary", kind.as_str())],
-        ),
-        DetectedKind::Json | DetectedKind::JsonStructure => (
-            json_shape_summary(raw_stdout),
-            json_shape_summary(raw_stderr),
-            vec!["json-structure".to_string()],
-        ),
-        DetectedKind::TypeScript
+    let summary = summarize_by_kind(kind, raw_stdout, raw_stderr);
+    finalize_candidate(summary, raw_stdout, raw_stderr)
+}
+
+struct SummaryResult {
+    stdout: String,
+    stderr: String,
+    strategy: Vec<String>,
+}
+
+impl SummaryResult {
+    fn new(stdout: String, stderr: String, strategy: impl Into<String>) -> Self {
+        Self {
+            stdout,
+            stderr,
+            strategy: vec![strategy.into()],
+        }
+    }
+}
+
+fn summarize_by_kind(kind: DetectedKind, raw_stdout: &str, raw_stderr: &str) -> SummaryResult {
+    if let Some(summary) = summarize_failure_kind(kind, raw_stdout, raw_stderr) {
+        return summary;
+    }
+    if let Some(summary) = summarize_git_kind(kind, raw_stdout, raw_stderr) {
+        return summary;
+    }
+    if let Some(summary) = summarize_cloud_container_kind(kind, raw_stdout, raw_stderr) {
+        return summary;
+    }
+    if let Some(summary) = summarize_system_kind(kind, raw_stdout, raw_stderr) {
+        return summary;
+    }
+    summarize_fallback_kind(kind, raw_stdout, raw_stderr)
+}
+
+fn summarize_failure_kind(
+    kind: DetectedKind,
+    raw_stdout: &str,
+    raw_stderr: &str,
+) -> Option<SummaryResult> {
+    match kind {
+        DetectedKind::Errors
+        | DetectedKind::TypeScript
         | DetectedKind::JsLint
         | DetectedKind::PythonLint
         | DetectedKind::PythonTypecheck
-        | DetectedKind::GoDiagnostics => (
+        | DetectedKind::GoDiagnostics => Some(SummaryResult::new(
             extract_error_lines(raw_stdout),
             extract_error_lines(raw_stderr),
-            vec!["failure-focus".to_string()],
-        ),
-        DetectedKind::JsTest | DetectedKind::PythonTest | DetectedKind::GoTest => (
+            "failure-focus",
+        )),
+        DetectedKind::Tests
+        | DetectedKind::CargoTest
+        | DetectedKind::JsTest
+        | DetectedKind::PythonTest
+        | DetectedKind::GoTest => Some(SummaryResult::new(
             extract_test_lines(raw_stdout),
             extract_test_lines(raw_stderr),
-            vec!["test-failure-focus".to_string()],
-        ),
-        DetectedKind::JsPackages | DetectedKind::PythonPackages => (
-            summarize_text(raw_stdout),
-            summarize_text(raw_stderr),
-            vec!["package-summary".to_string()],
-        ),
-        DetectedKind::Search => (
+            "test-failure-focus",
+        )),
+        _ => None,
+    }
+}
+
+fn summarize_git_kind(
+    kind: DetectedKind,
+    raw_stdout: &str,
+    raw_stderr: &str,
+) -> Option<SummaryResult> {
+    matches!(
+        kind,
+        DetectedKind::Git
+            | DetectedKind::GitStatus
+            | DetectedKind::GitLog
+            | DetectedKind::GitDiff
+            | DetectedKind::GitShow
+            | DetectedKind::GitPush
+            | DetectedKind::GitPull
+            | DetectedKind::GitBranch
+            | DetectedKind::GitStash
+    )
+    .then(|| {
+        SummaryResult::new(
+            summarize_git(kind, raw_stdout),
+            summarize_git(kind, raw_stderr),
+            format!("{}-summary", kind.as_str()),
+        )
+    })
+}
+
+fn summarize_cloud_container_kind(
+    kind: DetectedKind,
+    raw_stdout: &str,
+    raw_stderr: &str,
+) -> Option<SummaryResult> {
+    match kind {
+        DetectedKind::Logs | DetectedKind::DockerLogs | DetectedKind::KubernetesLogs => {
+            Some(SummaryResult::new(
+                dedup_log_lines(raw_stdout),
+                dedup_log_lines(raw_stderr),
+                "dedupe-normalized-log-lines",
+            ))
+        }
+        DetectedKind::DockerTable => Some(SummaryResult::new(
+            summarize_table(raw_stdout, DOCKER_COLUMNS, ABNORMAL_WORDS),
+            summarize_table(raw_stderr, DOCKER_COLUMNS, ABNORMAL_WORDS),
+            "docker-table-summary",
+        )),
+        DetectedKind::KubernetesTable => Some(SummaryResult::new(
+            summarize_table(raw_stdout, KUBERNETES_COLUMNS, ABNORMAL_WORDS),
+            summarize_table(raw_stderr, KUBERNETES_COLUMNS, ABNORMAL_WORDS),
+            "kubernetes-table-summary",
+        )),
+        DetectedKind::GitHubCli | DetectedKind::GitLabCli => Some(SummaryResult::new(
+            summarize_issue_cli(raw_stdout),
+            summarize_issue_cli(raw_stderr),
+            format!("{}-summary", kind.as_str()),
+        )),
+        DetectedKind::Aws => Some(SummaryResult::new(
+            summarize_aws(raw_stdout),
+            summarize_aws(raw_stderr),
+            "aws-safe-summary",
+        )),
+        DetectedKind::HttpTransfer => Some(SummaryResult::new(
+            summarize_http_transfer(raw_stdout),
+            summarize_http_transfer(raw_stderr),
+            "http-progress-filter",
+        )),
+        DetectedKind::PsqlTable => Some(SummaryResult::new(
+            summarize_table(raw_stdout, PSQL_COLUMNS, ABNORMAL_WORDS),
+            summarize_table(raw_stderr, PSQL_COLUMNS, ABNORMAL_WORDS),
+            "psql-table-summary",
+        )),
+        _ => None,
+    }
+}
+
+fn summarize_system_kind(
+    kind: DetectedKind,
+    raw_stdout: &str,
+    raw_stderr: &str,
+) -> Option<SummaryResult> {
+    match kind {
+        DetectedKind::Search => Some(SummaryResult::new(
             search_summary(raw_stdout),
             search_summary(raw_stderr),
-            vec!["search-summary".to_string()],
-        ),
-        DetectedKind::List => (
+            "search-summary",
+        )),
+        DetectedKind::List => Some(SummaryResult::new(
             list_summary(raw_stdout),
             list_summary(raw_stderr),
-            vec!["directory-grouping".to_string()],
-        ),
-        DetectedKind::FileText => (
+            "directory-grouping",
+        )),
+        DetectedKind::FileText => Some(SummaryResult::new(
             text_file_summary(raw_stdout),
             text_file_summary(raw_stderr),
-            vec!["head-tail-text-summary".to_string()],
-        ),
-        DetectedKind::Env => (
+            "head-tail-text-summary",
+        )),
+        DetectedKind::Env => Some(SummaryResult::new(
             env_summary(raw_stdout),
             env_summary(raw_stderr),
-            vec!["env-mask-and-prefix-group".to_string()],
+            "env-mask-and-prefix-group",
+        )),
+        _ => None,
+    }
+}
+
+fn summarize_fallback_kind(
+    kind: DetectedKind,
+    raw_stdout: &str,
+    raw_stderr: &str,
+) -> SummaryResult {
+    match kind {
+        DetectedKind::Json | DetectedKind::JsonStructure => SummaryResult::new(
+            json_shape_summary(raw_stdout),
+            json_shape_summary(raw_stderr),
+            "json-structure",
         ),
-        DetectedKind::Summary => (
+        DetectedKind::JsPackages | DetectedKind::PythonPackages => SummaryResult::new(
             summarize_text(raw_stdout),
             summarize_text(raw_stderr),
-            vec!["bounded-summary".to_string()],
+            "package-summary",
         ),
-    };
+        DetectedKind::Summary => SummaryResult::new(
+            summarize_text(raw_stdout),
+            summarize_text(raw_stderr),
+            "bounded-summary",
+        ),
+        _ => SummaryResult::new(
+            summarize_text(raw_stdout),
+            summarize_text(raw_stderr),
+            "bounded-summary",
+        ),
+    }
+}
 
-    let stdout = fallback_if_empty(stdout, raw_stdout);
-    let stderr = fallback_if_empty(stderr, raw_stderr);
+fn finalize_candidate(
+    summary: SummaryResult,
+    raw_stdout: &str,
+    raw_stderr: &str,
+) -> CompressionCandidate {
+    let stdout = fallback_if_empty(summary.stdout, raw_stdout);
+    let stderr = fallback_if_empty(summary.stderr, raw_stderr);
     let omitted = stdout.len() < raw_stdout.len() || stderr.len() < raw_stderr.len();
+    let mut strategy = summary.strategy;
     if omitted {
         strategy.push("truncation".to_string());
     }

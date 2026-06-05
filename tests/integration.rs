@@ -7733,6 +7733,51 @@ fn compression_route_preserves_single_error_as_errors() {
 }
 
 #[test]
+fn compression_route_boundary_pairs_output_shape_with_matching_summarizer() {
+    let h = TestHarness::new();
+    let json = h.run(&[
+        "run",
+        "--rtk",
+        "route",
+        "--",
+        "sh",
+        "-c",
+        "printf '{\"items\":[{\"id\":1,\"name\":\"aaaaaaaaaaaaaaaaaaaaaaaa\"},{\"id\":2,\"name\":\"bbbbbbbbbbbbbbbbbbbbbbbb\"}]}'",
+    ]);
+    assert_envelope(&json, "run", true);
+    assert_eq!(
+        json["compression"]["detected_kind"].as_str(),
+        Some("json-structure")
+    );
+    assert!(
+        json["compression"]["stdout"]
+            .as_str()
+            .unwrap_or("")
+            .contains("items:array"),
+        "json route should use json summarizer: {json}"
+    );
+
+    let logs = h.run(&[
+        "run",
+        "--rtk",
+        "route",
+        "--",
+        "python3",
+        "-c",
+        "for i in range(60): print('ERROR repeated boundary line')",
+    ]);
+    assert_envelope(&logs, "run", true);
+    assert_eq!(logs["compression"]["detected_kind"].as_str(), Some("logs"));
+    assert!(
+        logs["compression"]["stdout"]
+            .as_str()
+            .unwrap_or("")
+            .contains("repeated 60x"),
+        "log route should use log dedupe summarizer: {logs}"
+    );
+}
+
+#[test]
 fn compression_route_reports_search_and_docker_logs_detected_kinds() {
     let h = TestHarness::new();
 
