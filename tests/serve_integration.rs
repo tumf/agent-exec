@@ -4,24 +4,13 @@
 //! to validate all endpoints.
 
 use std::net::TcpListener;
-use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
-/// Path to the compiled binary.
-fn binary() -> PathBuf {
-    let mut p = std::env::current_exe().expect("current exe");
-    p.pop();
-    if p.ends_with("deps") {
-        p.pop();
-    }
-    p.push("agent-exec");
-    if cfg!(windows) {
-        p.set_extension("exe");
-    }
-    p
-}
+mod support;
+
+use support::{assert_common_fields, binary};
 
 /// Find a free port on localhost.
 fn free_port() -> u16 {
@@ -207,15 +196,6 @@ fn options_request(url: &str, origin: Option<&str>) -> (u16, Vec<(String, String
         })
         .collect();
     (status, headers)
-}
-
-fn assert_common_fields(json: &serde_json::Value) {
-    assert!(
-        json.get("schema_version").is_some(),
-        "missing schema_version in: {json}"
-    );
-    assert!(json.get("ok").is_some(), "missing ok in: {json}");
-    assert!(json.get("type").is_some(), "missing type in: {json}");
 }
 
 // ---- Tests ----
