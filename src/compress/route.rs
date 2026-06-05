@@ -96,33 +96,55 @@ pub struct RouteMatch {
 
 pub fn route(command: &[String], stdout: &str, stderr: &str) -> RouteMatch {
     let tokens = command_tokens(command);
-    if let Some(route) = route_command(&tokens) {
-        return route;
-    }
+    route_command(&tokens).unwrap_or_else(|| route_output_shape(stdout, stderr))
+}
 
-    let combined = format!("{stdout}\n{stderr}");
-    if crate::compress::util::looks_like_json(stdout)
-        || crate::compress::util::looks_like_json(stderr)
-    {
-        return matched(DetectedKind::JsonStructure, "json", None);
-    }
-    if crate::compress::util::has_repeated_adjacent_lines(stdout)
-        || crate::compress::util::has_repeated_adjacent_lines(stderr)
-        || crate::compress::util::has_repeated_normalized_log_lines(stdout)
-        || crate::compress::util::has_repeated_normalized_log_lines(stderr)
-    {
-        return matched(DetectedKind::Logs, "logs", None);
-    }
-    if looks_like_test_output(&combined) {
-        return matched(DetectedKind::Tests, "tests", None);
-    }
-    if looks_like_psql_table(stdout) || looks_like_psql_table(stderr) {
-        return matched(DetectedKind::PsqlTable, "database", None);
-    }
-    if looks_like_error_output(&combined) {
-        return matched(DetectedKind::Errors, "errors", None);
+fn route_output_shape(stdout: &str, stderr: &str) -> RouteMatch {
+    for classifier in OUTPUT_SHAPE_CLASSIFIERS {
+        if let Some(route) = classifier(stdout, stderr) {
+            return route;
+        }
     }
     matched(DetectedKind::Summary, "summary", None)
+}
+
+type OutputShapeClassifier = fn(&str, &str) -> Option<RouteMatch>;
+
+const OUTPUT_SHAPE_CLASSIFIERS: &[OutputShapeClassifier] = &[
+    classify_json_output,
+    classify_repeated_logs,
+    classify_test_output,
+    classify_psql_table,
+    classify_error_output,
+];
+
+fn classify_json_output(stdout: &str, stderr: &str) -> Option<RouteMatch> {
+    (crate::compress::util::looks_like_json(stdout)
+        || crate::compress::util::looks_like_json(stderr))
+    .then(|| matched(DetectedKind::JsonStructure, "json", None))
+}
+
+fn classify_repeated_logs(stdout: &str, stderr: &str) -> Option<RouteMatch> {
+    (crate::compress::util::has_repeated_adjacent_lines(stdout)
+        || crate::compress::util::has_repeated_adjacent_lines(stderr)
+        || crate::compress::util::has_repeated_normalized_log_lines(stdout)
+        || crate::compress::util::has_repeated_normalized_log_lines(stderr))
+    .then(|| matched(DetectedKind::Logs, "logs", None))
+}
+
+fn classify_test_output(stdout: &str, stderr: &str) -> Option<RouteMatch> {
+    let combined = format!("{stdout}\n{stderr}");
+    looks_like_test_output(&combined).then(|| matched(DetectedKind::Tests, "tests", None))
+}
+
+fn classify_psql_table(stdout: &str, stderr: &str) -> Option<RouteMatch> {
+    (looks_like_psql_table(stdout) || looks_like_psql_table(stderr))
+        .then(|| matched(DetectedKind::PsqlTable, "database", None))
+}
+
+fn classify_error_output(stdout: &str, stderr: &str) -> Option<RouteMatch> {
+    let combined = format!("{stdout}\n{stderr}");
+    looks_like_error_output(&combined).then(|| matched(DetectedKind::Errors, "errors", None))
 }
 
 fn route_command(tokens: &[String]) -> Option<RouteMatch> {
@@ -598,6 +620,24 @@ mod tests {
     fn classifies_json_output() {
         let route = route(&cmd(&["tool"]), "{\"ok\":true}", "");
         assert_eq!(route.kind, DetectedKind::JsonStructure);
+    }
+
+    #[test]
+    fn output_shape_priority_keeps_json_before_repeated_logs() {
+        let route = route(&cmd(&["tool"]), "{\"ok\":true}\n{\"ok\":true}\n", "");
+        assert_eq!(route.kind, DetectedKind::JsonStructure);
+    }
+
+    #[test]
+    fn output_shape_priority_keeps_repeated_logs_before_errors() {
+        let route = route(&cmd(&["tool"]), "ERROR same\nERROR same\n", "");
+        assert_eq!(route.kind, DetectedKind::Logs);
+    }
+
+    #[test]
+    fn command_family_priority_beats_output_shape_fallback() {
+        let route = route(&cmd(&["git", "status"]), "{\"ok\":true}\n", "");
+        assert_eq!(route.kind, DetectedKind::GitStatus);
     }
 
     #[test]
