@@ -458,6 +458,70 @@ fn run_and_create_persist_same_stdin_meta_shape() {
 }
 
 #[test]
+fn run_and_create_persist_representative_definition_metadata() {
+    let h = TestHarness::new();
+
+    let create_v = h.run(&[
+        "create",
+        "--tag",
+        "shared.tag",
+        "--env",
+        "SHARED_KEY=shared-value",
+        "--mask",
+        "SHARED_KEY",
+        "--stdin",
+        "shape",
+        "--notify-command",
+        "cat >/dev/null",
+        "--",
+        "cat",
+    ]);
+    assert_envelope(&create_v, "create", true);
+    let create_id = create_v["job_id"].as_str().expect("create job_id missing");
+    let create_meta_path = std::path::Path::new(h.root())
+        .join(create_id)
+        .join("meta.json");
+    let create_meta: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(create_meta_path).expect("read create meta"))
+            .expect("parse create meta");
+
+    let run_v = h.run(&[
+        "run",
+        "--tag",
+        "shared.tag",
+        "--env",
+        "SHARED_KEY=shared-value",
+        "--mask",
+        "SHARED_KEY",
+        "--stdin",
+        "shape",
+        "--notify-command",
+        "cat >/dev/null",
+        "--",
+        "cat",
+    ]);
+    assert_envelope(&run_v, "run", true);
+    let run_id = run_v["job_id"].as_str().expect("run job_id missing");
+    let run_meta_path = std::path::Path::new(h.root())
+        .join(run_id)
+        .join("meta.json");
+    let run_meta: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(run_meta_path).expect("read run meta"))
+            .expect("parse run meta");
+
+    assert_eq!(create_meta["tags"], run_meta["tags"]);
+    assert_eq!(create_meta["notification"], run_meta["notification"]);
+    assert_eq!(create_meta["env_keys"], run_meta["env_keys"]);
+    assert_eq!(create_meta["env_vars"], run_meta["env_vars"]);
+    assert_eq!(create_meta["mask"], run_meta["mask"]);
+    assert_eq!(create_meta["stdin_file"], run_meta["stdin_file"]);
+    assert_eq!(
+        create_meta["stdin_file"].as_str().unwrap_or(""),
+        "stdin.bin"
+    );
+}
+
+#[test]
 fn run_without_stdin_keeps_null_stdin_behavior() {
     let h = TestHarness::new();
     let v = h.run(&["run", "--", "cat"]);

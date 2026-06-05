@@ -853,6 +853,149 @@ fn resolve_compression_or_exit(
     }
 }
 
+#[derive(Debug)]
+struct DefinitionOptions {
+    timeout: u64,
+    kill_after: u64,
+    cwd: Option<String>,
+    env_vars: Vec<String>,
+    env_files: Vec<String>,
+    no_inherit_env: bool,
+    mask: Vec<String>,
+    stdin: Option<String>,
+    stdin_file: Option<String>,
+    stdin_max_bytes: u64,
+    progress_every: u64,
+    notify_command: Option<String>,
+    notify_file: Option<String>,
+    config: Option<String>,
+    shell_wrapper: Option<String>,
+    tags: Vec<String>,
+    output_pattern: Option<String>,
+    output_match_type: Option<String>,
+    output_stream: Option<String>,
+    output_command: Option<String>,
+    output_file: Option<String>,
+}
+
+#[derive(Debug)]
+struct ResolvedDefinitionOptions {
+    timeout_ms: u64,
+    kill_after_ms: u64,
+    cwd: Option<String>,
+    env_vars: Vec<String>,
+    env_files: Vec<String>,
+    inherit_env: bool,
+    mask: Vec<String>,
+    stdin: Option<agent_exec::run::StdinSource>,
+    stdin_max_bytes: u64,
+    progress_every_ms: u64,
+    notify_command: Option<String>,
+    notify_file: Option<String>,
+    shell_wrapper: Vec<String>,
+    tags: Vec<String>,
+    output_pattern: Option<String>,
+    output_match_type: Option<String>,
+    output_stream: Option<String>,
+    output_command: Option<String>,
+    output_file: Option<String>,
+}
+
+impl DefinitionOptions {
+    fn resolve(self) -> Result<ResolvedDefinitionOptions> {
+        let shell_wrapper = agent_exec::config::resolve_shell_wrapper(
+            self.shell_wrapper.as_deref(),
+            self.config.as_deref(),
+        )?;
+        Ok(ResolvedDefinitionOptions {
+            timeout_ms: self.timeout.saturating_mul(1000),
+            kill_after_ms: self.kill_after.saturating_mul(1000),
+            cwd: self.cwd,
+            env_vars: self.env_vars,
+            env_files: self.env_files,
+            inherit_env: !self.no_inherit_env,
+            mask: self.mask,
+            stdin: agent_exec::run::resolve_stdin_source(self.stdin, self.stdin_file),
+            stdin_max_bytes: self.stdin_max_bytes,
+            progress_every_ms: self.progress_every.saturating_mul(1000),
+            notify_command: self.notify_command,
+            notify_file: self.notify_file,
+            shell_wrapper,
+            tags: self.tags,
+            output_pattern: self.output_pattern,
+            output_match_type: self.output_match_type,
+            output_stream: self.output_stream,
+            output_command: self.output_command,
+            output_file: self.output_file,
+        })
+    }
+}
+
+#[derive(Debug)]
+struct AutoGcOptions {
+    no_auto_gc: bool,
+    older_than: Option<String>,
+    max_jobs: Option<u64>,
+    max_bytes: Option<u64>,
+}
+
+#[derive(Debug)]
+struct ResolvedAutoGcOptions {
+    no_auto_gc: bool,
+    older_than: Option<String>,
+    max_jobs: Option<u64>,
+    max_bytes: Option<u64>,
+    config: agent_exec::gc::AutoGcConfig,
+}
+
+impl AutoGcOptions {
+    fn resolve(self, config_path: Option<&str>) -> Result<ResolvedAutoGcOptions> {
+        let cfg = agent_exec::config::resolve_config(config_path)?;
+        Ok(ResolvedAutoGcOptions {
+            no_auto_gc: self.no_auto_gc,
+            older_than: self.older_than,
+            max_jobs: self.max_jobs,
+            max_bytes: self.max_bytes,
+            config: cfg.gc.to_auto_gc_config(),
+        })
+    }
+}
+
+#[derive(Debug)]
+struct InlineObservationOptions {
+    wait: bool,
+    until: u64,
+    forever: bool,
+    no_wait: bool,
+    max_bytes: u64,
+    compress: Option<CompressionMode>,
+    rtk: Option<CompressionMode>,
+}
+
+#[derive(Debug)]
+struct ResolvedInlineObservationOptions {
+    wait: bool,
+    until_seconds: u64,
+    forever: bool,
+    max_bytes: u64,
+    compression_mode: CompressionMode,
+}
+
+impl InlineObservationOptions {
+    fn resolve(
+        self,
+        cfg: &agent_exec::config::AgentExecConfig,
+    ) -> ResolvedInlineObservationOptions {
+        ResolvedInlineObservationOptions {
+            wait: if self.no_wait { false } else { self.wait },
+            until_seconds: if self.no_wait { 0 } else { self.until },
+            forever: if self.no_wait { false } else { self.forever },
+            max_bytes: self.max_bytes,
+            compression_mode: resolve_compression_or_exit(self.compress, self.rtk, cfg),
+        }
+    }
+}
+
 fn run(cli: Cli) -> Result<()> {
     let root = cli.root;
     match cli.command {
@@ -882,34 +1025,52 @@ fn run(cli: Cli) -> Result<()> {
             output_file,
             command,
         } => {
-            let should_inherit = !no_inherit_env;
-            let resolved_wrapper = agent_exec::config::resolve_shell_wrapper(
-                shell_wrapper.as_deref(),
-                config.as_deref(),
-            )?;
-            let resolved_stdin = agent_exec::run::resolve_stdin_source(stdin, stdin_file);
-            agent_exec::create::execute(agent_exec::create::CreateOpts {
-                command,
-                root: root.as_deref(),
-                timeout_ms: timeout.saturating_mul(1000),
-                kill_after_ms: kill_after.saturating_mul(1000),
-                cwd: cwd.as_deref(),
+            let definition = DefinitionOptions {
+                timeout,
+                kill_after,
+                cwd,
                 env_vars,
                 env_files,
-                inherit_env: should_inherit,
+                no_inherit_env,
                 mask,
-                stdin: resolved_stdin,
+                stdin,
+                stdin_file,
                 stdin_max_bytes,
-                progress_every_ms: progress_every.saturating_mul(1000),
+                progress_every,
                 notify_command,
                 notify_file,
-                shell_wrapper: resolved_wrapper,
+                config,
+                shell_wrapper,
                 tags,
                 output_pattern,
                 output_match_type,
                 output_stream,
                 output_command,
                 output_file,
+            }
+            .resolve()?;
+            agent_exec::create::execute(agent_exec::create::CreateOpts {
+                command,
+                root: root.as_deref(),
+                timeout_ms: definition.timeout_ms,
+                kill_after_ms: definition.kill_after_ms,
+                cwd: definition.cwd.as_deref(),
+                env_vars: definition.env_vars,
+                env_files: definition.env_files,
+                inherit_env: definition.inherit_env,
+                mask: definition.mask,
+                stdin: definition.stdin,
+                stdin_max_bytes: definition.stdin_max_bytes,
+                progress_every_ms: definition.progress_every_ms,
+                notify_command: definition.notify_command,
+                notify_file: definition.notify_file,
+                shell_wrapper: definition.shell_wrapper,
+                tags: definition.tags,
+                output_pattern: definition.output_pattern,
+                output_match_type: definition.output_match_type,
+                output_stream: definition.output_stream,
+                output_command: definition.output_command,
+                output_file: definition.output_file,
             })?;
         }
 
@@ -928,24 +1089,37 @@ fn run(cli: Cli) -> Result<()> {
             rtk,
             job_id,
         } => {
-            let effective_wait = if no_wait { false } else { wait };
-            let effective_until_seconds = if no_wait { 0 } else { until };
-            let effective_forever = if no_wait { false } else { forever };
             let cfg = agent_exec::config::resolve_config(None)?;
-            let compression_mode = resolve_compression_or_exit(compress, rtk, &cfg);
+            let auto_gc = AutoGcOptions {
+                no_auto_gc,
+                older_than: auto_gc_older_than,
+                max_jobs: auto_gc_max_jobs,
+                max_bytes: auto_gc_max_bytes,
+            }
+            .resolve(None)?;
+            let inline = InlineObservationOptions {
+                wait,
+                until,
+                forever,
+                no_wait,
+                max_bytes,
+                compress,
+                rtk,
+            }
+            .resolve(&cfg);
             agent_exec::start::execute(agent_exec::start::StartOpts {
                 job_id: &job_id,
                 root: root.as_deref(),
-                no_auto_gc,
-                auto_gc_older_than,
-                auto_gc_max_jobs,
-                auto_gc_max_bytes,
-                auto_gc_config: cfg.gc.to_auto_gc_config(),
-                wait: effective_wait,
-                until_seconds: effective_until_seconds,
-                forever: effective_forever,
-                max_bytes,
-                compression_mode,
+                no_auto_gc: auto_gc.no_auto_gc,
+                auto_gc_older_than: auto_gc.older_than,
+                auto_gc_max_jobs: auto_gc.max_jobs,
+                auto_gc_max_bytes: auto_gc.max_bytes,
+                auto_gc_config: auto_gc.config,
+                wait: inline.wait,
+                until_seconds: inline.until_seconds,
+                forever: inline.forever,
+                max_bytes: inline.max_bytes,
+                compression_mode: inline.compression_mode,
             })?;
         }
 
@@ -965,25 +1139,38 @@ fn run(cli: Cli) -> Result<()> {
             rtk,
             job_id,
         } => {
-            let effective_wait = if no_wait { false } else { wait };
-            let effective_until_seconds = if no_wait { 0 } else { until };
-            let effective_forever = if no_wait { false } else { forever };
             let cfg = agent_exec::config::resolve_config(None)?;
-            let compression_mode = resolve_compression_or_exit(compress, rtk, &cfg);
+            let auto_gc = AutoGcOptions {
+                no_auto_gc,
+                older_than: auto_gc_older_than,
+                max_jobs: auto_gc_max_jobs,
+                max_bytes: auto_gc_max_bytes,
+            }
+            .resolve(None)?;
+            let inline = InlineObservationOptions {
+                wait,
+                until,
+                forever,
+                no_wait,
+                max_bytes,
+                compress,
+                rtk,
+            }
+            .resolve(&cfg);
             agent_exec::restart::execute(agent_exec::restart::RestartOpts {
                 job_id: &job_id,
                 root: root.as_deref(),
                 signal: &signal,
-                no_auto_gc,
-                auto_gc_older_than,
-                auto_gc_max_jobs,
-                auto_gc_max_bytes,
-                auto_gc_config: cfg.gc.to_auto_gc_config(),
-                wait: effective_wait,
-                until_seconds: effective_until_seconds,
-                forever: effective_forever,
-                max_bytes,
-                compression_mode,
+                no_auto_gc: auto_gc.no_auto_gc,
+                auto_gc_older_than: auto_gc.older_than,
+                auto_gc_max_jobs: auto_gc.max_jobs,
+                auto_gc_max_bytes: auto_gc.max_bytes,
+                auto_gc_config: auto_gc.config,
+                wait: inline.wait,
+                until_seconds: inline.until_seconds,
+                forever: inline.forever,
+                max_bytes: inline.max_bytes,
+                compression_mode: inline.compression_mode,
             })?;
         }
 
@@ -1024,54 +1211,82 @@ fn run(cli: Cli) -> Result<()> {
             rtk,
             command,
         } => {
-            // --inherit-env and --no-inherit-env are mutually exclusive (enforced by clap).
-            // If neither is specified, default is to inherit (inherit_env=true).
-            // If --no-inherit-env is set, inherit_env=false.
-            let should_inherit = !no_inherit_env;
-            // Resolve the shell wrapper using CLI override, config file, or defaults.
-            let resolved_wrapper = agent_exec::config::resolve_shell_wrapper(
-                shell_wrapper.as_deref(),
-                config.as_deref(),
-            )?;
-            let resolved_stdin = agent_exec::run::resolve_stdin_source(stdin, stdin_file);
-            let effective_wait = if no_wait { false } else { wait };
-            let effective_until_seconds = if no_wait { 0 } else { until };
-            let effective_forever = if no_wait { false } else { forever };
-            let cfg = agent_exec::config::resolve_config(config.as_deref())?;
-            let compression_mode = resolve_compression_or_exit(compress, rtk, &cfg);
-            agent_exec::run::execute(agent_exec::run::RunOpts {
-                command,
-                root: root.as_deref(),
+            let config_path = config.clone();
+            let cfg = agent_exec::config::resolve_config(config_path.as_deref())?;
+            let auto_gc = AutoGcOptions {
                 no_auto_gc,
-                auto_gc_older_than,
-                auto_gc_max_jobs,
-                auto_gc_max_bytes,
-                auto_gc_config: cfg.gc.to_auto_gc_config(),
-                wait: effective_wait,
-                until_seconds: effective_until_seconds,
-                forever: effective_forever,
+                older_than: auto_gc_older_than,
+                max_jobs: auto_gc_max_jobs,
+                max_bytes: auto_gc_max_bytes,
+            }
+            .resolve(config_path.as_deref())?;
+            let inline = InlineObservationOptions {
+                wait,
+                until,
+                forever,
+                no_wait,
                 max_bytes,
-                compression_mode,
-                timeout_ms: timeout.saturating_mul(1000),
-                kill_after_ms: kill_after.saturating_mul(1000),
-                cwd: cwd.as_deref(),
+                compress,
+                rtk,
+            }
+            .resolve(&cfg);
+            let definition = DefinitionOptions {
+                timeout,
+                kill_after,
+                cwd,
                 env_vars,
                 env_files,
-                inherit_env: should_inherit,
+                no_inherit_env,
                 mask,
-                stdin: resolved_stdin,
+                stdin,
+                stdin_file,
                 stdin_max_bytes,
-                tags,
-                log: log.as_deref(),
-                progress_every_ms: progress_every.saturating_mul(1000),
+                progress_every,
                 notify_command,
                 notify_file,
+                config,
+                shell_wrapper,
+                tags,
                 output_pattern,
                 output_match_type,
                 output_stream,
                 output_command,
                 output_file,
-                shell_wrapper: resolved_wrapper,
+            }
+            .resolve()?;
+            agent_exec::run::execute(agent_exec::run::RunOpts {
+                command,
+                root: root.as_deref(),
+                no_auto_gc: auto_gc.no_auto_gc,
+                auto_gc_older_than: auto_gc.older_than,
+                auto_gc_max_jobs: auto_gc.max_jobs,
+                auto_gc_max_bytes: auto_gc.max_bytes,
+                auto_gc_config: auto_gc.config,
+                wait: inline.wait,
+                until_seconds: inline.until_seconds,
+                forever: inline.forever,
+                max_bytes: inline.max_bytes,
+                compression_mode: inline.compression_mode,
+                timeout_ms: definition.timeout_ms,
+                kill_after_ms: definition.kill_after_ms,
+                cwd: definition.cwd.as_deref(),
+                env_vars: definition.env_vars,
+                env_files: definition.env_files,
+                inherit_env: definition.inherit_env,
+                mask: definition.mask,
+                stdin: definition.stdin,
+                stdin_max_bytes: definition.stdin_max_bytes,
+                tags: definition.tags,
+                log: log.as_deref(),
+                progress_every_ms: definition.progress_every_ms,
+                notify_command: definition.notify_command,
+                notify_file: definition.notify_file,
+                output_pattern: definition.output_pattern,
+                output_match_type: definition.output_match_type,
+                output_stream: definition.output_stream,
+                output_command: definition.output_command,
+                output_file: definition.output_file,
+                shell_wrapper: definition.shell_wrapper,
             })?;
         }
 
