@@ -320,20 +320,6 @@ pub struct ListData {
     pub skipped: u64,
 }
 
-/// Per-job result entry in a `gc` response.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct GcJobResult {
-    pub job_id: String,
-    /// Job state as reported from state.json: running | exited | killed | failed | unknown
-    pub state: String,
-    /// What GC did: "deleted" | "would_delete" | "skipped"
-    pub action: String,
-    /// Human-readable explanation for the action.
-    pub reason: String,
-    /// Byte size of the job directory (0 for skipped jobs where size is not computed).
-    pub bytes: u64,
-}
-
 /// Response for the `gc` command.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GcData {
@@ -362,8 +348,6 @@ pub struct GcData {
     pub scanned_dirs: u64,
     /// Number of deletion candidates selected by policy.
     pub candidate_count: u64,
-    /// Per-job details.
-    pub jobs: Vec<GcJobResult>,
 }
 
 /// Per-job result entry in a `delete` response.
