@@ -30,6 +30,13 @@ else
   echo "graphify output not found at ${root_worktree_path}/graphify-out; skipping copy" 1>&2
 fi
 
+if command -v codegraph >/dev/null 2>&1; then
+  echo "Initializing codegraph in worktree..."
+  codegraph init
+else
+  echo "codegraph not found; skipping init"
+fi
+
 hooks_dir="$(git rev-parse --git-dir 2>/dev/null)/hooks"
 if [ -n "$hooks_dir" ]; then
   case "$hooks_dir" in
