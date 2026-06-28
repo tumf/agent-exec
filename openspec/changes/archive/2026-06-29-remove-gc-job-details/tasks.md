@@ -2,7 +2,7 @@
 
 - [x] Remove `GcJobResult` struct from `src/schema.rs` and the `jobs: Vec<GcJobResult>` field from `GcData` (verification: unit - `cargo build` compiles without `GcJobResult` usage errors)
 - [x] Remove per-job `results` vector construction and population from `src/gc.rs` `run_gc`, keeping only aggregate counter logic (verification: unit - `cargo build`)
-- [x] Remove `GcJobResult` from the `gc.rs` import in `src/schema.rs` usage (verification: unit - `cargo clippy --all-targets --all-features -- -D warnings`)
+- [x] Remove any stale `GcJobResult` imports/usages from `src/schema.rs` and `src/gc.rs` (verification: unit - `src/schema.rs`, `src/gc.rs`, `cargo clippy --all-targets --all-features -- -D warnings`)
 - [x] Update `assert_gc_envelope` in `tests/integration.rs` to assert `jobs` is absent from the gc response (verification: integration - `cargo test --test integration gc_empty_root_returns_ok`)
 - [x] Rewrite `gc_deletes_only_terminal_jobs` test to verify via summary counters (`deleted`, `skipped`, `out_of_scope`) and filesystem checks instead of per-job `jobs` array (verification: integration - `cargo test --test integration gc_deletes_only_terminal_jobs`)
 - [x] Rewrite `gc_dry_run_preserves_directories` test to verify via `candidate_count`, `freed_bytes`, and filesystem checks (verification: integration - `cargo test --test integration gc_dry_run_preserves_directories`)
