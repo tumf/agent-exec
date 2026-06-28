@@ -3125,7 +3125,7 @@ fn assert_gc_envelope(v: &serde_json::Value, dry_run: bool) {
         v["older_than_source"].as_str().is_some(),
         "older_than_source field missing"
     );
-    assert!(v["jobs"].is_array(), "jobs must be an array");
+    assert!(v.get("jobs").is_none(), "gc response must omit jobs: {v}");
     assert!(
         v["scanned_dirs"].as_u64().is_some(),
         "scanned_dirs field missing"
@@ -3214,18 +3214,8 @@ fn gc_deletes_only_terminal_jobs() {
     assert!(!std::path::Path::new(h.root()).join("killed-old").exists());
     assert!(!std::path::Path::new(h.root()).join("failed-old").exists());
 
-    // Verify running job appears as skipped in jobs array.
-    let jobs = v["jobs"].as_array().unwrap();
-    let running_entry = jobs
-        .iter()
-        .find(|j| j["job_id"].as_str().unwrap_or("") == "running-job");
-    assert!(
-        running_entry.is_some(),
-        "running job must appear in jobs array"
-    );
-    let running_entry = running_entry.unwrap();
-    assert_eq!(running_entry["action"].as_str().unwrap_or(""), "skipped");
-    assert_eq!(running_entry["reason"].as_str().unwrap_or(""), "active_job");
+    assert_eq!(v["skipped"].as_u64().unwrap_or(0), 1);
+    assert_eq!(v["out_of_scope"].as_u64().unwrap_or(0), 1);
 }
 
 /// gc --dry-run reports candidates without deleting directories.
@@ -3254,16 +3244,7 @@ fn gc_dry_run_preserves_directories() {
         "directory must be preserved in dry-run"
     );
 
-    // Action must be "would_delete".
-    let jobs = v["jobs"].as_array().unwrap();
-    let entry = jobs
-        .iter()
-        .find(|j| j["job_id"].as_str().unwrap_or("") == "old-exited");
-    assert!(entry.is_some());
-    assert_eq!(
-        entry.unwrap()["action"].as_str().unwrap_or(""),
-        "would_delete"
-    );
+    assert_eq!(v["candidate_count"].as_u64().unwrap_or(0), 1);
 }
 
 /// gc skips jobs whose state.json lacks both finished_at and updated_at timestamps.
@@ -3349,13 +3330,9 @@ fn gc_supports_max_jobs_policy() {
     let v = h.run(&["gc", "--max-jobs", "1", "--dry-run"]);
     assert_gc_envelope(&v, true);
 
-    let jobs = v["jobs"].as_array().unwrap();
-    let would_delete = jobs
-        .iter()
-        .filter(|j| j["action"].as_str().unwrap_or("") == "would_delete")
-        .count();
-    assert!(
-        would_delete >= 2,
+    assert_eq!(
+        v["candidate_count"].as_u64().unwrap_or(0),
+        2,
         "must select older jobs by max-jobs policy"
     );
 
@@ -3374,11 +3351,14 @@ fn gc_supports_max_bytes_policy() {
     let v = h.run(&["gc", "--max-bytes", "1", "--dry-run"]);
     assert_gc_envelope(&v, true);
 
-    let jobs = v["jobs"].as_array().unwrap();
-    let has_max_bytes_reason = jobs
-        .iter()
-        .any(|j| j["reason"].as_str().unwrap_or("").contains("max_bytes"));
-    assert!(has_max_bytes_reason, "max-bytes reason must be reported");
+    assert!(
+        v["candidate_count"].as_u64().unwrap_or(0) >= 1,
+        "max-bytes policy must select at least one candidate"
+    );
+    assert!(
+        v["freed_bytes"].as_u64().unwrap_or(0) > 0,
+        "max-bytes policy must report reclaimable bytes"
+    );
 }
 
 /// gc skips jobs whose state.json is unreadable.
@@ -3407,17 +3387,8 @@ fn gc_skips_unreadable_state() {
 
     let v = h.run(&["gc", "--older-than", "1d"]);
     assert_gc_envelope(&v, false);
-    // The job should be reported as skipped.
-    let jobs = v["jobs"].as_array().unwrap();
-    let entry = jobs
-        .iter()
-        .find(|j| j["job_id"].as_str().unwrap_or("") == "bad-state-job");
-    assert!(entry.is_some(), "unreadable job must appear in jobs list");
-    assert_eq!(entry.unwrap()["action"].as_str().unwrap_or(""), "skipped");
-    assert_eq!(
-        entry.unwrap()["reason"].as_str().unwrap_or(""),
-        "state_unreadable"
-    );
+    assert_eq!(v["skipped"].as_u64().unwrap_or(0), 1);
+    assert_eq!(v["out_of_scope"].as_u64().unwrap_or(0), 1);
     // Directory must be preserved.
     assert!(
         job_dir.exists(),

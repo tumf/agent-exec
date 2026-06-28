@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
 
 use crate::jobstore::resolve_root;
-use crate::schema::{GcData, GcJobResult, JobState, JobStatus, Response};
+use crate::schema::{GcData, JobState, JobStatus, Response};
 
 const DEFAULT_OLDER_THAN: &str = "30d";
 const DEFAULT_AUTO_SCAN_LIMIT: usize = 200;
@@ -42,7 +42,6 @@ pub struct GcOpts<'a> {
 struct Candidate {
     job_id: String,
     path: PathBuf,
-    status: JobStatus,
     gc_ts: String,
     bytes: u64,
     reasons: Vec<&'static str>,
@@ -111,7 +110,6 @@ pub fn execute(opts: GcOpts) -> Result<()> {
             freed_bytes: outcome.freed_bytes,
             scanned_dirs: outcome.scanned_dirs,
             candidate_count: outcome.candidate_count,
-            jobs: outcome.jobs,
         },
     )
     .print();
@@ -149,7 +147,6 @@ struct GcOutcome {
     freed_bytes: u64,
     scanned_dirs: u64,
     candidate_count: u64,
-    jobs: Vec<GcJobResult>,
 }
 
 fn run_gc_with_lock(root: &Path, policy: &GcPolicy) -> Result<GcOutcome> {
@@ -187,7 +184,6 @@ fn empty_outcome() -> GcOutcome {
         freed_bytes: 0,
         scanned_dirs: 0,
         candidate_count: 0,
-        jobs: vec![],
     }
 }
 
@@ -215,7 +211,6 @@ fn run_gc(root: &Path, policy: &GcPolicy) -> Result<GcOutcome> {
     let mut skipped = 0u64;
     let mut failed = 0u64;
 
-    let mut results = Vec::new();
     let mut candidates = Vec::<Candidate>::new();
 
     let read_dir = std::fs::read_dir(root)
@@ -262,13 +257,6 @@ fn run_gc(root: &Path, policy: &GcPolicy) -> Result<GcOutcome> {
             None => {
                 skipped += 1;
                 out_of_scope += 1;
-                results.push(GcJobResult {
-                    job_id,
-                    state: "unknown".to_string(),
-                    action: "skipped".to_string(),
-                    reason: "state_unreadable".to_string(),
-                    bytes: 0,
-                });
                 continue;
             }
         };
@@ -277,13 +265,6 @@ fn run_gc(root: &Path, policy: &GcPolicy) -> Result<GcOutcome> {
         if matches!(status, JobStatus::Running | JobStatus::Created) {
             skipped += 1;
             out_of_scope += 1;
-            results.push(GcJobResult {
-                job_id,
-                state: status.as_str().to_string(),
-                action: "skipped".to_string(),
-                reason: "active_job".to_string(),
-                bytes: 0,
-            });
             continue;
         }
 
@@ -293,13 +274,6 @@ fn run_gc(root: &Path, policy: &GcPolicy) -> Result<GcOutcome> {
         ) {
             skipped += 1;
             out_of_scope += 1;
-            results.push(GcJobResult {
-                job_id,
-                state: status.as_str().to_string(),
-                action: "skipped".to_string(),
-                reason: "non_terminal_status".to_string(),
-                bytes: 0,
-            });
             continue;
         }
 
@@ -313,26 +287,12 @@ fn run_gc(root: &Path, policy: &GcPolicy) -> Result<GcOutcome> {
         if gc_ts.is_empty() {
             skipped += 1;
             out_of_scope += 1;
-            results.push(GcJobResult {
-                job_id,
-                state: status.as_str().to_string(),
-                action: "skipped".to_string(),
-                reason: "no_timestamp".to_string(),
-                bytes: 0,
-            });
             continue;
         }
 
         if !is_older_than(&gc_ts, &cutoff) {
             skipped += 1;
             out_of_scope += 1;
-            results.push(GcJobResult {
-                job_id,
-                state: status.as_str().to_string(),
-                action: "skipped".to_string(),
-                reason: "too_recent".to_string(),
-                bytes: 0,
-            });
             continue;
         }
 
@@ -340,7 +300,6 @@ fn run_gc(root: &Path, policy: &GcPolicy) -> Result<GcOutcome> {
         candidates.push(Candidate {
             job_id,
             path,
-            status,
             gc_ts,
             bytes,
             reasons: vec!["older_than"],
@@ -382,13 +341,6 @@ fn run_gc(root: &Path, policy: &GcPolicy) -> Result<GcOutcome> {
         if c.reasons.is_empty() {
             skipped += 1;
             out_of_scope += 1;
-            results.push(GcJobResult {
-                job_id: c.job_id,
-                state: c.status.as_str().to_string(),
-                action: "skipped".to_string(),
-                reason: "policy_not_matched".to_string(),
-                bytes: c.bytes,
-            });
             continue;
         }
         selected.push(c);
@@ -405,27 +357,11 @@ fn run_gc(root: &Path, policy: &GcPolicy) -> Result<GcOutcome> {
         {
             skipped += 1;
             out_of_scope += 1;
-            results.push(GcJobResult {
-                job_id: c.job_id,
-                state: c.status.as_str().to_string(),
-                action: "skipped".to_string(),
-                reason: "delete_budget_exhausted".to_string(),
-                bytes: c.bytes,
-            });
             continue;
         }
 
-        let reason = c.reasons.join("+");
-
         if policy.dry_run {
             freed_bytes = freed_bytes.saturating_add(c.bytes);
-            results.push(GcJobResult {
-                job_id: c.job_id,
-                state: c.status.as_str().to_string(),
-                action: "would_delete".to_string(),
-                reason,
-                bytes: c.bytes,
-            });
             continue;
         }
 
@@ -434,36 +370,16 @@ fn run_gc(root: &Path, policy: &GcPolicy) -> Result<GcOutcome> {
                 if c.path.exists() {
                     skipped += 1;
                     failed += 1;
-                    results.push(GcJobResult {
-                        job_id: c.job_id,
-                        state: c.status.as_str().to_string(),
-                        action: "skipped".to_string(),
-                        reason: "post_delete_check_failed".to_string(),
-                        bytes: c.bytes,
-                    });
                 } else {
                     deletions += 1;
                     deleted += 1;
                     freed_bytes = freed_bytes.saturating_add(c.bytes);
-                    results.push(GcJobResult {
-                        job_id: c.job_id,
-                        state: c.status.as_str().to_string(),
-                        action: "deleted".to_string(),
-                        reason,
-                        bytes: c.bytes,
-                    });
                 }
             }
             Err(e) => {
                 skipped += 1;
                 failed += 1;
-                results.push(GcJobResult {
-                    job_id: c.job_id,
-                    state: c.status.as_str().to_string(),
-                    action: "skipped".to_string(),
-                    reason: format!("delete_failed: {e}"),
-                    bytes: c.bytes,
-                });
+                warn!(job_id = %c.job_id, error = %e, "gc: failed to delete job directory");
             }
         }
     }
@@ -488,7 +404,6 @@ fn run_gc(root: &Path, policy: &GcPolicy) -> Result<GcOutcome> {
         freed_bytes,
         scanned_dirs,
         candidate_count,
-        jobs: results,
     })
 }
 
