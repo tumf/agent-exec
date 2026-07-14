@@ -39,6 +39,7 @@ impl Mcp {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct RunParams {
     command: Vec<String>,
     cwd: Option<String>,
@@ -213,7 +214,18 @@ impl ServerHandler for Mcp {}
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::{env_vars, seconds};
+    use super::{RunParams, env_vars, seconds};
+
+    #[test]
+    fn run_params_reject_unknown_fields() {
+        assert!(
+            serde_json::from_value::<RunParams>(serde_json::json!({
+                "command": ["true"],
+                "mask": ["SECRET"]
+            }))
+            .is_err()
+        );
+    }
 
     #[test]
     fn seconds_rejects_invalid_values() {
