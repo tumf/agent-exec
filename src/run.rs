@@ -488,6 +488,11 @@ pub fn pre_create_log_files(job_dir: &JobDir) -> Result<()> {
 
 /// Execute `run`: spawn job and return launch metadata immediately.
 pub fn execute(opts: RunOpts) -> Result<()> {
+    run_response(opts)?.print();
+    Ok(())
+}
+
+pub fn run_response(opts: RunOpts) -> Result<Response<RunData>> {
     if opts.command.is_empty() {
         anyhow::bail!("no command specified for run");
     }
@@ -674,8 +679,7 @@ pub fn execute(opts: RunOpts) -> Result<()> {
             compression,
         },
     );
-    response.print();
-    Ok(())
+    Ok(response)
 }
 
 /// Options for the `_supervise` internal sub-command.

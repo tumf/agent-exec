@@ -7,9 +7,22 @@ description: Use `agent-exec` whenever shell work may run longer than a safe inl
 
 Use `agent-exec` as the default harness-friendly way to run shell work whose duration or output size is not trivial.
 
-Start with plain `agent-exec run -- <command>`. In normal use, do not try to outsmart it with extra flags. The defaults are the point: they are chosen so the harness gets control back predictably, sees common startup failures early, and avoids flooding context with command output.
+For MCP-capable clients, configure `agent-exec mcp` as a stdio server and call its `run` tool first. It starts the same detached managed jobs without routing lifecycle through the client terminal. Retain each returned `job_id`; observe with `status`, `tail`, or bounded `wait`. Call `kill` only after an explicit user cancellation request.
+
+When MCP is unavailable, start with plain `agent-exec run -- <command>`. In normal use, do not try to outsmart it with extra flags. The defaults are the point: they are chosen so the harness gets control back predictably, sees common startup failures early, and avoids flooding context with command output.
 
 Use a normal inline shell command only when the task is clearly short, blocking, and safe to finish within one response.
+
+## Hermes Native MCP configuration
+
+```yaml
+mcp_servers:
+  agent-exec:
+    command: agent-exec
+    args: ["mcp"]
+```
+
+Set `args: ["--root", "/path/to/jobs", "mcp"]` only when a non-default jobs root is required. MCP transport closure, bounded wait expiry, missing output, and moving to other work are not cancellation authorization.
 
 ## Why use it by default
 

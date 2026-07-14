@@ -15,6 +15,11 @@ pub struct StatusOpts<'a> {
 
 /// Execute `status`: read job state and emit JSON.
 pub fn execute(opts: StatusOpts) -> Result<()> {
+    status_response(opts)?.print();
+    Ok(())
+}
+
+pub fn status_response(opts: StatusOpts) -> Result<Response<StatusData>> {
     let root = resolve_root(opts.root);
     let job_dir = JobDir::open(&root, opts.job_id)?;
 
@@ -34,6 +39,5 @@ pub fn execute(opts: StatusOpts) -> Result<()> {
             finished_at: state.finished_at,
         },
     );
-    response.print();
-    Ok(())
+    Ok(response)
 }
