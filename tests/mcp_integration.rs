@@ -86,16 +86,14 @@ fn mcp_lists_exactly_managed_job_tools_and_runs_jobs() {
     let mut mcp = McpProcess::start(harness.root());
     mcp.initialize();
     let listed = mcp.request(3, "tools/list", json!({}));
-    let names: Vec<_> = listed["result"]["tools"]
+    let mut names: Vec<_> = listed["result"]["tools"]
         .as_array()
         .expect("tools")
         .iter()
         .map(|tool| tool["name"].as_str().expect("tool name"))
         .collect();
-    assert_eq!(names.len(), 5);
-    for expected in ["run", "status", "tail", "wait", "kill"] {
-        assert!(names.contains(&expected));
-    }
+    names.sort_unstable();
+    assert_eq!(names, ["kill", "run", "status", "tail", "wait"]);
 
     let run = mcp.call(4, "run", json!({ "command": ["echo", "hello"] }));
     assert_envelope(&run, "run", true);
