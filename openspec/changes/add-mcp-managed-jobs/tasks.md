@@ -37,4 +37,8 @@ Expected archive gate: `cflx openspec validate add-mcp-managed-jobs --archive-ga
 - [x] `tests/mcp_integration.rs:125-133` は wait を `until=0` で呼び、tail の range・total fields・実際の bounds を検証しない。`specs/agent-exec-mcp/spec.md:38-56` の bounded wait と tail bounds シナリオを実行する統合テストを追加すること。
 - [x] `tests/mcp_integration.rs:139-152` は empty command のみを拒否検証し、unknown/ambiguous ID、invalid_state、invalid duration/env、malformed parameter shape を検証しない。`tasks.md:15` と `specs/agent-exec-mcp/spec.md:87-96` に従い、stable domain error envelope と非生成・非cancelを統合テストで確認すること。
 - [x] `tests/mcp_integration.rs:96-106` は MCP run envelope の `state`、stderr、ranges、byte totals、log paths と job logs を検証しておらず、`specs/agent-exec-mcp/spec.md:19-27` および `tasks.md:9` の証拠が不足する。全必須フィールドとログ存在を assertion すること。
-- [x] 実コミット経路の pre-commit hook は `prek run -a` だが、確認ジョブ `c0d28fbe557f644d650fe96e2e4761b2` はまだ running で、archive commitability の成功証拠が確定していない。完了まで待機し、成功結果を確認すること。
+- [x] 実コミット経路の pre-commit hook は `prek run -a` だが、確認ジョブ `c0d28fbe557f644d650fe96e2e4761b2` はまだ running で、archive commitability の成功証拠が確定していない。完了まで待機し、成功結果を確認すること。(verification: integration - `prek run -a` job `c0d28fbe557f644d650fe96e2e4761b2` succeeds.)
+
+## Acceptance #2 Resolution
+
+実コミット経路の behavior-bearing follow-up に `(verification: integration - `prek run -a` job `c0d28fbe557f644d650fe96e2e4761b2` succeeds.)` を追記した。archive gate は上記の `## Final Validation` で再実行する。
