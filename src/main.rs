@@ -557,6 +557,9 @@ enum Command {
         shell: CompletionShell,
     },
 
+    /// Start a stdio MCP server exposing managed-job operations.
+    Mcp,
+
     /// Start an HTTP server exposing job operations as REST endpoints.
     Serve {
         /// Bind address (host:port). Defaults to 127.0.0.1:19263 (localhost only).
@@ -1369,6 +1372,11 @@ fn run(cli: Cli) -> Result<()> {
                 max_bytes,
                 dry_run,
             })?;
+        }
+
+        Command::Mcp => {
+            let runtime = tokio::runtime::Runtime::new().context("create MCP runtime")?;
+            runtime.block_on(agent_exec::mcp::serve(root.clone()))?;
         }
 
         Command::Serve {

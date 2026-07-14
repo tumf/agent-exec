@@ -45,10 +45,12 @@ impl<'a> Default for KillOpts<'a> {
 
 /// Execute `kill`: send signal, optionally observe post-signal state, and emit JSON.
 pub fn execute(opts: KillOpts) -> Result<()> {
-    let data = execute_inner(opts)?;
-    let response = Response::new("kill", data);
-    response.print();
+    kill_response(opts)?.print();
     Ok(())
+}
+
+pub fn kill_response(opts: KillOpts) -> Result<Response<KillData>> {
+    Ok(Response::new("kill", execute_inner(opts)?))
 }
 
 /// Core kill logic returning `KillData`. Shared by CLI and HTTP handler.

@@ -13,6 +13,7 @@ pub mod install_skills;
 pub mod jobstore;
 pub mod kill;
 pub mod list;
+pub mod mcp;
 pub mod notify;
 pub mod restart;
 pub mod run;

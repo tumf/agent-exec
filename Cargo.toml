@@ -48,6 +48,8 @@ libc = "0.2"
 tempfile = "3"
 regex = "1"
 rand = "0.8"
+rmcp = { version = "0.8", features = ["server", "transport-io", "macros"] }
+schemars = "1"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [

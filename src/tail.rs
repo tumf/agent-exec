@@ -31,6 +31,11 @@ impl<'a> Default for TailOpts<'a> {
 
 /// Execute `tail`: read log tails and emit JSON.
 pub fn execute(opts: TailOpts) -> Result<()> {
+    tail_response(opts)?.print();
+    Ok(())
+}
+
+pub fn tail_response(opts: TailOpts) -> Result<Response<TailData>> {
     let root = resolve_root(opts.root);
     let job_dir = JobDir::open(&root, opts.job_id)?;
 
@@ -66,6 +71,5 @@ pub fn execute(opts: TailOpts) -> Result<()> {
             compression,
         },
     );
-    response.print();
-    Ok(())
+    Ok(response)
 }

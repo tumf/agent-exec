@@ -56,6 +56,11 @@ pub fn build_wait_data(job_dir: &JobDir, state: &crate::schema::JobState) -> Wai
 
 /// Execute `wait`: poll until done, then emit JSON.
 pub fn execute(opts: WaitOpts) -> Result<()> {
+    wait_response(opts)?.print();
+    Ok(())
+}
+
+pub fn wait_response(opts: WaitOpts) -> Result<Response<WaitData>> {
     let root = resolve_root(opts.root);
     let job_dir = JobDir::open(&root, opts.job_id)?;
 
@@ -71,9 +76,7 @@ pub fn execute(opts: WaitOpts) -> Result<()> {
         debug!(job_id = %opts.job_id, state = ?state.status(), "wait poll");
 
         if !state.status().is_non_terminal() {
-            let response = Response::new("wait", build_wait_data(&job_dir, &state));
-            response.print();
-            return Ok(());
+            return Ok(Response::new("wait", build_wait_data(&job_dir, &state)));
         }
 
         if let Some(dl) = deadline
@@ -81,9 +84,7 @@ pub fn execute(opts: WaitOpts) -> Result<()> {
         {
             let mut data = build_wait_data(&job_dir, &state);
             data.exit_code = None;
-            let response = Response::new("wait", data);
-            response.print();
-            return Ok(());
+            return Ok(Response::new("wait", data));
         }
 
         std::thread::sleep(poll);
