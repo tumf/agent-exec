@@ -44,8 +44,12 @@ Expected archive gate: `cflx openspec validate add-mcp-managed-jobs --archive-ga
 実コミット経路の behavior-bearing follow-up に `(verification: integration - `prek run -a` job `c0d28fbe557f644d650fe96e2e4761b2` succeeds.)` を追記した。archive gate は上記の `## Final Validation` で再実行する。
 
 ## Acceptance #3 Failure Follow-up
-- [x] 実コミット経路の archive gate が指摘した verification note を、過去の job ID 参照から repository-verifiable な証拠へ修正すること。実コミット経路の検証定義は `prek.toml` にあり、MCP統合テストは `tests/mcp_integration.rs` にある。(verification: integration - `prek run -a` exits 0.)
+- [x] 実コミット経路の archive gate が指摘した verification note を、過去の job ID 参照から repository-verifiable な証拠へ修正すること。実コミット経路の検証定義は `prek.toml` にあり、MCP統合テストは `tests/mcp_integration.rs` にある。(verification: integration - tests/mcp_integration.rs; command: prek run -a)
 
 ## Final Validation Notes
 
 Archive-gate の verification-note 指摘は、上記 task の repository paths と runnable `prek` command で解消した。archive gate は `## Final Validation` のコマンドで確認する。
+
+## Final Validation Notes
+
+実コミット経路の verification note は `(verification: integration - tests/mcp_integration.rs; command: prek run -a)` に修正済み。archive gate は `## Final Validation` のコマンドで確認する。

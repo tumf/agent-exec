@@ -93,6 +93,9 @@ fn env_vars(
             if key.is_empty() || key.contains('=') || key.contains('\0') {
                 return Err("env keys must be non-empty and cannot contain '=' or NUL".to_string());
             }
+            if value.contains('\0') {
+                return Err("env values cannot contain NUL".to_string());
+            }
             Ok(format!("{key}={value}"))
         })
         .collect()
