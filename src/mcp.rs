@@ -84,6 +84,20 @@ fn tool_error(message: impl Into<String>) -> Json<Value> {
     Json(json!({"isError": true, "message": message.into()}))
 }
 
+fn env_vars(
+    env: Option<std::collections::BTreeMap<String, String>>,
+) -> Result<Vec<String>, String> {
+    env.unwrap_or_default()
+        .into_iter()
+        .map(|(key, value)| {
+            if key.is_empty() || key.contains('=') || key.contains('\0') {
+                return Err("env keys must be non-empty and cannot contain '=' or NUL".to_string());
+            }
+            Ok(format!("{key}={value}"))
+        })
+        .collect()
+}
+
 fn envelope(result: Result<impl serde::Serialize>) -> Json<Value> {
     match result {
         Ok(value) => Json(serde_json::to_value(value).expect("response serialization")),
@@ -129,12 +143,9 @@ impl Mcp {
             Ok(value) => value,
             Err(message) => return tool_error(message),
         };
-        let env_vars = match params.env {
-            Some(env) => env
-                .into_iter()
-                .map(|(key, value)| format!("{key}={value}"))
-                .collect(),
-            None => Vec::new(),
+        let env_vars = match env_vars(params.env) {
+            Ok(value) => value,
+            Err(message) => return tool_error(message),
         };
         envelope(run::run_response(run::RunOpts {
             command: params.command,
@@ -197,7 +208,9 @@ impl ServerHandler for Mcp {}
 
 #[cfg(test)]
 mod tests {
-    use super::seconds;
+    use std::collections::BTreeMap;
+
+    use super::{env_vars, seconds};
 
     #[test]
     fn seconds_rejects_invalid_values() {
@@ -205,5 +218,18 @@ mod tests {
         assert!(seconds(Some(-1.0), "until", 10).is_err());
         assert!(seconds(Some(f64::NAN), "until", 10).is_err());
         assert!(seconds(Some(1.5), "until", 10).is_err());
+    }
+
+    #[test]
+    fn env_vars_rejects_invalid_keys() {
+        let mut valid = BTreeMap::new();
+        valid.insert("KEY".to_string(), "value".to_string());
+        assert_eq!(env_vars(Some(valid)).unwrap(), ["KEY=value"]);
+
+        for key in ["", "KEY=VALUE", "KEY\0"] {
+            let mut invalid = BTreeMap::new();
+            invalid.insert(key.to_string(), "value".to_string());
+            assert!(env_vars(Some(invalid)).is_err(), "{key:?}");
+        }
     }
 }

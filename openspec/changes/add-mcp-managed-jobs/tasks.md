@@ -30,3 +30,11 @@
 
 Archive validation itself is the authoritative final OpenSpec validation gate.
 Expected archive gate: `cflx openspec validate add-mcp-managed-jobs --archive-gate`.
+
+## Acceptance #1 Failure Follow-up
+- [x] `src/mcp.rs:132-136` は env key を検証せず `KEY=VALUE` 化するため、空キーや `=` を含むキーが trust boundary を通過する。`tasks.md:15` の invalid env validation 完了主張を満たさない。job 作成前に env key を検証し、拒否時に job directory が作られない unit/integration test を追加すること。
+- [x] `tasks.md` の active tasks は全て `[x]` だが、完了条件の統合テスト証拠が不足している。`tests/mcp_integration.rs:109-137` は disconnect 後の生存・別接続からの再観測・`wait(until=1)` の期限到達後も自然終了することを検証せず、`proposal.md:63`、`specs/agent-exec-mcp/spec.md:42-48,58-67,80-85` を満たさない。これらのライフサイクル統合テストを追加すること。
+- [x] `tests/mcp_integration.rs:125-133` は wait を `until=0` で呼び、tail の range・total fields・実際の bounds を検証しない。`specs/agent-exec-mcp/spec.md:38-56` の bounded wait と tail bounds シナリオを実行する統合テストを追加すること。
+- [x] `tests/mcp_integration.rs:139-152` は empty command のみを拒否検証し、unknown/ambiguous ID、invalid_state、invalid duration/env、malformed parameter shape を検証しない。`tasks.md:15` と `specs/agent-exec-mcp/spec.md:87-96` に従い、stable domain error envelope と非生成・非cancelを統合テストで確認すること。
+- [x] `tests/mcp_integration.rs:96-106` は MCP run envelope の `state`、stderr、ranges、byte totals、log paths と job logs を検証しておらず、`specs/agent-exec-mcp/spec.md:19-27` および `tasks.md:9` の証拠が不足する。全必須フィールドとログ存在を assertion すること。
+- [x] 実コミット経路の pre-commit hook は `prek run -a` だが、確認ジョブ `c0d28fbe557f644d650fe96e2e4761b2` はまだ running で、archive commitability の成功証拠が確定していない。完了まで待機し、成功結果を確認すること。
