@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use rmcp::{
     Json, ServerHandler,
     handler::server::{tool::ToolRouter, wrapper::Parameters},
+    model::{ServerCapabilities, ServerInfo},
     service::ServiceExt,
     tool, tool_router,
 };
@@ -208,7 +209,14 @@ impl Mcp {
 }
 
 #[rmcp::tool_handler]
-impl ServerHandler for Mcp {}
+impl ServerHandler for Mcp {
+    fn get_info(&self) -> ServerInfo {
+        ServerInfo {
+            capabilities: ServerCapabilities::builder().enable_tools().build(),
+            ..Default::default()
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
