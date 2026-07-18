@@ -25,6 +25,7 @@ impl std::error::Error for McpStartupConfigError {}
 
 const DEFAULT_UNTIL_ENV: &str = "AGENT_EXEC_MCP_DEFAULT_UNTIL_SECONDS";
 const MAX_UNTIL_ENV: &str = "AGENT_EXEC_MCP_MAX_UNTIL_SECONDS";
+const MAX_OBSERVATION_SECONDS: u64 = 1_000_000_000_000_000;
 
 pub async fn serve(root: Option<String>) -> Result<()> {
     let default_until_seconds = parse_until_seconds_env(DEFAULT_UNTIL_ENV)?;
@@ -139,7 +140,15 @@ fn until_seconds(
     maximum: Option<u64>,
 ) -> Result<u64, String> {
     let requested = seconds(value, "until", configured_default.unwrap_or(default))?;
-    Ok(maximum.map_or(requested, |maximum| requested.min(maximum)))
+    let effective = maximum.map_or(requested, |maximum| requested.min(maximum));
+    if effective > MAX_OBSERVATION_SECONDS
+        || std::time::Instant::now()
+            .checked_add(std::time::Duration::from_secs(effective))
+            .is_none()
+    {
+        return Err("until exceeds the supported observation duration".to_string());
+    }
+    Ok(effective)
 }
 
 fn tool_error(message: impl Into<String>) -> Json<Value> {
@@ -359,6 +368,7 @@ mod tests {
                 expected
             );
         }
+        assert_eq!(until_seconds(Some(1e18), 10, None, Some(0)).unwrap(), 0);
     }
 
     #[test]

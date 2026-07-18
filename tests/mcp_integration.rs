@@ -363,6 +363,7 @@ fn mcp_rejects_invalid_input_without_creating_a_job() {
         json!({ "command": ["echo", "hello"], "env": { "": "value" } }),
         json!({ "command": ["echo", "hello"], "timeout": -1 }),
         json!({ "command": ["echo", "hello"], "until": 1.5 }),
+        json!({ "command": ["echo", "hello"], "until": 1_000_000_000_000_000_000_u64 }),
         serde_json::from_str(r#"{"command":["echo","hello"],"until":18446744073709551616}"#)
             .expect("out-of-range until JSON"),
     ] {
