@@ -3,63 +3,68 @@ change_type: implementation
 priority: high
 dependencies: []
 references:
-  - src/main.rs
   - src/mcp.rs
   - tests/mcp_integration.rs
   - openspec/specs/agent-exec-mcp/spec.md
 ---
 
-# Configure MCP Timeout Budget
+# Configure MCP Maximum Until
 
 **Change Type**: implementation
 
 ## Premise / Context
 
-- MCP clients impose platform-specific request deadlines; OpenCode 1.17.18 currently inherits a 60-second MCP SDK request timeout.
-- An MCP `wait(until=100)` call can therefore time out near 60 seconds while the managed job continues and completes normally.
+- MCP clients impose platform-specific request deadlines; OpenCode 1.17.18 currently times out MCP tool requests after 60 seconds.
+- An MCP `wait(until=100)` call can therefore time out near 60 seconds while the detached managed job continues and completes normally.
+- OpenCode, Hermes, and other hosts must choose their own safe observation value because their request deadlines differ.
 - The MCP server currently hard-codes omitted `run.until` to 10 seconds and omitted `wait.until` to 30 seconds in `src/mcp.rs`.
-- The timeout budget must be supplied when starting `agent-exec mcp`, because OpenCode, Hermes, and other clients may have different request deadlines.
-- `run` and `wait` must share the same configured safety boundary so neither tool can accidentally exceed the client request deadline.
+- The host should pass one already-safe value through the MCP process environment; agent-exec should not model the host timeout or calculate a safety margin.
 
 ## Problem / Context
 
-The MCP server does not know its client's request timeout. Callers can request an observation period longer than the transport permits, causing an MCP timeout even though the detached managed job remains healthy. Hard-coded defaults also prevent platform integrations from selecting observation windows appropriate to their own timeout budgets.
+The MCP server cannot infer its client's request deadline. Explicit or default observation periods can outlive the transport request, causing the client to lose the response even though the managed job remains healthy. Adding separate CLI defaults, client-timeout settings, and margin settings would duplicate one host integration decision across several controls.
 
 ## Proposed Solution
 
-Add MCP startup configuration that accepts the client request timeout, a safety margin, and separate defaults for `run` and `wait` observation periods. Derive a maximum permitted `until` from the client timeout minus the safety margin.
+Support one optional environment variable:
 
-For both tools:
+`AGENT_EXEC_MCP_MAX_UNTIL_SECONDS`
 
-- An omitted `until` uses its configured tool-specific default.
-- An explicit `until` remains supported when it is within the derived maximum.
-- An explicit or configured default above the derived maximum is rejected before waiting, with an actionable protocol-safe error.
-- Existing behavior remains unchanged when no client timeout configuration is supplied: `run` defaults to 10 seconds and `wait` defaults to 30 seconds, with no new maximum imposed.
+When set to a valid non-negative integer, its value is both:
 
-The startup surface will support platform configuration such as OpenCode's 60-second deadline with a 5-second margin and 55-second defaults, while allowing Hermes to provide its own measured timeout.
+- the omitted `until` default for MCP `run` and MCP `wait`; and
+- the maximum accepted explicit `until` for both tools.
+
+A value above this maximum is rejected before waiting. For MCP `run`, rejection occurs before job creation. For MCP `wait`, rejection leaves the existing job untouched.
+
+When the environment variable is absent, preserve the existing behavior: omitted `run.until` uses 10 seconds, omitted `wait.until` uses 30 seconds, and no new maximum is imposed.
+
+OpenCode can pass `55` for its current 60-second request deadline. Hermes and other hosts pass their independently selected safe value.
 
 ## Acceptance Criteria
 
-- `agent-exec mcp` accepts a client request timeout and safety margin in seconds.
-- `agent-exec mcp` accepts separate default `until` values for MCP `run` and MCP `wait`.
-- The effective maximum observation period equals client timeout minus safety margin, using checked validation that rejects an invalid or exhausted budget.
-- Omitted `run.until` and `wait.until` use their respective configured defaults.
-- Explicit `until` values override defaults only when they do not exceed the effective maximum.
-- Calls that exceed the effective maximum return immediately with a protocol-safe, actionable error and do not wait for the excessive duration.
-- Invalid startup combinations fail through clap or startup validation before the MCP server begins serving.
-- With no new options, existing defaults remain `run=10` and `wait=30` and existing MCP clients remain compatible.
-- Documentation or help text explains that each platform must pass its own actual MCP request timeout rather than assuming OpenCode's value applies universally.
+- `agent-exec mcp` reads optional `AGENT_EXEC_MCP_MAX_UNTIL_SECONDS` from its process environment.
+- A configured value becomes the shared omitted `until` default and explicit `until` maximum for MCP `run` and MCP `wait`.
+- Explicit values equal to the configured maximum are accepted.
+- Explicit values above the configured maximum return immediately with a protocol-safe, actionable error.
+- Invalid environment values fail before the MCP server begins serving.
+- Over-budget MCP `run` calls create no job; over-budget MCP `wait` calls do not signal or alter the job.
+- With the variable absent, existing defaults remain `run=10` and `wait=30`, and explicit values retain existing behavior.
+- Documentation explains that each MCP host supplies an already-safe value; agent-exec performs no client-timeout or margin calculation.
 
 ## Explicit Completion Conditions
 
-- `src/main.rs` exposes and validates the MCP timeout-budget startup options and passes them into `agent_exec::mcp::serve`.
-- `src/mcp.rs` stores one validated timeout policy and applies it to both `run` and `wait`.
-- Unit tests cover budget derivation, omitted defaults, boundary acceptance, over-budget rejection, and invalid startup combinations.
-- MCP integration tests execute both tools with configured defaults and verify over-budget requests return without waiting for the requested duration.
+- `src/mcp.rs` parses and validates the environment variable once at MCP startup and applies the resulting policy to both tools.
+- Unit tests cover absent, zero, valid, malformed, boundary, and over-maximum values.
+- MCP integration tests verify shared omitted defaults and prompt over-maximum rejection for both tools.
+- Operator documentation includes environment examples for OpenCode and platform-neutral guidance for Hermes and other hosts.
 - `cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo test --all` pass.
 
 ## Out of Scope
 
+- Adding MCP timeout/default CLI flags.
+- Accepting separate defaults for `run` and `wait`.
+- Accepting a client request timeout or safety-margin setting.
 - Detecting a client timeout automatically from MCP protocol metadata.
 - Changing CLI `run`, `start`, or standalone `wait` defaults outside the MCP server.
 - Changing OpenCode, Hermes, or MCP SDK timeout implementations.

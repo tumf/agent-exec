@@ -1,35 +1,41 @@
 ## Context
 
-`agent-exec mcp` synchronously serves tool calls while managed jobs execute independently under detached supervision. The MCP client, not the server, controls the outer JSON-RPC request deadline. A tool observation period longer than that deadline loses the response even though the job continues normally.
+`agent-exec mcp` synchronously serves tool calls while managed jobs execute independently under detached supervision. The MCP client controls the outer JSON-RPC request deadline. A tool observation period longer than that deadline loses the response even though the job continues normally.
 
 ## Decision
 
-Represent the integration constraint as one server-level timeout policy constructed at MCP startup:
+Read one optional process environment variable at MCP startup:
 
-- `client_timeout_seconds`: optional outer request deadline supplied by the platform integration.
-- `safety_margin_seconds`: reserved response/transport headroom.
-- `default_run_until_seconds`: used when MCP `run.until` is omitted.
-- `default_wait_until_seconds`: used when MCP `wait.until` is omitted.
-- `max_until_seconds`: when a client timeout is supplied, checked subtraction of safety margin from client timeout.
+`AGENT_EXEC_MCP_MAX_UNTIL_SECONDS`
 
-The policy is validated once before serving and reused by both tools. Per-call explicit `until` values are validated against `max_until_seconds` before invoking canonical run/wait behavior.
+When configured, the parsed seconds value is one server-level policy reused by both MCP observation tools:
+
+- omitted `run.until` uses the configured value;
+- omitted `wait.until` uses the configured value;
+- explicit `run.until` and `wait.until` must not exceed the configured value.
+
+The MCP host is responsible for choosing an already-safe value. Agent-exec does not accept the host's raw request timeout and does not calculate or configure a safety margin.
 
 ## Precedence
 
-1. A per-call `until` value overrides the tool-specific default.
-2. The selected value must fit within the configured client-safe maximum when one exists.
-3. Without MCP timeout-policy options, legacy defaults remain in effect and no new maximum is imposed.
+1. A per-call `until` value overrides omission behavior but must fit within the configured maximum.
+2. When `until` is omitted and the environment variable is configured, the configured maximum is also the default.
+3. When the environment variable is absent, legacy defaults remain `run=10` and `wait=30`, with no new maximum.
 
-## Error Behavior
+## Validation and Error Behavior
 
-Invalid startup policy fails before stdio protocol serving begins. A per-call value above the maximum returns a protocol-safe tool error containing the requested value and permitted maximum. It does not start waiting, cancel the MCP server, or signal the managed job.
+The environment variable is parsed once before stdio protocol serving. Empty, malformed, negative, fractional, or overflowing values fail startup with a diagnostic on stderr.
 
-For MCP `run`, validation occurs before creating a job so an invalid observation request has no side effect. For MCP `wait`, validation occurs before observing the existing job and leaves that job untouched.
+A per-call value above the maximum returns a protocol-safe tool error containing the requested value and permitted maximum. It does not enter the observation path, cancel the MCP server, or signal a managed job.
+
+For MCP `run`, validation occurs before creating a job. For MCP `wait`, validation occurs before observing the existing job and leaves that job untouched.
+
+A configured value of zero is valid and provides launch/status-style immediate return behavior for omitted `until` calls.
 
 ## Rationale
 
-A single client timeout plus safety margin is less error-prone than independently configured undocumented maxima. Separate run and wait defaults remain necessary because the tools have different existing defaults and usage patterns. Keeping timeout configuration explicit avoids incorrectly hard-coding OpenCode's 60-second deadline for Hermes or future clients.
+One environment variable matches the actual integration decision: the MCP host knows the safe duration agent-exec may occupy a request. It avoids redundant CLI flags and avoids encoding OpenCode-specific timeout arithmetic in agent-exec. Using the same value as default and maximum prevents omitted and explicit calls from bypassing each other.
 
 ## Compatibility
 
-No-option startup preserves the current MCP contract. Existing callers that omit `until` retain 10 seconds for `run` and 30 seconds for `wait`; explicit values remain accepted as before unless an integration opts into a client timeout budget.
+An absent environment variable preserves the current MCP contract. Existing callers retain 10 seconds for omitted `run.until`, 30 seconds for omitted `wait.until`, and unrestricted explicit non-negative integer values.
