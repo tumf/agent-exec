@@ -119,7 +119,7 @@ fn seconds(value: Option<f64>, name: &str, default: u64) -> Result<u64, String> 
         Some(value)
             if value.is_finite()
                 && value >= 0.0
-                && value <= u64::MAX as f64
+                && value < 2_f64.powi(64)
                 && value.fract() == 0.0 =>
         {
             Ok(value as u64)
@@ -310,6 +310,7 @@ mod tests {
         assert!(seconds(Some(-1.0), "until", 10).is_err());
         assert!(seconds(Some(f64::NAN), "until", 10).is_err());
         assert!(seconds(Some(1.5), "until", 10).is_err());
+        assert!(seconds(Some(18_446_744_073_709_551_616.0), "until", 10).is_err());
     }
 
     #[test]

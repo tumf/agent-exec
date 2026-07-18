@@ -361,6 +361,8 @@ fn mcp_rejects_invalid_input_without_creating_a_job() {
         json!({ "command": ["echo", "hello"], "env": { "": "value" } }),
         json!({ "command": ["echo", "hello"], "timeout": -1 }),
         json!({ "command": ["echo", "hello"], "until": 1.5 }),
+        serde_json::from_str(r#"{"command":["echo","hello"],"until":18446744073709551616}"#)
+            .expect("out-of-range until JSON"),
     ] {
         let result = mcp.call(3, "run", arguments);
         assert_eq!(result["isError"], true);
@@ -383,6 +385,8 @@ fn mcp_rejects_invalid_input_without_creating_a_job() {
             .next()
             .is_none()
     );
+    let run = mcp.call(5, "run", json!({ "command": ["true"] }));
+    assert_envelope(&run, "run", true);
 }
 
 #[test]
