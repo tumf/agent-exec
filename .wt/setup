@@ -22,13 +22,6 @@ else
   echo "llm-tldr cache not found at ${root_worktree_path}/.tldr/cache; skipping copy" 1>&2
 fi
 
-echo "Copying graphify output into worktree..."
-if [ -d "${root_worktree_path}/graphify-out" ]; then
-  rm -rf graphify-out
-  cp -R "${root_worktree_path}/graphify-out" graphify-out
-else
-  echo "graphify output not found at ${root_worktree_path}/graphify-out; skipping copy" 1>&2
-fi
 
 if command -v codegraph >/dev/null 2>&1; then
   echo "Initializing codegraph in worktree..."
