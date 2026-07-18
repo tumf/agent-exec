@@ -106,9 +106,13 @@ fn parse_until_seconds_env(name: &'static str) -> Result<Option<u64>> {
 fn parse_until_seconds_value(value: Option<&str>, name: &'static str) -> Result<Option<u64>> {
     value
         .map(|value| {
-            value
+            let seconds = value
                 .parse()
-                .map_err(|_| McpStartupConfigError(name).into())
+                .map_err(|_| anyhow::Error::from(McpStartupConfigError(name)))?;
+            std::time::Instant::now()
+                .checked_add(std::time::Duration::from_secs(seconds))
+                .ok_or_else(|| McpStartupConfigError(name).into())
+                .map(|_| seconds)
         })
         .transpose()
 }
@@ -322,7 +326,14 @@ mod tests {
                 parse_until_seconds_value(Some("55"), name).unwrap(),
                 Some(55)
             );
-            for value in ["", "one", "-1", "1.5", "18446744073709551616"] {
+            for value in [
+                "",
+                "one",
+                "-1",
+                "1.5",
+                "18446744073709551616",
+                "18446744073709551615",
+            ] {
                 let error = parse_until_seconds_value(Some(value), name).unwrap_err();
                 assert!(error.to_string().contains(name), "{value:?}");
             }

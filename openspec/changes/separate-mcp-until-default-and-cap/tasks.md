@@ -22,3 +22,7 @@ Expected archive gate: `cflx openspec validate separate-mcp-until-default-and-ca
 
 ## Acceptance #2 Failure Follow-up
 - [x] Reclassify verification ownership using supported categories while retaining repository path and runnable-command evidence. (verification: manual - `openspec/changes/separate-mcp-until-default-and-cap/tasks.md`; `cflx openspec validate separate-mcp-until-default-and-cap --archive-gate`)
+
+## Acceptance #3 Failure Follow-up
+- [x] Archive commit path is blocked: `cflx openspec validate separate-mcp-until-default-and-cap --archive-gate` exits 1 because `tasks.md:8`, `tasks.md:9`, `tasks.md:20`, and `tasks.md:24` still lack validator-recognized repository-verifiable evidence syntax. Use recognized evidence clauses such as `evidence: README.md` and `command: prek run -a`, then rerun the archive gate. All active checkboxes are checked, MCP integration tests pass, and `prek run -a` passes. (verification: manual; evidence: `README.md`; command: `prek run -a`; command: `cflx openspec validate separate-mcp-until-default-and-cap --archive-gate`)
+- [x] `AGENT_EXEC_MCP_DEFAULT_UNTIL_SECONDS=18446744073709551615` が起動時に受理されるが、until 省略の MCP `run` で `src/mcp.rs:94-138` から `src/run.rs:740` に値が渡り、`overflow when adding duration to instant` で panic する。実行可能範囲外の環境値を protocol serving 前に変数名付きで拒否し、default/max 両方の境界テストを追加すること。 (verification: unit - `src/mcp.rs`; integration - `tests/mcp_integration.rs`; command: `cargo test mcp`)

@@ -99,15 +99,17 @@ fn mcp_invalid_until_configuration_fails_before_serving_and_reports_to_stderr() 
         "AGENT_EXEC_MCP_DEFAULT_UNTIL_SECONDS",
         "AGENT_EXEC_MCP_MAX_UNTIL_SECONDS",
     ] {
-        let output = Command::new(binary())
-            .args(["--root", harness.root(), "mcp"])
-            .env(name, "invalid")
-            .output()
-            .expect("run MCP server");
+        for value in ["invalid", "18446744073709551615"] {
+            let output = Command::new(binary())
+                .args(["--root", harness.root(), "mcp"])
+                .env(name, value)
+                .output()
+                .expect("run MCP server");
 
-        assert!(!output.status.success());
-        assert!(output.stdout.is_empty());
-        assert!(String::from_utf8_lossy(&output.stderr).contains(name));
+            assert!(!output.status.success());
+            assert!(output.stdout.is_empty());
+            assert!(String::from_utf8_lossy(&output.stderr).contains(name));
+        }
     }
 }
 
