@@ -728,6 +728,12 @@ Then poll `GET http://host.docker.internal:19263/wait/{job_id}` until the job fi
 To allow container access, start the server with `--bind 0.0.0.0:19263` and ensure
 your firewall does **not** expose port 19263 to the public internet.
 
+## MCP observation budget
+
+MCP hosts can set `AGENT_EXEC_MCP_MAX_UNTIL_SECONDS` to one already-safe observation value. It becomes the shared omitted `until` default and maximum for MCP `run` and `wait`; agent-exec does not infer client timeouts or calculate a margin.
+
+For OpenCode's current 60-second request deadline, configure `AGENT_EXEC_MCP_MAX_UNTIL_SECONDS=55`. Hermes and other hosts must select and pass their own safe value.
+
 ## Configuration
 
 `agent-exec` reads an optional `config.toml` to configure the shell wrapper used for command-string execution.

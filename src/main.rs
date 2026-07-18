@@ -12,6 +12,7 @@ use tracing_subscriber::EnvFilter;
 
 use agent_exec::compress::CompressionMode;
 use agent_exec::jobstore::{AmbiguousJobId, InvalidJobState, JobIdCollisionExhausted, JobNotFound};
+use agent_exec::mcp::McpStartupConfigError;
 use agent_exec::schema::ErrorResponse;
 use agent_exec::tag::InvalidTag;
 
@@ -558,6 +559,9 @@ enum Command {
     },
 
     /// Start a stdio MCP server exposing managed-job operations.
+    ///
+    /// Set AGENT_EXEC_MCP_MAX_UNTIL_SECONDS to one host-selected safe observation
+    /// budget; it becomes the shared default and maximum for MCP run/wait until.
     Mcp,
 
     /// Start an HTTP server exposing job operations as REST endpoints.
@@ -758,6 +762,8 @@ fn main() {
             ErrorResponse::new("job_not_found", format!("{e:#}"), false).print();
         } else if e.downcast_ref::<InvalidTag>().is_some() {
             ErrorResponse::new("invalid_tag", format!("{e:#}"), false).print();
+        } else if e.downcast_ref::<McpStartupConfigError>().is_some() {
+            eprintln!("{e:#}");
         } else if e
             .downcast_ref::<agent_exec::config::ConfigError>()
             .is_some()
