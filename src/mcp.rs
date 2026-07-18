@@ -13,7 +13,12 @@ use serde_json::{Value, json};
 use crate::{kill, run, schema::ErrorResponse, status, tail, wait};
 
 pub async fn serve(root: Option<String>) -> Result<()> {
-    let service = Mcp::new(root);
+    let max_until_seconds = parse_max_until_seconds(
+        std::env::var("AGENT_EXEC_MCP_MAX_UNTIL_SECONDS")
+            .ok()
+            .as_deref(),
+    )?;
+    let service = Mcp::new(root, max_until_seconds);
     let running = service
         .serve(rmcp::transport::io::stdio())
         .await
@@ -27,13 +32,15 @@ pub async fn serve(root: Option<String>) -> Result<()> {
 
 struct Mcp {
     root: Option<String>,
+    max_until_seconds: Option<u64>,
     tool_router: ToolRouter<Mcp>,
 }
 
 impl Mcp {
-    fn new(root: Option<String>) -> Self {
+    fn new(root: Option<String>, max_until_seconds: Option<u64>) -> Self {
         Self {
             root,
+            max_until_seconds,
             tool_router: Self::tool_router(),
         }
     }
@@ -67,6 +74,16 @@ struct WaitParams {
     until: Option<f64>,
 }
 
+fn parse_max_until_seconds(value: Option<&str>) -> Result<Option<u64>> {
+    value
+        .map(|value| {
+            value
+                .parse()
+                .with_context(|| "AGENT_EXEC_MCP_MAX_UNTIL_SECONDS must be a non-negative integer")
+        })
+        .transpose()
+}
+
 fn seconds(value: Option<f64>, name: &str, default: u64) -> Result<u64, String> {
     match value {
         None => Ok(default),
@@ -80,6 +97,18 @@ fn seconds(value: Option<f64>, name: &str, default: u64) -> Result<u64, String> 
         }
         Some(_) => Err(format!("{name} must be a non-negative integer")),
     }
+}
+
+fn until_seconds(value: Option<f64>, default: u64, maximum: Option<u64>) -> Result<u64, String> {
+    let until = seconds(value, "until", maximum.unwrap_or(default))?;
+    if let Some(maximum) = maximum
+        && until > maximum
+    {
+        return Err(format!(
+            "until of {until} seconds exceeds AGENT_EXEC_MCP_MAX_UNTIL_SECONDS maximum of {maximum} seconds"
+        ));
+    }
+    Ok(until)
 }
 
 fn tool_error(message: impl Into<String>) -> Json<Value> {
@@ -144,7 +173,7 @@ impl Mcp {
             Ok(value) => value,
             Err(message) => return tool_error(message),
         };
-        let until = match seconds(params.until, "until", 10) {
+        let until = match until_seconds(params.until, 10, self.max_until_seconds) {
             Ok(value) => value,
             Err(message) => return tool_error(message),
         };
@@ -184,7 +213,7 @@ impl Mcp {
 
     #[tool(description = "Wait for a managed job for at most the requested seconds")]
     fn wait(&self, Parameters(params): Parameters<WaitParams>) -> Json<Value> {
-        let until = match seconds(params.until, "until", 30) {
+        let until = match until_seconds(params.until, 30, self.max_until_seconds) {
             Ok(value) => value,
             Err(message) => return tool_error(message),
         };
@@ -222,7 +251,7 @@ impl ServerHandler for Mcp {
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::{RunParams, env_vars, seconds};
+    use super::{RunParams, env_vars, parse_max_until_seconds, seconds, until_seconds};
 
     #[test]
     fn run_params_reject_unknown_fields() {
@@ -241,6 +270,26 @@ mod tests {
         assert!(seconds(Some(-1.0), "until", 10).is_err());
         assert!(seconds(Some(f64::NAN), "until", 10).is_err());
         assert!(seconds(Some(1.5), "until", 10).is_err());
+    }
+
+    #[test]
+    fn max_until_seconds_parses_valid_environment_values() {
+        assert_eq!(parse_max_until_seconds(None).unwrap(), None);
+        assert_eq!(parse_max_until_seconds(Some("0")).unwrap(), Some(0));
+        assert_eq!(parse_max_until_seconds(Some("55")).unwrap(), Some(55));
+        for value in ["", "one", "-1", "1.5", "18446744073709551616"] {
+            assert!(parse_max_until_seconds(Some(value)).is_err(), "{value:?}");
+        }
+    }
+
+    #[test]
+    fn until_seconds_applies_configured_maximum() {
+        assert_eq!(until_seconds(None, 10, Some(55)).unwrap(), 55);
+        assert_eq!(until_seconds(Some(55.0), 10, Some(55)).unwrap(), 55);
+        assert!(until_seconds(Some(56.0), 10, Some(55)).is_err());
+        assert_eq!(until_seconds(None, 10, None).unwrap(), 10);
+        assert_eq!(until_seconds(None, 30, None).unwrap(), 30);
+        assert_eq!(until_seconds(Some(56.0), 10, None).unwrap(), 56);
     }
 
     #[test]

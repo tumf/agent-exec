@@ -24,6 +24,12 @@ mcp_servers:
 
 Set `args: ["--root", "/path/to/jobs", "mcp"]` only when a non-default jobs root is required. MCP transport closure, bounded wait expiry, missing output, and moving to other work are not cancellation authorization.
 
+## MCP observation budget
+
+Each MCP host must provide its own already-safe observation value through `AGENT_EXEC_MCP_MAX_UNTIL_SECONDS`. The value becomes the default and maximum `until` for MCP `run` and `wait`; agent-exec does not calculate a client timeout or safety margin.
+
+OpenCode's current 60-second MCP request deadline can use `AGENT_EXEC_MCP_MAX_UNTIL_SECONDS=55`. Hermes and other hosts must independently choose and pass their own safe value.
+
 ## Why use it by default
 
 - It returns within a bounded default wait window instead of letting an uncertain command consume the whole harness timeout.
