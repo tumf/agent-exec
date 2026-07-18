@@ -146,11 +146,10 @@ fn until_seconds(
     maximum: Option<u64>,
 ) -> Result<u64, String> {
     let requested = seconds(value, "until", configured_default.unwrap_or(default))?;
-    let effective = maximum.map_or(requested, |maximum| requested.min(maximum));
-    if !supports_observation_duration(effective) {
+    if !supports_observation_duration(requested) {
         return Err("until exceeds the supported observation duration".to_string());
     }
-    Ok(effective)
+    Ok(maximum.map_or(requested, |maximum| requested.min(maximum)))
 }
 
 fn tool_error(message: impl Into<String>) -> Json<Value> {
@@ -370,7 +369,10 @@ mod tests {
                 expected
             );
         }
-        assert_eq!(until_seconds(Some(1e18), 10, None, Some(0)).unwrap(), 0);
+        assert_eq!(
+            until_seconds(Some(1e18), 10, None, Some(0)).unwrap_err(),
+            "until exceeds the supported observation duration"
+        );
     }
 
     #[test]

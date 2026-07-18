@@ -354,9 +354,10 @@ fn mcp_default_and_maximum_configuration_are_independent() {
 }
 
 #[test]
-fn mcp_rejects_invalid_input_without_creating_a_job() {
+fn mcp_rejects_invalid_input_before_clamping_or_creating_a_job() {
     let harness = TestHarness::new();
-    let mut mcp = McpProcess::start(harness.root());
+    let mut mcp =
+        McpProcess::start_with_env(harness.root(), &[("AGENT_EXEC_MCP_MAX_UNTIL_SECONDS", "0")]);
     mcp.initialize();
     for arguments in [
         json!({ "command": [] }),
@@ -388,8 +389,27 @@ fn mcp_rejects_invalid_input_without_creating_a_job() {
             .next()
             .is_none()
     );
-    let run = mcp.call(5, "run", json!({ "command": ["true"] }));
+    let run = mcp.call(
+        5,
+        "run",
+        json!({ "command": ["sh", "-c", "sleep 1"], "until": 0 }),
+    );
     assert_envelope(&run, "run", true);
+    let job_id = run["job_id"].as_str().expect("job id").to_string();
+    let wait = mcp.call(
+        6,
+        "wait",
+        json!({ "job_id": job_id, "until": 1_000_000_000_000_000_000_u64 }),
+    );
+    assert_eq!(wait["isError"], true);
+    let status = mcp.call(7, "status", json!({ "job_id": job_id }));
+    assert_envelope(&status, "status", true);
+    assert!(matches!(
+        status["state"].as_str(),
+        Some("created" | "running")
+    ));
+    let kill = mcp.call(8, "kill", json!({ "job_id": job_id }));
+    assert_envelope(&kill, "kill", true);
 }
 
 #[test]

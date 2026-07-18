@@ -30,3 +30,6 @@ Expected archive gate: `cflx openspec validate separate-mcp-until-default-and-ca
 ## Acceptance #5 Failure Follow-up
 - [x] Rewrite completed task evidence to cite the implemented MCP configuration, integration tests, and README rather than archive validation. Keep archive validation only in the non-checkbox `## Final Validation` section. (verification: integration - source path: `src/mcp.rs`; test file: `tests/mcp_integration.rs`; documentation: `README.md:731-740`)
 - [x] Preserve the end-of-file formatting correction and rerun the repository quality gate. (verification: manual - runnable command: `prek run -a`; source path: `src/mcp.rs`)
+
+## Acceptance #6 Failure Follow-up
+- [x] 範囲外の明示 `until` が maximum 設定時に受理される。`src/mcp.rs` で requested 値を clamp 前に検証し、`AGENT_EXEC_MCP_MAX_UNTIL_SECONDS=0` と `until=1000000000000000000` の MCP `run` / `wait` が protocol-safe error を返すようにした。統合テストは run の job 未作成、後続 run 成功、wait 後の job 不変性を確認する。 (verification: unit - `src/mcp.rs`; integration - `tests/mcp_integration.rs`; command: `cargo test mcp`)
