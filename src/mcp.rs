@@ -104,16 +104,22 @@ fn parse_until_seconds_env(name: &'static str) -> Result<Option<u64>> {
     }
 }
 
+fn supports_observation_duration(seconds: u64) -> bool {
+    seconds <= MAX_OBSERVATION_SECONDS
+        && std::time::Instant::now()
+            .checked_add(std::time::Duration::from_secs(seconds))
+            .is_some()
+}
+
 fn parse_until_seconds_value(value: Option<&str>, name: &'static str) -> Result<Option<u64>> {
     value
         .map(|value| {
             let seconds = value
                 .parse()
                 .map_err(|_| anyhow::Error::from(McpStartupConfigError(name)))?;
-            std::time::Instant::now()
-                .checked_add(std::time::Duration::from_secs(seconds))
+            supports_observation_duration(seconds)
+                .then_some(seconds)
                 .ok_or_else(|| McpStartupConfigError(name).into())
-                .map(|_| seconds)
         })
         .transpose()
 }
@@ -141,11 +147,7 @@ fn until_seconds(
 ) -> Result<u64, String> {
     let requested = seconds(value, "until", configured_default.unwrap_or(default))?;
     let effective = maximum.map_or(requested, |maximum| requested.min(maximum));
-    if effective > MAX_OBSERVATION_SECONDS
-        || std::time::Instant::now()
-            .checked_add(std::time::Duration::from_secs(effective))
-            .is_none()
-    {
+    if !supports_observation_duration(effective) {
         return Err("until exceeds the supported observation duration".to_string());
     }
     Ok(effective)
