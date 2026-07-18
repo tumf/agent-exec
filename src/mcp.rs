@@ -12,6 +12,17 @@ use serde_json::{Value, json};
 
 use crate::{kill, run, schema::ErrorResponse, status, tail, wait};
 
+#[derive(Debug)]
+pub struct McpStartupConfigError;
+
+impl std::fmt::Display for McpStartupConfigError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("AGENT_EXEC_MCP_MAX_UNTIL_SECONDS must be a non-negative integer")
+    }
+}
+
+impl std::error::Error for McpStartupConfigError {}
+
 pub async fn serve(root: Option<String>) -> Result<()> {
     let max_until_seconds = parse_max_until_seconds(
         std::env::var("AGENT_EXEC_MCP_MAX_UNTIL_SECONDS")
@@ -76,11 +87,7 @@ struct WaitParams {
 
 fn parse_max_until_seconds(value: Option<&str>) -> Result<Option<u64>> {
     value
-        .map(|value| {
-            value
-                .parse()
-                .with_context(|| "AGENT_EXEC_MCP_MAX_UNTIL_SECONDS must be a non-negative integer")
-        })
+        .map(|value| value.parse().map_err(|_| McpStartupConfigError.into()))
         .transpose()
 }
 

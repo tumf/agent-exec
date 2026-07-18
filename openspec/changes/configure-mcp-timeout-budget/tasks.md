@@ -14,3 +14,7 @@
 ## Final Validation
 
 Expected archive gate: `cflx openspec validate configure-mcp-timeout-budget --archive-gate`
+
+## Acceptance #1 Failure Follow-up
+- [x] `openspec/changes/configure-mcp-timeout-budget/specs/agent-exec-mcp/spec.md:27` は無効な環境変数を stderr で識別することを要求するが、`src/mcp.rs:16-20` のエラーは `src/main.rs:740-779` の通常 CLI エラー境界に渡り、実行確認では stdout に JSON エラーを出し stderr は空だった。MCP 起動エラーを stderr に出し、プロトコル serving 前に終了する実装と統合テストを追加すること。 (verification: integration - `cargo test --test mcp_integration` passes; `mcp_invalid_until_budget_fails_before_serving_and_reports_to_stderr` verifies stderr-only startup failure)
+- [x] `openspec/changes/configure-mcp-timeout-budget/tasks.md:7` の完了証拠が事実と一致しない。`src/main.rs:560-561` と実際の `cargo run -- mcp --help` は環境変数を案内せず、`README.md:731-739` は `config.toml` の説明である。実在する文書パスを証拠として記載するか、指定箇所へ MCP observation budget の案内を追加すること。 (verification: manual - `src/main.rs:560-564` help text and `README.md:731-737` document the host-selected MCP observation budget)
