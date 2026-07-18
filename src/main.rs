@@ -560,8 +560,8 @@ enum Command {
 
     /// Start a stdio MCP server exposing managed-job operations.
     ///
-    /// Set AGENT_EXEC_MCP_MAX_UNTIL_SECONDS to one host-selected safe observation
-    /// budget; it becomes the shared default and maximum for MCP run/wait until.
+    /// Optionally set AGENT_EXEC_MCP_DEFAULT_UNTIL_SECONDS for omitted run/wait until
+    /// and AGENT_EXEC_MCP_MAX_UNTIL_SECONDS to cap all MCP observation durations.
     Mcp,
 
     /// Start an HTTP server exposing job operations as REST endpoints.

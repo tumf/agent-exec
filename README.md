@@ -728,11 +728,16 @@ Then poll `GET http://host.docker.internal:19263/wait/{job_id}` until the job fi
 To allow container access, start the server with `--bind 0.0.0.0:19263` and ensure
 your firewall does **not** expose port 19263 to the public internet.
 
-## MCP observation budget
+## MCP observation duration
 
-MCP hosts can set `AGENT_EXEC_MCP_MAX_UNTIL_SECONDS` to one already-safe observation value. It becomes the shared omitted `until` default and maximum for MCP `run` and `wait`; agent-exec does not infer client timeouts or calculate a margin.
+MCP hosts can configure two independent optional non-negative integer values:
 
-For OpenCode's current 60-second request deadline, configure `AGENT_EXEC_MCP_MAX_UNTIL_SECONDS=55`. Hermes and other hosts must select and pass their own safe value.
+- `AGENT_EXEC_MCP_DEFAULT_UNTIL_SECONDS` selects the shared omitted `until` for MCP `run` and `wait`.
+- `AGENT_EXEC_MCP_MAX_UNTIL_SECONDS` caps every MCP observation duration.
+
+For each call, agent-exec selects `explicit until`, then the configured default, then the legacy default (`run=10`, `wait=30`), and applies `min(requested, maximum)` when a maximum is configured. Over-cap calls proceed with the capped duration; they do not return a tool error or cancel the managed job.
+
+For OpenCode with a 60-second request deadline, set `AGENT_EXEC_MCP_MAX_UNTIL_SECONDS=55` and choose `AGENT_EXEC_MCP_DEFAULT_UNTIL_SECONDS` independently, for example `10`. Hermes and other MCP hosts should set both values for their own request deadline and desired omission behavior.
 
 ## Configuration
 

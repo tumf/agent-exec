@@ -13,6 +13,13 @@ struct McpProcess {
     stdout: BufReader<std::process::ChildStdout>,
 }
 
+impl Drop for McpProcess {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
 impl McpProcess {
     fn start(root: &str) -> Self {
         Self::start_with_env(root, &[])
@@ -86,37 +93,44 @@ impl McpProcess {
 }
 
 #[test]
-fn mcp_invalid_until_budget_fails_before_serving_and_reports_to_stderr() {
+fn mcp_invalid_until_configuration_fails_before_serving_and_reports_to_stderr() {
     let harness = TestHarness::new();
-    let output = Command::new(binary())
-        .args(["--root", harness.root(), "mcp"])
-        .env("AGENT_EXEC_MCP_MAX_UNTIL_SECONDS", "invalid")
-        .output()
-        .expect("run MCP server");
+    for name in [
+        "AGENT_EXEC_MCP_DEFAULT_UNTIL_SECONDS",
+        "AGENT_EXEC_MCP_MAX_UNTIL_SECONDS",
+    ] {
+        let output = Command::new(binary())
+            .args(["--root", harness.root(), "mcp"])
+            .env(name, "invalid")
+            .output()
+            .expect("run MCP server");
 
-    assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("AGENT_EXEC_MCP_MAX_UNTIL_SECONDS"));
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&output.stderr).contains(name));
+    }
 }
 
 #[cfg(unix)]
 #[test]
-fn mcp_non_utf8_until_budget_fails_before_serving_and_reports_to_stderr() {
+fn mcp_non_utf8_until_configuration_fails_before_serving_and_reports_to_stderr() {
     use std::os::unix::ffi::OsStringExt;
 
     let harness = TestHarness::new();
-    let output = Command::new(binary())
-        .args(["--root", harness.root(), "mcp"])
-        .env(
-            "AGENT_EXEC_MCP_MAX_UNTIL_SECONDS",
-            std::ffi::OsString::from_vec(vec![0xff]),
-        )
-        .output()
-        .expect("run MCP server");
+    for name in [
+        "AGENT_EXEC_MCP_DEFAULT_UNTIL_SECONDS",
+        "AGENT_EXEC_MCP_MAX_UNTIL_SECONDS",
+    ] {
+        let output = Command::new(binary())
+            .args(["--root", harness.root(), "mcp"])
+            .env(name, std::ffi::OsString::from_vec(vec![0xff]))
+            .output()
+            .expect("run MCP server");
 
-    assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("AGENT_EXEC_MCP_MAX_UNTIL_SECONDS"));
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&output.stderr).contains(name));
+    }
 }
 
 #[test]
@@ -253,71 +267,88 @@ fn mcp_without_until_budget_preserves_legacy_defaults_and_explicit_values() {
 }
 
 #[test]
-fn mcp_configured_until_budget_applies_to_run_without_creating_over_budget_jobs() {
+fn mcp_maximum_caps_over_cap_run_and_preserves_detached_job() {
     let harness = TestHarness::new();
     let mut mcp =
         McpProcess::start_with_env(harness.root(), &[("AGENT_EXEC_MCP_MAX_UNTIL_SECONDS", "0")]);
     mcp.initialize();
 
-    for arguments in [
-        json!({ "command": ["sh", "-c", "sleep 1"] }),
-        json!({ "command": ["sh", "-c", "sleep 1"], "until": 0 }),
-    ] {
-        let run = mcp.call(3, "run", arguments);
-        assert_envelope(&run, "run", true);
-        assert!(matches!(run["state"].as_str(), Some("created" | "running")));
-    }
-
-    let over_budget = mcp.call(
-        4,
+    let run = mcp.call(
+        3,
         "run",
-        json!({ "command": ["echo", "never"], "until": 1 }),
+        json!({ "command": ["sh", "-c", "sleep 1"], "until": 100 }),
     );
-    assert_eq!(over_budget["isError"], true);
+    assert_envelope(&run, "run", true);
+    assert!(matches!(run["state"].as_str(), Some("created" | "running")));
+    let job_id = run["job_id"].as_str().expect("job id");
     assert!(
-        over_budget["message"]
-            .as_str()
-            .expect("error message")
-            .contains("AGENT_EXEC_MCP_MAX_UNTIL_SECONDS")
-    );
-    assert_eq!(
-        std::fs::read_dir(harness.root()).expect("root").count(),
-        2,
-        "over-budget run must not create a job"
+        std::path::Path::new(harness.root())
+            .join(job_id)
+            .join("meta.json")
+            .exists()
     );
 }
 
 #[test]
-fn mcp_configured_until_budget_rejects_wait_without_altering_job() {
+fn mcp_maximum_caps_over_cap_wait_without_altering_job() {
     let harness = TestHarness::new();
     let mut mcp =
         McpProcess::start_with_env(harness.root(), &[("AGENT_EXEC_MCP_MAX_UNTIL_SECONDS", "0")]);
     mcp.initialize();
-    let run = mcp.call(3, "run", json!({ "command": ["sh", "-c", "sleep 2"] }));
+    let run = mcp.call(
+        3,
+        "run",
+        json!({ "command": ["sh", "-c", "sleep 2"], "until": 0 }),
+    );
     let job_id = run["job_id"].as_str().expect("job id").to_string();
 
-    for arguments in [
-        json!({ "job_id": job_id }),
-        json!({ "job_id": job_id, "until": 0 }),
-    ] {
-        let wait = mcp.call(4, "wait", arguments);
-        assert_envelope(&wait, "wait", true);
-        assert!(matches!(
-            wait["state"].as_str(),
-            Some("created" | "running")
-        ));
-    }
-
-    let over_budget = mcp.call(5, "wait", json!({ "job_id": job_id, "until": 1 }));
-    assert_eq!(over_budget["isError"], true);
-    let status = mcp.call(6, "status", json!({ "job_id": job_id }));
+    let wait = mcp.call(4, "wait", json!({ "job_id": job_id, "until": 100 }));
+    assert_envelope(&wait, "wait", true);
+    assert!(matches!(
+        wait["state"].as_str(),
+        Some("created" | "running")
+    ));
+    let status = mcp.call(5, "status", json!({ "job_id": job_id }));
     assert_envelope(&status, "status", true);
     assert!(matches!(
         status["state"].as_str(),
         Some("created" | "running")
     ));
-    let kill = mcp.call(7, "kill", json!({ "job_id": job_id }));
+    let kill = mcp.call(6, "kill", json!({ "job_id": job_id }));
     assert_envelope(&kill, "kill", true);
+}
+
+#[test]
+fn mcp_default_and_maximum_configuration_are_independent() {
+    let harness = TestHarness::new();
+    let mut default_only = McpProcess::start_with_env(
+        harness.root(),
+        &[("AGENT_EXEC_MCP_DEFAULT_UNTIL_SECONDS", "0")],
+    );
+    default_only.initialize();
+    let run = default_only.call(3, "run", json!({ "command": ["sh", "-c", "sleep 1"] }));
+    assert_envelope(&run, "run", true);
+    assert!(matches!(run["state"].as_str(), Some("created" | "running")));
+    let job_id = run["job_id"].as_str().expect("job id").to_string();
+    let wait = default_only.call(4, "wait", json!({ "job_id": job_id }));
+    assert_envelope(&wait, "wait", true);
+    assert!(matches!(
+        wait["state"].as_str(),
+        Some("created" | "running")
+    ));
+
+    let max_only_harness = TestHarness::new();
+    let mut max_only = McpProcess::start_with_env(
+        max_only_harness.root(),
+        &[("AGENT_EXEC_MCP_MAX_UNTIL_SECONDS", "0")],
+    );
+    max_only.initialize();
+    let capped_run = max_only.call(3, "run", json!({ "command": ["sh", "-c", "sleep 1"] }));
+    assert_envelope(&capped_run, "run", true);
+    assert!(matches!(
+        capped_run["state"].as_str(),
+        Some("created" | "running")
+    ));
 }
 
 #[test]

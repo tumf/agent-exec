@@ -13,24 +13,23 @@ use serde_json::{Value, json};
 use crate::{kill, run, schema::ErrorResponse, status, tail, wait};
 
 #[derive(Debug)]
-pub struct McpStartupConfigError;
+pub struct McpStartupConfigError(&'static str);
 
 impl std::fmt::Display for McpStartupConfigError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("AGENT_EXEC_MCP_MAX_UNTIL_SECONDS must be a non-negative integer")
+        write!(formatter, "{} must be a non-negative integer", self.0)
     }
 }
 
 impl std::error::Error for McpStartupConfigError {}
 
+const DEFAULT_UNTIL_ENV: &str = "AGENT_EXEC_MCP_DEFAULT_UNTIL_SECONDS";
+const MAX_UNTIL_ENV: &str = "AGENT_EXEC_MCP_MAX_UNTIL_SECONDS";
+
 pub async fn serve(root: Option<String>) -> Result<()> {
-    let max_until_seconds = parse_max_until_seconds(
-        std::env::var_os("AGENT_EXEC_MCP_MAX_UNTIL_SECONDS")
-            .map(|value| value.into_string().map_err(|_| McpStartupConfigError))
-            .transpose()?
-            .as_deref(),
-    )?;
-    let service = Mcp::new(root, max_until_seconds);
+    let default_until_seconds = parse_until_seconds_env(DEFAULT_UNTIL_ENV)?;
+    let max_until_seconds = parse_until_seconds_env(MAX_UNTIL_ENV)?;
+    let service = Mcp::new(root, default_until_seconds, max_until_seconds);
     let running = service
         .serve(rmcp::transport::io::stdio())
         .await
@@ -44,14 +43,20 @@ pub async fn serve(root: Option<String>) -> Result<()> {
 
 struct Mcp {
     root: Option<String>,
+    default_until_seconds: Option<u64>,
     max_until_seconds: Option<u64>,
     tool_router: ToolRouter<Mcp>,
 }
 
 impl Mcp {
-    fn new(root: Option<String>, max_until_seconds: Option<u64>) -> Self {
+    fn new(
+        root: Option<String>,
+        default_until_seconds: Option<u64>,
+        max_until_seconds: Option<u64>,
+    ) -> Self {
         Self {
             root,
+            default_until_seconds,
             max_until_seconds,
             tool_router: Self::tool_router(),
         }
@@ -86,9 +91,25 @@ struct WaitParams {
     until: Option<f64>,
 }
 
-fn parse_max_until_seconds(value: Option<&str>) -> Result<Option<u64>> {
+fn parse_until_seconds_env(name: &'static str) -> Result<Option<u64>> {
+    match std::env::var_os(name) {
+        None => Ok(None),
+        Some(value) => {
+            let value = value
+                .into_string()
+                .map_err(|_| McpStartupConfigError(name))?;
+            parse_until_seconds_value(Some(&value), name)
+        }
+    }
+}
+
+fn parse_until_seconds_value(value: Option<&str>, name: &'static str) -> Result<Option<u64>> {
     value
-        .map(|value| value.parse().map_err(|_| McpStartupConfigError.into()))
+        .map(|value| {
+            value
+                .parse()
+                .map_err(|_| McpStartupConfigError(name).into())
+        })
         .transpose()
 }
 
@@ -107,16 +128,14 @@ fn seconds(value: Option<f64>, name: &str, default: u64) -> Result<u64, String> 
     }
 }
 
-fn until_seconds(value: Option<f64>, default: u64, maximum: Option<u64>) -> Result<u64, String> {
-    let until = seconds(value, "until", maximum.unwrap_or(default))?;
-    if let Some(maximum) = maximum
-        && until > maximum
-    {
-        return Err(format!(
-            "until of {until} seconds exceeds AGENT_EXEC_MCP_MAX_UNTIL_SECONDS maximum of {maximum} seconds"
-        ));
-    }
-    Ok(until)
+fn until_seconds(
+    value: Option<f64>,
+    default: u64,
+    configured_default: Option<u64>,
+    maximum: Option<u64>,
+) -> Result<u64, String> {
+    let requested = seconds(value, "until", configured_default.unwrap_or(default))?;
+    Ok(maximum.map_or(requested, |maximum| requested.min(maximum)))
 }
 
 fn tool_error(message: impl Into<String>) -> Json<Value> {
@@ -181,7 +200,12 @@ impl Mcp {
             Ok(value) => value,
             Err(message) => return tool_error(message),
         };
-        let until = match until_seconds(params.until, 10, self.max_until_seconds) {
+        let until = match until_seconds(
+            params.until,
+            10,
+            self.default_until_seconds,
+            self.max_until_seconds,
+        ) {
             Ok(value) => value,
             Err(message) => return tool_error(message),
         };
@@ -221,7 +245,12 @@ impl Mcp {
 
     #[tool(description = "Wait for a managed job for at most the requested seconds")]
     fn wait(&self, Parameters(params): Parameters<WaitParams>) -> Json<Value> {
-        let until = match until_seconds(params.until, 30, self.max_until_seconds) {
+        let until = match until_seconds(
+            params.until,
+            30,
+            self.default_until_seconds,
+            self.max_until_seconds,
+        ) {
             Ok(value) => value,
             Err(message) => return tool_error(message),
         };
@@ -259,7 +288,10 @@ impl ServerHandler for Mcp {
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::{RunParams, env_vars, parse_max_until_seconds, seconds, until_seconds};
+    use super::{
+        DEFAULT_UNTIL_ENV, MAX_UNTIL_ENV, RunParams, env_vars, parse_until_seconds_value, seconds,
+        until_seconds,
+    };
 
     #[test]
     fn run_params_reject_unknown_fields() {
@@ -281,23 +313,39 @@ mod tests {
     }
 
     #[test]
-    fn max_until_seconds_parses_valid_environment_values() {
-        assert_eq!(parse_max_until_seconds(None).unwrap(), None);
-        assert_eq!(parse_max_until_seconds(Some("0")).unwrap(), Some(0));
-        assert_eq!(parse_max_until_seconds(Some("55")).unwrap(), Some(55));
-        for value in ["", "one", "-1", "1.5", "18446744073709551616"] {
-            assert!(parse_max_until_seconds(Some(value)).is_err(), "{value:?}");
+    fn until_environment_values_are_independently_validated() {
+        for name in [DEFAULT_UNTIL_ENV, MAX_UNTIL_ENV] {
+            assert_eq!(parse_until_seconds_value(None, name).unwrap(), None);
+            assert_eq!(parse_until_seconds_value(Some("0"), name).unwrap(), Some(0));
+            assert_eq!(
+                parse_until_seconds_value(Some("55"), name).unwrap(),
+                Some(55)
+            );
+            for value in ["", "one", "-1", "1.5", "18446744073709551616"] {
+                let error = parse_until_seconds_value(Some(value), name).unwrap_err();
+                assert!(error.to_string().contains(name), "{value:?}");
+            }
         }
     }
 
     #[test]
-    fn until_seconds_applies_configured_maximum() {
-        assert_eq!(until_seconds(None, 10, Some(55)).unwrap(), 55);
-        assert_eq!(until_seconds(Some(55.0), 10, Some(55)).unwrap(), 55);
-        assert!(until_seconds(Some(56.0), 10, Some(55)).is_err());
-        assert_eq!(until_seconds(None, 10, None).unwrap(), 10);
-        assert_eq!(until_seconds(None, 30, None).unwrap(), 30);
-        assert_eq!(until_seconds(Some(56.0), 10, None).unwrap(), 56);
+    fn until_seconds_selects_then_caps_requested_value() {
+        for (explicit, configured_default, maximum, legacy_default, expected) in [
+            (Some(20.0), Some(55), Some(60), 10, 20),
+            (Some(100.0), Some(55), Some(60), 10, 60),
+            (None, Some(55), Some(60), 10, 55),
+            (None, Some(100), Some(60), 10, 60),
+            (None, None, Some(5), 10, 5),
+            (None, None, None, 10, 10),
+            (None, None, None, 30, 30),
+            (Some(100.0), None, None, 10, 100),
+            (Some(0.0), Some(55), Some(0), 10, 0),
+        ] {
+            assert_eq!(
+                until_seconds(explicit, legacy_default, configured_default, maximum).unwrap(),
+                expected
+            );
+        }
     }
 
     #[test]
