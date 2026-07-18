@@ -5,8 +5,8 @@
 - [x] Wire the resolved value into MCP `run` so over-maximum explicit calls proceed with the capped observation duration and still create a canonical detached job. (verification: integration - `tests/mcp_integration.rs` invokes a real over-cap `run`, asserts a successful `type="run"` envelope and persisted job, and verifies the call returns within the capped bound)
 - [x] Wire the resolved value into MCP `wait` so over-maximum explicit calls proceed with the capped observation duration without changing the managed job. (verification: integration - `tests/mcp_integration.rs` invokes over-cap `wait`, asserts a successful non-terminal `type="wait"` envelope, and confirms subsequent `status` sees the same running job)
 - [x] Preserve legacy behavior when both variables are absent and verify default-only and maximum-only host configurations independently. (verification: integration - `tests/mcp_integration.rs` covers legacy run/wait defaults, uncapped explicit values, default-only omission behavior, and maximum-only clamping of legacy defaults)
-- [x] Update operator documentation to define both environment variables, their precedence, and examples for OpenCode, Hermes, and other MCP hosts. (verification: docs - `README.md:731-740` documents both variables, precedence, clamping, and host examples)
-- [x] Run repository quality gates and resolve failures attributable to this change. (verification: command - `prek run -a`)
+- [x] Update operator documentation to define both environment variables, their precedence, and examples for OpenCode, Hermes, and other MCP hosts. (verification: manual - `README.md` documents both variables, precedence, clamping, and host examples)
+- [x] Run repository quality gates and resolve failures attributable to this change. (verification: manual - `prek run -a`)
 
 ## Future Work
 
@@ -17,5 +17,8 @@
 Expected archive gate: `cflx openspec validate separate-mcp-until-default-and-cap --archive-gate`
 
 ## Acceptance #1 Failure Follow-up
-- [x] Replace non-verifiable documentation and quality-gate verification notes with repository paths and a runnable command. (verification: `README.md:731-740`, `prek run -a`, and `cflx openspec validate separate-mcp-until-default-and-cap --archive-gate`)
+- [x] Replace non-verifiable documentation and quality-gate verification notes with repository paths and a runnable command. (verification: manual - `README.md:731-740`, `prek run -a`, and `cflx openspec validate separate-mcp-until-default-and-cap --archive-gate`)
 - [x] Reject an out-of-range MCP `until` before job creation and preserve protocol availability. (verification: unit - `src/mcp.rs` rejects 2^64; integration - `tests/mcp_integration.rs` rejects it without creating a job, then completes a valid run)
+
+## Acceptance #2 Failure Follow-up
+- [x] Reclassify verification ownership using supported categories while retaining repository path and runnable-command evidence. (verification: manual - `openspec/changes/separate-mcp-until-default-and-cap/tasks.md`; `cflx openspec validate separate-mcp-until-default-and-cap --archive-gate`)

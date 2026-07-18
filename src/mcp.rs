@@ -333,6 +333,7 @@ mod tests {
     fn until_seconds_selects_then_caps_requested_value() {
         for (explicit, configured_default, maximum, legacy_default, expected) in [
             (Some(20.0), Some(55), Some(60), 10, 20),
+            (Some(60.0), Some(55), Some(60), 10, 60),
             (Some(100.0), Some(55), Some(60), 10, 60),
             (None, Some(55), Some(60), 10, 55),
             (None, Some(100), Some(60), 10, 60),
