@@ -25,8 +25,9 @@ impl std::error::Error for McpStartupConfigError {}
 
 pub async fn serve(root: Option<String>) -> Result<()> {
     let max_until_seconds = parse_max_until_seconds(
-        std::env::var("AGENT_EXEC_MCP_MAX_UNTIL_SECONDS")
-            .ok()
+        std::env::var_os("AGENT_EXEC_MCP_MAX_UNTIL_SECONDS")
+            .map(|value| value.into_string().map_err(|_| McpStartupConfigError))
+            .transpose()?
             .as_deref(),
     )?;
     let service = Mcp::new(root, max_until_seconds);

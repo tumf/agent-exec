@@ -99,6 +99,26 @@ fn mcp_invalid_until_budget_fails_before_serving_and_reports_to_stderr() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("AGENT_EXEC_MCP_MAX_UNTIL_SECONDS"));
 }
 
+#[cfg(unix)]
+#[test]
+fn mcp_non_utf8_until_budget_fails_before_serving_and_reports_to_stderr() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let harness = TestHarness::new();
+    let output = Command::new(binary())
+        .args(["--root", harness.root(), "mcp"])
+        .env(
+            "AGENT_EXEC_MCP_MAX_UNTIL_SECONDS",
+            std::ffi::OsString::from_vec(vec![0xff]),
+        )
+        .output()
+        .expect("run MCP server");
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("AGENT_EXEC_MCP_MAX_UNTIL_SECONDS"));
+}
+
 #[test]
 fn mcp_lists_exactly_managed_job_tools_and_runs_jobs() {
     let harness = TestHarness::new();
