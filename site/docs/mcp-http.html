@@ -1,2 +1,34 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>MCP and HTTP — agent-exec</title><link rel="stylesheet" href="../assets/site.css"></head><body><header class="site-header"><nav aria-label="Primary"><a class="brand" href="../index.html">agent-exec</a><a href="index.html">Docs</a></nav></header><main id="main"><h1>MCP and HTTP</h1><h2>MCP stdio</h2><p><code>agent-exec mcp</code> exposes managed-job tools: <code>run</code>, <code>status</code>, <code>tail</code>, <code>wait</code>, and <code>kill</code>. A disconnected client does not stop the managed job; reconnect with its <code>job_id</code>.</p><pre><code>AGENT_EXEC="$(command -v agent-exec)"
-"$AGENT_EXEC" mcp</code></pre><h2>HTTP</h2><p>Use <code>agent-exec serve</code> to expose the same managed-job operations over HTTP. Keep the server on a trusted network and use its documented authentication and CORS settings.</p><pre><code>agent-exec serve --help</code></pre></main><footer><a href="integrations.html">Integrations</a><a href="../index.html">Home</a></footer></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MCP and HTTP — agent-exec</title>
+  <link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header"><nav aria-label="Primary"><a class="brand" href="../index.html">agent-exec</a><a href="index.html">Docs</a></nav></header>
+  <main id="main">
+    <h1>MCP and HTTP</h1>
+    <h2>MCP stdio</h2>
+    <p><code>agent-exec mcp</code> exposes <code>run</code>, <code>status</code>, <code>tail</code>, <code>wait</code>, and <code>kill</code>. A disconnected client does not stop the managed job; reconnect with its <code>job_id</code>.</p>
+    <pre><code>AGENT_EXEC="$(command -v agent-exec)"
+"$AGENT_EXEC" mcp</code></pre>
+    <h2>HTTP server</h2>
+    <p><code>agent-exec serve</code> binds to <code>127.0.0.1:19263</code> by default. <code>--port</code> changes only the loopback port. A non-loopback <code>--bind</code> requires <code>--insecure</code> and a nonempty <code>AGENT_EXEC_SERVE_TOKEN</code>.</p>
+    <p>The token uses <code>Authorization: Bearer</code> authentication only for <code>POST /exec</code> and <code>POST /kill/{id}</code>. It does not protect read endpoints, so keep the default loopback bind or add a firewall, private network, or authenticating reverse proxy. Do not expose the server directly to the public internet.</p>
+    <p><code>--allow-origin</code> permits one explicit CORS origin. The wildcard <code>*</code> is rejected.</p>
+    <div class="table-wrap"><table><thead><tr><th>Method</th><th>Endpoint</th><th>Equivalent</th></tr></thead><tbody>
+      <tr><td>GET</td><td><code>/health</code></td><td>Health envelope</td></tr>
+      <tr><td>POST</td><td><code>/exec</code></td><td><code>run</code></td></tr>
+      <tr><td>GET</td><td><code>/status/{id}</code></td><td><code>status</code></td></tr>
+      <tr><td>GET</td><td><code>/tail/{id}</code></td><td><code>tail</code></td></tr>
+      <tr><td>GET</td><td><code>/wait/{id}</code></td><td><code>wait --forever</code></td></tr>
+      <tr><td>POST</td><td><code>/kill/{id}</code></td><td><code>kill</code></td></tr>
+    </tbody></table></div>
+    <p>All responses use the CLI <code>schema_version</code>, <code>ok</code>, and <code>type</code> envelope. <code>POST /exec</code> requires <code>command</code>; <code>wait</code> defaults to <code>true</code>, <code>until</code> to <code>10</code>, and <code>max_bytes</code> to <code>65536</code>.</p>
+  </main>
+  <footer><a href="integrations.html">Integrations</a><a href="../index.html">Home</a></footer>
+</body>
+</html>
