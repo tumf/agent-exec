@@ -52,6 +52,7 @@ class ValidateSiteTests(unittest.TestCase):
         self.assertIn("path: site", workflow)
         self.assertIn("actions/deploy-pages", workflow)
         self.assertIn("branches: [main]", workflow)
+        self.assertNotIn("workflow_dispatch:", workflow)
 
 
 if __name__ == "__main__":

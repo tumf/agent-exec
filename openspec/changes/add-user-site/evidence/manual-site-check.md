@@ -6,9 +6,9 @@
 
 ## Results
 
-- `/` at 390×844: no horizontal page scrolling.
-- First `Tab` on `/`: focused the visible `.skip-link`.
-- `/docs/cli.html` at 1440×900: no horizontal page scrolling.
-- `/docs/mcp-http.html`: title was `MCP and HTTP — agent-exec`.
+- `/`, `/docs/install.html`, and `/docs/integrations.html` at 390×844 and 1440×900: `document.documentElement.scrollWidth <= window.innerWidth` returned `true` at each width.
+- First `Tab` on `/` and `/docs/integrations.html` focused the visible `Skip to content` link; `Enter` changed the URL fragment to `#main`.
+- First `Tab` on `/docs/lifecycle.html`, `/docs/output-contracts.html`, `/docs/troubleshooting.html`, and `/docs/release-verification.html` focused `Skip to content`.
+- Header navigation and the landing-page calls to action are native links and remained keyboard reachable after the skip-link check.
 
 The only browser console error was the development server's expected missing `/favicon.ico` response. The site does not reference a favicon.
