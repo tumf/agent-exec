@@ -393,6 +393,7 @@
             "state": {
               "type": "string",
               "enum": [
+                "created",
                 "running",
                 "exited",
                 "killed",

@@ -21,3 +21,6 @@ Run `prek run -a` for repository-wide format, lint, and test verification.
 - [x] kill 経路が terminal state と `logs_drained` を先行永続化しないようにし、TERM trap の最終出力を wait が返す回帰テストを追加した。 (verification: integration - `cargo test --test integration wait_ -- --nocapture` passes)
 - [x] HTTP `GET /wait/:id` を shared drain-aware `wait_response` 経路へ統一し、terminal-before-drain の stdout/stderr 回帰テストを追加した。 (verification: e2e - `cargo test --test serve_integration test_wait_returns_output_after_terminal_before_drain -- --nocapture` passes)
 - [x] deadline 分岐を非terminal state のみに制限し、terminal state は `logs_drained` 完了まで待機するようにした。 (verification: integration - `cargo test --test integration wait_ -- --nocapture` passes)
+
+## Acceptance #3 Failure Follow-up
+- [x] `WaitResponse.state` に `created` を追加し、`create` 済み job の `wait --until 0` 応答全体を公開 Schema で検証する回帰テストを追加した。 (verification: integration - `cargo test --test integration schema_validates_actual_wait_responses -- --nocapture` passes)

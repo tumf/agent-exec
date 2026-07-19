@@ -2397,6 +2397,10 @@ fn schema_response_has_schema_object() {
 #[test]
 fn schema_validates_actual_wait_responses() {
     let h = TestHarness::new();
+    let created = h.run(&["create", "--", "echo", "schema-created-wait"]);
+    let created_wait = h.run(&["wait", "--until", "0", created["job_id"].as_str().unwrap()]);
+    assert_eq!(created_wait["state"], "created");
+
     let running = h.run(&["run", "sleep", "60"]);
     let deadline_wait = h.run(&["wait", "--until", "0", running["job_id"].as_str().unwrap()]);
     let completed = h.run(&["run", "echo", "schema-wait"]);
@@ -2416,7 +2420,7 @@ fn schema_validates_actual_wait_responses() {
     schema["$ref"] = serde_json::json!("#/definitions/WaitResponse");
 
     let validator = jsonschema::validator_for(&schema).expect("compile schema");
-    for wait in [deadline_wait, terminal_wait] {
+    for wait in [created_wait, deadline_wait, terminal_wait] {
         assert!(
             validator.validate(&wait).is_ok(),
             "wait response must satisfy public schema: {wait}"
