@@ -33,8 +33,56 @@ Precedence is `--compress` or `--rtk`, `[compression].default`, then the built-i
 
 ## Installation
 
+### GitHub Releases
+
+Download the archive for your platform from the matching `v*` GitHub Release, verify its checksum, extract it, and place `agent-exec` on your `PATH`.
+
+| Platform | Archive |
+| --- | --- |
+| macOS Intel | `agent-exec-v<VERSION>-x86_64-apple-darwin.tar.gz` |
+| Linux x86_64 (glibc) | `agent-exec-v<VERSION>-x86_64-unknown-linux-gnu.tar.gz` |
+| Windows x86_64 | `agent-exec-v<VERSION>-x86_64-pc-windows-msvc.zip` |
+
+Each release includes `SHA256SUMS`. On macOS or Linux, verify and install the archive:
+
 ```bash
-cargo install --path .
+shasum -a 256 -c SHA256SUMS
+mkdir -p ~/.local/bin
+# Replace <ARCHIVE> with the matching archive name.
+tar -xzf <ARCHIVE>
+mv agent-exec ~/.local/bin/
+agent-exec --version
+agent-exec run -- echo "release-smoke"
+```
+
+On Windows PowerShell, verify and extract the matching archive:
+
+```powershell
+Get-FileHash <ARCHIVE> -Algorithm SHA256
+Expand-Archive <ARCHIVE> -DestinationPath "$HOME\\bin\\agent-exec"
+$env:Path += ";$HOME\\bin\\agent-exec"
+agent-exec --version
+agent-exec run -- echo "release-smoke"
+```
+
+Only the targets listed above have release artifacts. ARM, 32-bit, musl Linux, and other operating systems are unsupported by GitHub Release archives.
+
+### crates.io
+
+A Rust toolchain can install the published package:
+
+```bash
+cargo install agent-exec --locked
+agent-exec --version
+agent-exec run -- echo "release-smoke"
+```
+
+### Source build
+
+For development or unsupported targets, build from a repository checkout:
+
+```bash
+cargo install --path . --locked
 ```
 
 ## Shell Completions
