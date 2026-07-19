@@ -23,15 +23,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            archive: agent-exec-${{ github.ref_name }}-x86_64-apple-darwin.tar.gz
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             archive: agent-exec-${{ github.ref_name }}-x86_64-unknown-linux-gnu.tar.gz
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            archive: agent-exec-${{ github.ref_name }}-x86_64-pc-windows-msvc.zip
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
