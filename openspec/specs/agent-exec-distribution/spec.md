@@ -1,34 +1,40 @@
 ### Requirement: Public release artifacts
 
-The project SHALL produce versioned, checksum-protected command-line artifacts for each declared supported target from an explicit release trigger.
+The project SHALL produce versioned, checksum-protected command-line artifacts for each declared supported target from its designated trusted build host. GitHub Actions SHALL build Linux artifacts only. macOS artifacts SHALL be built and smoke-tested locally on `mini` before explicit upload. Windows release binaries SHALL NOT be declared or produced.
 
-#### Scenario: Release tag creates usable artifacts
+#### Scenario: Release tag creates the Linux artifact
 
 **Given**: a valid version tag and passing repository checks
-**When**: the release workflow runs
-**Then**: each declared target receives a consistently named archive and checksum in the corresponding GitHub Release
+**When**: the GitHub release workflow runs
+**Then**: it builds, smoke-tests, checksums, and publishes only the declared Linux x86_64 archive
+
+#### Scenario: Local mini build creates the macOS artifact
+
+**Given**: a valid version tag checked out on `mini`
+**When**: the local macOS release command runs successfully with upload enabled
+**Then**: it builds and smoke-tests the native macOS binary before uploading its versioned archive and checksum to the matching GitHub Release
 
 #### Scenario: Unsupported target is not implied
 
-**Given**: a target without a produced and tested artifact
+**Given**: Windows or another target without a designated artifact path
 **When**: a user reads the installation documentation
-**Then**: the target is absent from the supported list or explicitly marked unsupported
+**Then**: the target is absent from the supported artifact list or explicitly marked unsupported
 
 ### Requirement: Release artifact smoke verification
 
-Every native release executable SHALL demonstrate real `agent-exec` behavior before it is uploaded.
+Every native release executable SHALL demonstrate real `agent-exec` behavior on its designated build host before it is uploaded.
 
 #### Scenario: Native binary passes smoke verification
 
-**Given**: a release executable built on a native matrix runner
-**When**: the workflow runs `agent-exec --version` and a short managed command
+**Given**: a release executable built by Linux GitHub Actions or locally on `mini` for macOS
+**When**: its release path runs `agent-exec --version` and a short managed command
 **Then**: the version command succeeds and the managed command returns a successful JSON response
 
 #### Scenario: Smoke verification fails
 
 **Given**: a release executable that cannot start or complete the short managed command
 **When**: smoke verification runs
-**Then**: publication for that release fails before the invalid artifact is uploaded
+**Then**: publication for that artifact fails before the invalid artifact is uploaded
 
 ### Requirement: Installable crate package
 
@@ -58,10 +64,10 @@ Publishing to crates.io SHALL require an explicit release action and SHALL NOT o
 
 ### Requirement: Public installation guidance
 
-The README SHALL provide installation instructions that correspond to the actual public package and release artifacts.
+The README SHALL provide installation instructions that correspond to the actual Linux GitHub Actions artifact, locally built macOS artifact, and package/source fallbacks, and SHALL explicitly state that Windows release binaries are not provided.
 
 #### Scenario: New user follows public installation path
 
-**Given**: a supported platform and no local repository checkout
-**When**: a user follows the primary README installation instructions
-**Then**: the user can install `agent-exec`, run `agent-exec --version`, and execute a short managed command
+**Given**: Linux x86_64 or a macOS platform with a published artifact and no local repository checkout
+**When**: a user follows the matching README installation instructions
+**Then**: the user can verify the checksum, install `agent-exec`, run `agent-exec --version`, and execute a short managed command
