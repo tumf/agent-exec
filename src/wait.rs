@@ -86,11 +86,10 @@ pub fn wait_response(opts: WaitOpts) -> Result<Response<WaitData>> {
 
         if let Some(dl) = deadline
             && std::time::Instant::now() >= dl
+            && state.status().is_non_terminal()
         {
             let mut data = build_wait_data(&job_dir, &state);
-            if state.status().is_non_terminal() {
-                data.exit_code = None;
-            }
+            data.exit_code = None;
             return Ok(Response::new("wait", data));
         }
 

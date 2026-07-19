@@ -487,8 +487,9 @@
         "state": {
           "type": "string",
           "enum": [
-            "running",
-            "exited",
+                "created",
+                "running",
+                "exited",
             "killed",
             "failed",
             "unknown"

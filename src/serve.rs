@@ -529,17 +529,14 @@ async fn tail_handler(State(state): State<Arc<AppState>>, Path(id): Path<String>
 async fn wait_handler(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> AxumResponse {
     let root_opt = state.root.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let root = resolve_root(root_opt.as_deref());
-        let job_dir = JobDir::open(&root, &id)?;
-        let poll = std::time::Duration::from_millis(200);
-        loop {
-            let st = job_dir.read_state()?;
-            if !st.status().is_non_terminal() {
-                let response = Response::new("wait", crate::wait::build_wait_data(&job_dir, &st));
-                return Ok::<_, anyhow::Error>(serde_json::to_value(&response)?);
-            }
-            std::thread::sleep(poll);
-        }
+        let response = crate::wait::wait_response(crate::wait::WaitOpts {
+            job_id: &id,
+            root: root_opt.as_deref(),
+            poll_seconds: 1,
+            until_seconds: 0,
+            forever: true,
+        })?;
+        Ok::<_, anyhow::Error>(serde_json::to_value(&response)?)
     })
     .await;
 

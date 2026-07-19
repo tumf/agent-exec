@@ -324,6 +324,23 @@ fn test_wait_returns_terminal_state() {
 }
 
 #[test]
+fn test_wait_returns_output_after_terminal_before_drain() {
+    let srv = ServeProcess::start();
+    let (_, exec_json) = post_json(
+        &srv.url("/exec"),
+        r#"{"command":["sh","-c","(sleep 1; printf 'late-http-stdout\\n'; printf 'late-http-stderr\\n' >&2) &"]}"#,
+    );
+    let job_id = exec_json["job_id"]
+        .as_str()
+        .expect("job_id in exec response");
+
+    let (status, json) = get_json(&srv.url(&format!("/wait/{job_id}")));
+    assert_eq!(status, 200, "GET /wait failed: {json}");
+    assert_eq!(json["stdout"].as_str(), Some("late-http-stdout\n"));
+    assert_eq!(json["stderr"].as_str(), Some("late-http-stderr\n"));
+}
+
+#[test]
 fn test_kill_returns_ok() {
     let srv = ServeProcess::start();
     let (_, exec_json) = post_json(&srv.url("/exec"), r#"{"command":["sleep","60"]}"#);

@@ -462,6 +462,43 @@ fn wait_returns_output_after_root_process_exits_before_pipe_drain() {
 }
 
 #[test]
+fn wait_after_term_returns_drained_output() {
+    let h = TestHarness::new();
+    let run_v = h.run(&[
+        "run",
+        "--",
+        "sh",
+        "-c",
+        r#"trap 'sleep 1; printf "late-after-term\n"; exit 0' TERM; while :; do sleep 1; done"#,
+    ]);
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let _ = h.run(&["kill", "--signal", "TERM", &job_id]);
+    let wait_v = h.run(&["wait", "--until", "5", &job_id]);
+
+    assert_eq!(wait_v["stdout"].as_str(), Some("late-after-term\n"));
+}
+
+#[test]
+fn wait_deadline_does_not_return_terminal_state_before_logs_drain() {
+    let h = TestHarness::new();
+    let run_v = h.run(&[
+        "run",
+        "--",
+        "sh",
+        "-c",
+        r#"(sleep 1; printf 'late stdout\n'; printf 'late stderr\n' >&2) &"#,
+    ]);
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+
+    let wait_v = h.run(&["wait", "--until", "1", &job_id]);
+    assert_eq!(wait_v["state"].as_str(), Some("exited"));
+    assert_eq!(wait_v["stdout"].as_str(), Some("late stdout\n"));
+    assert_eq!(wait_v["stderr"].as_str(), Some("late stderr\n"));
+}
+
+#[test]
 fn wait_default_until_returns_non_terminal_for_long_running_job() {
     let h = TestHarness::new();
     let run_v = h.run(&["run", "sleep", "60"]);
@@ -2355,6 +2392,36 @@ fn schema_response_has_schema_object() {
         !schema.as_object().unwrap().is_empty(),
         "schema field must not be empty; got: {schema}"
     );
+}
+
+#[test]
+fn schema_validates_actual_wait_responses() {
+    let h = TestHarness::new();
+    let running = h.run(&["run", "sleep", "60"]);
+    let deadline_wait = h.run(&["wait", "--until", "0", running["job_id"].as_str().unwrap()]);
+    let completed = h.run(&["run", "echo", "schema-wait"]);
+    let terminal_wait = h.run(&[
+        "wait",
+        "--until",
+        "5",
+        completed["job_id"].as_str().unwrap(),
+    ]);
+    let _ = h.run(&[
+        "kill",
+        "--signal",
+        "KILL",
+        running["job_id"].as_str().unwrap(),
+    ]);
+    let mut schema = run_cmd_with_root(&["schema"], None)["schema"].clone();
+    schema["$ref"] = serde_json::json!("#/definitions/WaitResponse");
+
+    let validator = jsonschema::validator_for(&schema).expect("compile schema");
+    for wait in [deadline_wait, terminal_wait] {
+        assert!(
+            validator.validate(&wait).is_ok(),
+            "wait response must satisfy public schema: {wait}"
+        );
+    }
 }
 
 #[test]
