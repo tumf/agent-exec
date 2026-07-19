@@ -9,7 +9,7 @@
 ## Future Work
 
 - Deploy the Pages workflow from `main`, fetch the configured GitHub Pages URL, and confirm HTTP 200 with the expected title before archive. The public URL returned 404 before the first deployment.
-- Public deployment acceptance from Acceptance #2: merge this change to `main`, wait for the Pages workflow, then record the HTTP 200 and expected title. This requires repository-maintainer access outside this worktree.
+- Public deployment acceptance: merge this change to `main`, wait for the Pages workflow, then record the HTTP 200 and expected title. This requires repository-maintainer access outside this worktree.
 - Browser evidence was captured in `evidence/manual-site-check.md`; repeat it after material visual changes.
 - Custom domain selection and DNS changes require a separate explicit decision.
 - Analytics or telemetry require a separate privacy review and are not part of this site.
@@ -24,7 +24,7 @@ Run `prek run -a`, the site validator, actionlint, and a public Pages read-back 
 - [x] Restore terminal newlines and run `prek run -a`. (verification: integration - command `prek run -a` passed; `prek.toml` defines the repository hooks)
 - [x] Strengthen the validator for exactly one main landmark, named landmarks, nonempty titles, relative asset links, and independent missing-fragment coverage. (verification: integration - `python3 -m unittest tests/test_validate_site.py` passed; broken fixtures cover the validator contracts)
 - [x] Complete CLI and MCP/HTTP documentation, including endpoint, bind, authentication, CORS, and read-endpoint exposure behavior. (verification: integration - `python3 scripts/validate-site.py` passed for `site/docs/cli.html` and `site/docs/mcp-http.html`)
-- [x] Capture 390px/1440px navigation and keyboard evidence; prevent page-level table overflow. (verification: manual - evidence file `openspec/changes/add-user-site/evidence/manual-site-check.md` records viewport and keyboard checks)
+- [x] Capture 390px/1440px navigation and keyboard evidence; prevent page-level table overflow. (verification: manual - `openspec/changes/add-user-site/evidence/manual-site-check.md`, lines 9-12, records viewport and keyboard checks)
 
 ## Implementation Blocker #1
 
@@ -46,7 +46,9 @@ Owner: repository maintainer. Decision due: 2026-07-27.
 - [x] Pages workflowはmain限定になっていない。.github/workflows/pages.yml:3-6のworkflow_dispatchは任意refから実行でき、deploy job .github/workflows/pages.yml:17-36にもmain制約がないため、spec.md:39の「from main」に反してfeature branchやtagを配備できる。manual dispatchを削除するか、deploy jobを `refs/heads/main` に制限し、tests/test_validate_site.py:48-54もその経路を検証すること。（verification: integration - `python3 -m unittest tests/test_validate_site.py` passed; `test_workflows_validate_and_deploy_only_site` rejects `workflow_dispatch` and `.github/workflows/pages.yml` has only `push.branches: [main]`）
 - [x] ブラウザ検証の完了記録が不実。tasks.md:12 は `/`、`/docs/install.html`、`/docs/integrations.html` の390px/1440px確認とキーボード walkthrough を未完了として残す一方、tasks.md:26は完了扱いしている。manual-site-check.md:9-12は一部ページ・幅と最初のTabしか記録していない。受入側の再検証では横スクロールは解消済みだが、site/docs/{integrations,lifecycle,output-contracts,troubleshooting,release-verification}.html:1 に設計上必須のskip linkがなく、design.md:33とspec.md:31-35を満たさない。全対象ページのキーボード導線を修正・記録すること。（verification: manual - `evidence/manual-site-check.md` records 390×844 and 1440×900 checks for `/`, `/docs/install.html`, and `/docs/integrations.html`, and skip-link keyboard checks for all affected pages）
 - [x] 公開ドキュメントが現行レスポンス契約と一致しない。site/docs/quick-start.html:4 と site/index.html:15-18 は完全なJSON例として `schema_version`、`ok`、`type`、`encoding`、range、total-byte fieldsを欠くが、src/schema.rs:38-56,235-254とtests/integration.rs:407-418では必須である。さらにsite/docs/output-contracts.html:1はHTTP serverをresponse envelopeではないと記載するが、src/serve.rs:183-198,228-234ではHTTP応答もenvelopeである。spec.md:15-25に一致する例と説明へ修正すること。（verification: integration - `python3 scripts/validate-site.py` verifies updated pages and internal links; examples in `site/index.html`, `site/docs/quick-start.html`, and `site/docs/output-contracts.html` include the current envelope fields）
-## Final Validation
-
-- `cflx openspec validate add-user-site --strict --evidence warn` failed before validation cleanup because verification metadata was incomplete and the blocker bullets were parsed as tasks. The metadata and blocker format were corrected; rerun is required.
-- `cflx openspec validate add-user-site --archive-gate` remains blocked until the Pages deployment is merged to `main` and read back publicly.
+## Acceptance #3 Failure Follow-up
+- [x] CLI文書が現行delete契約と一致しない。site/docs/cli.html:22は単一削除をfinished jobに限定するが、src/delete.rs:96-116はrunning以外の明示指定jobを削除可能で、bulk削除のみsrc/delete.rs:170-172でterminal jobに限定する。single-jobと`--all`の対象を分けて記載すること。（verification: integration - `python3 scripts/validate-site.py` passed）
+- [x] HTTP実行例がそのままでは失敗する。site/docs/mcp-http.html:31-33は通常存在しないliteral cwd `/optional/working/directory`を送信し、src/serve.rs:294-317はその値を実行へ渡す。`cwd`を省略した最小例か実在パスへ変更すること。またsite/docs/mcp-http.html:30とsite/docs/output-contracts.html:1の「全HTTP responseがenvelope」という記述は、router-level 404/405用fallbackを持たないsrc/serve.rs:106-123の実装より広いため、documented handler responsesへ限定すること。（verification: integration - `python3 -m unittest tests/test_validate_site.py` passed）
+- [x] Quick startが未記載の`jq`依存で完走できない。site/docs/quick-start.html:3は`jq`を使うが前提条件を記載せず、元資料docs/one-minute-demo.md:9のみが依存を明記している。spec.md:21-24のインストール済みユーザによるrun→waitシナリオを満たすよう、標準ツールで抽出するか`jq`の導入条件を明記すること。（verification: integration - `python3 -m unittest tests/test_validate_site.py` passed）
+- [x] 必須OpenSpec gateのタスク記法を修正する。`cflx openspec validate add-user-site --strict --evidence warn` がtasks.md:27の手動証跡、tasks.md:48のverification metadata、tasks.md:51-52のcheckboxなし箇条書きを拒否したため、validatorが受理する検証記法へ直すこと。（verification: integration - `cflx openspec validate add-user-site --strict --evidence warn` passed）
+- [x] 現行`wait`レスポンス契約との不一致が残る。site/index.html:18、site/docs/quick-start.html:4、site/docs/output-contracts.html:1の完全なJSON例は`updated_at`を欠くが、src/wait.rs:47-59は常に設定し、tests/integration.rs:6961-6963,7009-7011も存在を要求する。spec.md:17のcurrent released behavior条件に合わせて全例を修正すること。（verification: integration - `python3 -m unittest tests/test_validate_site.py` passed）

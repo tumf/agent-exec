@@ -27,10 +27,10 @@
       <tr><td>GET</td><td><code>/wait/{id}</code></td><td><code>wait --forever</code></td></tr>
       <tr><td>POST</td><td><code>/kill/{id}</code></td><td><code>kill</code></td></tr>
     </tbody></table></div>
-    <p>All responses use the CLI <code>schema_version</code>, <code>ok</code>, and <code>type</code> envelope. <code>POST /exec</code> requires a nonempty <code>command</code> array of strings. Optional fields are <code>cwd</code> (string), <code>env</code> (string-to-string object), <code>timeout</code> (seconds), <code>wait</code> (default <code>true</code>), <code>until</code> (default <code>10</code>), and <code>max_bytes</code> (default <code>65536</code>). Unknown fields are rejected.</p>
+    <p>Documented handler responses use the CLI <code>schema_version</code>, <code>ok</code>, and <code>type</code> envelope. Router-level unmatched paths and methods are outside this response contract. <code>POST /exec</code> requires a nonempty <code>command</code> array of strings. Optional fields are <code>cwd</code> (string), <code>env</code> (string-to-string object), <code>timeout</code> (seconds), <code>wait</code> (default <code>true</code>), <code>until</code> (default <code>10</code>), and <code>max_bytes</code> (default <code>65536</code>). Unknown fields are rejected.</p>
     <pre><code>curl -X POST http://127.0.0.1:19263/exec \
   -H 'Content-Type: application/json' \
-  -d '{"command":["sh","-c","echo hello"],"cwd":"/optional/working/directory","env":{"KEY":"value"},"timeout":30,"wait":true,"until":10,"max_bytes":65536}'</code></pre>
+  -d '{"command":["sh","-c","echo hello"]}'</code></pre>
   </main>
   <footer><a href="integrations.html">Integrations</a><a href="../index.html">Home</a></footer>
 </body>

@@ -19,7 +19,7 @@
       <tr><th><code>wait</code></th><td>Observe a job until a bounded deadline.</td></tr>
       <tr><th><code>tail</code></th><td>Read bounded stdout and stderr excerpts.</td></tr>
       <tr><th><code>kill</code></th><td>Explicitly stop a running job.</td></tr>
-      <tr><th><code>delete</code></th><td>Delete one finished job or all finished jobs in the current directory.</td></tr>
+      <tr><th><code>delete</code></th><td>Delete one explicitly selected job unless it is running. <code>delete --all</code> deletes only terminal jobs in the current directory and skips running or created jobs.</td></tr>
       <tr><th><code>restart</code></th><td>Start a new execution from an existing job definition.</td></tr>
       <tr><th><code>list</code> / <code>ps</code></th><td>List jobs, or only running jobs with <code>ps</code>.</td></tr>
       <tr><th><code>tag</code></th><td>Manage persisted job tags.</td></tr>
