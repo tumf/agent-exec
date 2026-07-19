@@ -149,6 +149,13 @@ fn mcp_lists_exactly_managed_job_tools_and_runs_jobs() {
         .collect();
     names.sort_unstable();
     assert_eq!(names, ["kill", "run", "status", "tail", "wait"]);
+    for tool in listed["result"]["tools"].as_array().expect("tools") {
+        assert!(
+            tool.get("outputSchema")
+                .is_none_or(|schema| schema["type"] == "object"),
+            "MCP outputSchema must be an object schema when present: {tool}"
+        );
+    }
 
     let run = mcp.call(4, "run", json!({ "command": ["echo", "hello"] }));
     assert_envelope(&run, "run", true);

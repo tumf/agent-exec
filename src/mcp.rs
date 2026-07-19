@@ -92,6 +92,9 @@ struct WaitParams {
     until: Option<f64>,
 }
 
+#[derive(JsonSchema)]
+struct McpResponseObject {}
+
 fn parse_until_seconds_env(name: &'static str) -> Result<Option<u64>> {
     match std::env::var_os(name) {
         None => Ok(None),
@@ -205,7 +208,7 @@ fn domain_error(error: anyhow::Error) -> ErrorResponse {
 
 #[tool_router]
 impl Mcp {
-    #[tool(description = "Start a managed job through the canonical agent-exec lifecycle")]
+    #[tool(description = "Start a managed job through the canonical agent-exec lifecycle", output_schema = rmcp::handler::server::tool::cached_schema_for_type::<McpResponseObject>())]
     fn run(&self, Parameters(params): Parameters<RunParams>) -> Json<Value> {
         if params.command.is_empty() || params.command.iter().any(|value| value.is_empty()) {
             return tool_error("command must be a non-empty argv array");
@@ -238,7 +241,7 @@ impl Mcp {
         }))
     }
 
-    #[tool(description = "Get managed job status")]
+    #[tool(description = "Get managed job status", output_schema = rmcp::handler::server::tool::cached_schema_for_type::<McpResponseObject>())]
     fn status(&self, Parameters(params): Parameters<JobParams>) -> Json<Value> {
         envelope(status::status_response(status::StatusOpts {
             job_id: &params.job_id,
@@ -246,7 +249,7 @@ impl Mcp {
         }))
     }
 
-    #[tool(description = "Read bounded managed job output tails")]
+    #[tool(description = "Read bounded managed job output tails", output_schema = rmcp::handler::server::tool::cached_schema_for_type::<McpResponseObject>())]
     fn tail(&self, Parameters(params): Parameters<TailParams>) -> Json<Value> {
         envelope(tail::tail_response(tail::TailOpts {
             job_id: &params.job_id,
@@ -257,7 +260,7 @@ impl Mcp {
         }))
     }
 
-    #[tool(description = "Wait for a managed job for at most the requested seconds")]
+    #[tool(description = "Wait for a managed job for at most the requested seconds", output_schema = rmcp::handler::server::tool::cached_schema_for_type::<McpResponseObject>())]
     fn wait(&self, Parameters(params): Parameters<WaitParams>) -> Json<Value> {
         let until = match until_seconds(
             params.until,
@@ -277,7 +280,7 @@ impl Mcp {
         }))
     }
 
-    #[tool(description = "Explicitly terminate a managed job with TERM")]
+    #[tool(description = "Explicitly terminate a managed job with TERM", output_schema = rmcp::handler::server::tool::cached_schema_for_type::<McpResponseObject>())]
     fn kill(&self, Parameters(params): Parameters<JobParams>) -> Json<Value> {
         envelope(kill::kill_response(kill::KillOpts {
             job_id: &params.job_id,

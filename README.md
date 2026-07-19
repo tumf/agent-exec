@@ -670,6 +670,8 @@ Use the returned job ID with the read endpoints. Because read endpoints do not r
 
 `agent-exec mcp` exposes the managed-job lifecycle over stdio. It uses the same jobs root, persisted metadata, detached supervisor, logs, and response envelopes as the CLI; it does not require the HTTP server.
 
+For tested setup instructions for Claude Code, Codex CLI, OpenCode, and Hermes Agent, see [AI agent integrations](docs/agent-integrations.md).
+
 Configure an MCP client to launch:
 
 ```text
