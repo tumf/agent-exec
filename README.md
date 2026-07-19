@@ -26,17 +26,18 @@ install agent-exec ~/.local/bin/agent-exec
 ~/.local/bin/agent-exec --version
 ```
 
-Start a long-running command without blocking the caller, save its `job_id`, then retrieve its status, logs, and final result:
+Start a long-running command without blocking the caller, save its `job_id`, then retrieve its status and final output:
 
 ```bash
 AGENT_EXEC=~/.local/bin/agent-exec
 JOB=$($AGENT_EXEC run --no-wait -- sh -c 'sleep 2; echo done' | sed -n 's/.*"job_id":"\([^"]*\)".*/\1/p')
 $AGENT_EXEC status "$JOB"
 $AGENT_EXEC wait "$JOB"
+# Use tail later to reread bounded logs or inspect their paths.
 $AGENT_EXEC tail "$JOB"
 ```
 
-`run` normally observes a job for up to 10 seconds, which catches many startup failures without blocking indefinitely. Use `--no-wait` when the caller must return immediately. `wait` reports the final state and exit code; use `tail` to retrieve output. Inline output is bounded; complete logs remain available at the paths in each response.
+`run` normally observes a job for up to 10 seconds, which catches many startup failures without blocking indefinitely. Use `--no-wait` when the caller must return immediately. `wait` reports the state, exit code when terminal, and bounded output available at the observation deadline. Use `tail` later to reread bounded logs. Complete logs remain available at the paths in each response.
 
 ## Why not `nohup` or a plain subprocess?
 
@@ -423,7 +424,7 @@ The response includes bounded `stdout` and `stderr` tails, their raw byte ranges
 agent-exec wait [--until <SECONDS> | --forever] [--poll <SECONDS>] <JOB_ID>
 ```
 
-The default client-side deadline is 30 seconds. Reaching it does not stop the job. Use `run --timeout` to limit process runtime.
+The default client-side deadline is 30 seconds. Every response includes bounded `stdout` and `stderr`, byte ranges and totals, and `utf-8-lossy` encoding; terminal responses also include the exit code. Reaching the deadline does not stop the job. Use `tail` for later or repeated log retrieval, and `run --timeout` to limit process runtime.
 
 ### `kill`: send a signal
 
@@ -626,7 +627,7 @@ Keep the default loopback bind unless remote access is required. For non-loopbac
 | `POST` | `/exec` | `run` | Starts a job and returns `RunData`. |
 | `GET` | `/status/{id}` | `status` | Returns job status. |
 | `GET` | `/tail/{id}` | `tail` | Returns bounded `stdout` and `stderr` tails. |
-| `GET` | `/wait/{id}` | `wait --forever` | Blocks until a terminal state. |
+| `GET` | `/wait/{id}` | `wait --forever` | Blocks until a terminal state and returns bounded stdout/stderr output metadata. |
 | `POST` | `/kill/{id}` | `kill` | Sends `TERM`; `?no_wait=true` skips observation. |
 
 HTTP responses use the same `schema_version`, `ok`, and `type` envelope fields as CLI responses.
@@ -718,7 +719,7 @@ When MCP is unavailable, use `agent-exec run -- <command>` with CLI observation 
 | `run` | `command: string[]`, `cwd?: string`, `env?: object`, `timeout?: integer`, `until?: integer` | Starts a detached job. `timeout` and `until` are seconds; the legacy omitted `until` is 10 seconds unless configured. |
 | `status` | `job_id: string` | Returns canonical job status. |
 | `tail` | `job_id: string`, `lines?: integer`, `max_bytes?: integer` | Reads bounded tails; defaults are 50 lines and 65,536 bytes. |
-| `wait` | `job_id: string`, `until?: integer` | Observes for a bounded duration; the legacy omitted `until` is 30 seconds unless configured. Indefinite MCP waits are not supported. |
+| `wait` | `job_id: string`, `until?: integer` | Observes for a bounded duration and returns bounded stdout/stderr output metadata; the legacy omitted `until` is 30 seconds unless configured. Indefinite MCP waits are not supported. |
 | `kill` | `job_id: string` | Sends `TERM`. |
 
 Retain the job ID returned by `run`. Closing the MCP transport, reaching an observation deadline, receiving no output, or encountering a tool error does not stop the job. Use `kill` only for explicit cancellation.

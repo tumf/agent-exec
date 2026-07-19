@@ -267,12 +267,26 @@ fn mcp_without_until_budget_preserves_legacy_defaults_and_explicit_values() {
     let harness = TestHarness::new();
     let mut mcp = McpProcess::start(harness.root());
     mcp.initialize();
-    let run = mcp.call(3, "run", json!({ "command": ["true"], "until": 56 }));
+    let run = mcp.call(
+        3,
+        "run",
+        json!({
+            "command": ["sh", "-c", "printf 'mcp output\\n'; printf 'mcp error\\n' >&2"],
+            "until": 56
+        }),
+    );
     assert_envelope(&run, "run", true);
     let job_id = run["job_id"].as_str().expect("job id");
     let wait = mcp.call(4, "wait", json!({ "job_id": job_id }));
     assert_envelope(&wait, "wait", true);
     assert_eq!(wait["state"], "exited");
+    assert_eq!(wait["stdout"].as_str(), Some("mcp output\n"));
+    assert_eq!(wait["stderr"].as_str(), Some("mcp error\n"));
+    assert_eq!(wait["encoding"].as_str(), Some("utf-8-lossy"));
+    assert_eq!(wait["stdout_range"], json!([0, 11]));
+    assert_eq!(wait["stderr_range"], json!([0, 10]));
+    assert_eq!(wait["stdout_total_bytes"].as_u64(), Some(11));
+    assert_eq!(wait["stderr_total_bytes"].as_u64(), Some(10));
 }
 
 #[test]

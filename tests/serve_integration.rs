@@ -297,7 +297,10 @@ fn test_tail_returns_stdout() {
 #[test]
 fn test_wait_returns_terminal_state() {
     let srv = ServeProcess::start();
-    let (_, exec_json) = post_json(&srv.url("/exec"), r#"{"command":["echo","waitme"]}"#);
+    let (_, exec_json) = post_json(
+        &srv.url("/exec"),
+        r#"{"command":["sh","-c","printf 'waitme\\n'; printf 'waiterr\\n' >&2"]}"#,
+    );
     let job_id = exec_json["job_id"]
         .as_str()
         .expect("job_id in exec response");
@@ -305,6 +308,13 @@ fn test_wait_returns_terminal_state() {
     let (status, json) = get_json(&srv.url(&format!("/wait/{job_id}")));
     assert_eq!(status, 200, "GET /wait failed: {json}");
     assert!(json.get("state").is_some(), "missing state in: {json}");
+    assert_eq!(json["stdout"].as_str(), Some("waitme\n"));
+    assert_eq!(json["stderr"].as_str(), Some("waiterr\n"));
+    assert_eq!(json["encoding"].as_str(), Some("utf-8-lossy"));
+    assert_eq!(json["stdout_range"], serde_json::json!([0, 7]));
+    assert_eq!(json["stderr_range"], serde_json::json!([0, 8]));
+    assert_eq!(json["stdout_total_bytes"].as_u64(), Some(7));
+    assert_eq!(json["stderr_total_bytes"].as_u64(), Some(8));
     assert_common_fields(&json);
     let state = json["state"].as_str().expect("state is string");
     assert!(

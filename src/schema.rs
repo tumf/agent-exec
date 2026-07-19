@@ -239,10 +239,17 @@ pub struct WaitData {
     pub state: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stdout_total_bytes: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stderr_total_bytes: Option<u64>,
+    pub stdout: String,
+    pub stderr: String,
+    pub encoding: String,
+    /// Raw stdout byte range represented by `stdout` as [begin, end).
+    pub stdout_range: [u64; 2],
+    /// Raw stderr byte range represented by `stderr` as [begin, end).
+    pub stderr_range: [u64; 2],
+    /// Total bytes currently observed in stdout.log.
+    pub stdout_total_bytes: u64,
+    /// Total bytes currently observed in stderr.log.
+    pub stderr_total_bytes: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<String>,
 }
@@ -863,30 +870,50 @@ mod tests {
             job_id: "j1".into(),
             state: "running".into(),
             exit_code: None,
-            stdout_total_bytes: Some(1024),
-            stderr_total_bytes: Some(256),
+            stdout: "partial stdout".into(),
+            stderr: "partial stderr".into(),
+            encoding: "utf-8-lossy".into(),
+            stdout_range: [4, 18],
+            stderr_range: [0, 14],
+            stdout_total_bytes: 18,
+            stderr_total_bytes: 14,
             updated_at: Some("2025-01-01T00:00:00Z".into()),
         };
         let json = serde_json::to_value(&data).unwrap();
-        assert_eq!(json["stdout_total_bytes"], 1024);
-        assert_eq!(json["stderr_total_bytes"], 256);
+        assert_eq!(json["stdout"], "partial stdout");
+        assert_eq!(json["stderr"], "partial stderr");
+        assert_eq!(json["encoding"], "utf-8-lossy");
+        assert_eq!(json["stdout_range"], serde_json::json!([4, 18]));
+        assert_eq!(json["stderr_range"], serde_json::json!([0, 14]));
+        assert_eq!(json["stdout_total_bytes"], 18);
+        assert_eq!(json["stderr_total_bytes"], 14);
         assert_eq!(json["updated_at"], "2025-01-01T00:00:00Z");
         assert!(json.get("exit_code").is_none());
     }
 
     #[test]
-    fn wait_data_progress_hints_omitted_when_none() {
+    fn wait_data_omits_only_optional_fields() {
         let data = WaitData {
             job_id: "j2".into(),
             state: "running".into(),
             exit_code: None,
-            stdout_total_bytes: None,
-            stderr_total_bytes: None,
+            stdout: String::new(),
+            stderr: String::new(),
+            encoding: "utf-8-lossy".into(),
+            stdout_range: [0, 0],
+            stderr_range: [0, 0],
+            stdout_total_bytes: 0,
+            stderr_total_bytes: 0,
             updated_at: None,
         };
         let json = serde_json::to_value(&data).unwrap();
-        assert!(json.get("stdout_total_bytes").is_none());
-        assert!(json.get("stderr_total_bytes").is_none());
+        assert_eq!(json["stdout"], "");
+        assert_eq!(json["stderr"], "");
+        assert_eq!(json["stdout_range"], serde_json::json!([0, 0]));
+        assert_eq!(json["stderr_range"], serde_json::json!([0, 0]));
+        assert_eq!(json["stdout_total_bytes"], 0);
+        assert_eq!(json["stderr_total_bytes"], 0);
+        assert!(json.get("exit_code").is_none());
         assert!(json.get("updated_at").is_none());
     }
 
@@ -896,13 +923,19 @@ mod tests {
             job_id: "j3".into(),
             state: "exited".into(),
             exit_code: Some(0),
-            stdout_total_bytes: Some(512),
-            stderr_total_bytes: Some(0),
+            stdout: "done\n".into(),
+            stderr: String::new(),
+            encoding: "utf-8-lossy".into(),
+            stdout_range: [0, 5],
+            stderr_range: [0, 0],
+            stdout_total_bytes: 5,
+            stderr_total_bytes: 0,
             updated_at: Some("2025-01-01T00:00:02Z".into()),
         };
         let json = serde_json::to_value(&data).unwrap();
         assert_eq!(json["exit_code"], 0);
-        assert_eq!(json["stdout_total_bytes"], 512);
+        assert_eq!(json["stdout"], "done\n");
+        assert_eq!(json["stdout_total_bytes"], 5);
         assert_eq!(json["updated_at"], "2025-01-01T00:00:02Z");
     }
 
@@ -912,14 +945,23 @@ mod tests {
             job_id: "j4".into(),
             state: "exited".into(),
             exit_code: Some(1),
-            stdout_total_bytes: Some(100),
-            stderr_total_bytes: Some(200),
+            stdout: "output".into(),
+            stderr: "error".into(),
+            encoding: "utf-8-lossy".into(),
+            stdout_range: [94, 100],
+            stderr_range: [195, 200],
+            stdout_total_bytes: 100,
+            stderr_total_bytes: 200,
             updated_at: Some("2025-06-01T12:00:00Z".into()),
         };
         let serialized = serde_json::to_string(&data).unwrap();
         let deserialized: WaitData = serde_json::from_str(&serialized).unwrap();
-        assert_eq!(deserialized.stdout_total_bytes, Some(100));
-        assert_eq!(deserialized.stderr_total_bytes, Some(200));
+        assert_eq!(deserialized.stdout, "output");
+        assert_eq!(deserialized.stderr, "error");
+        assert_eq!(deserialized.stdout_range, [94, 100]);
+        assert_eq!(deserialized.stderr_range, [195, 200]);
+        assert_eq!(deserialized.stdout_total_bytes, 100);
+        assert_eq!(deserialized.stderr_total_bytes, 200);
         assert_eq!(
             deserialized.updated_at.as_deref(),
             Some("2025-06-01T12:00:00Z")
