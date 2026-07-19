@@ -43,12 +43,12 @@ Download the archive for your platform from the matching `v*` GitHub Release, ve
 | Linux x86_64 (glibc) | `agent-exec-v<VERSION>-x86_64-unknown-linux-gnu.tar.gz` |
 | Windows x86_64 | `agent-exec-v<VERSION>-x86_64-pc-windows-msvc.zip` |
 
-Each release includes `SHA256SUMS`. On macOS or Linux, verify and install the archive:
+Each archive has a matching `<ARCHIVE>.sha256` checksum file. On macOS or Linux, download both files, then verify and install:
 
 ```bash
-shasum -a 256 -c SHA256SUMS
-mkdir -p ~/.local/bin
 # Replace <ARCHIVE> with the matching archive name.
+shasum -a 256 -c <ARCHIVE>.sha256
+mkdir -p ~/.local/bin
 tar -xzf <ARCHIVE>
 mv agent-exec ~/.local/bin/
 agent-exec --version
