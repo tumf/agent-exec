@@ -68,6 +68,8 @@ This contract applies to commands such as `run`, `status`, `tail`, `list`, `gc`,
 
 Precedence is `--compress` or `--rtk`, `[compression].default`, then the built-in `route` default. If compression would not make either nonempty stream smaller, the expansion guard sets `applied` to `false`, returns empty compressed streams, and records `"expansion-guard"` in `strategy`. The raw `stdout`, `stderr`, ranges, totals, encoding, and log paths remain unchanged.
 
+If you are integrating through MCP, see [MCP Server](#mcp-server) for the same lifecycle as tools. To see the observation deadline and reconnect behavior end to end, run the [one-minute demo](docs/one-minute-demo.md).
+
 ## Installation
 
 ### GitHub Releases

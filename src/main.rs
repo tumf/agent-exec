@@ -372,7 +372,7 @@ enum Command {
     /// Get stdout/stderr tail of a job.
     Tail {
         /// Number of tail lines.
-        #[arg(long, default_value = "50")]
+        #[arg(long, visible_alias = "lines", default_value = "50")]
         tail_lines: u64,
 
         /// Maximum bytes.

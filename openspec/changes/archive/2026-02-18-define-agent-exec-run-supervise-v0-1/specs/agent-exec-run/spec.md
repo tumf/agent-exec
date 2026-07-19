@@ -16,7 +16,7 @@ Then stdout に `type="run"` を含む JSON が 1 回出力され、`run` は終
 `run` の `snapshot` と `tail` は `stdout.log`/`stderr.log` の末尾から生成しなければならない（MUST）。`tail-lines` と `max-bytes` の両制約で切り詰め、`encoding="utf-8-lossy"` を返さなければならない（MUST）。
 
 #### Scenario: tail の制約適用
-Given `agent-exec tail <job_id> --lines 10 --max-bytes 1024` を実行する
+Given `agent-exec tail <job_id> --tail-lines 10 --max-bytes 1024` を実行する
 When ログ末尾が取得される
 Then `stdout_tail`/`stderr_tail` は制約内の内容であり `encoding` が含まれる
 

@@ -1210,6 +1210,10 @@ fn tail_range_reflects_slice_when_over_limit() {
 
     let v = h.run(&["tail", "--tail-lines", "2", &job_id]);
     assert_envelope(&v, "tail", true);
+    let alias = h.run(&["tail", "--lines", "2", &job_id]);
+    assert_envelope(&alias, "tail", true);
+    assert_eq!(alias["stdout"], v["stdout"]);
+    assert_eq!(alias["stderr"], v["stderr"]);
 
     let stdout = v["stdout"].as_str().unwrap_or_default();
     let range = v["stdout_range"].as_array().expect("stdout_range missing");

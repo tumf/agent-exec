@@ -6,7 +6,7 @@
 
 #### Scenario: tail が末尾観測 API である
 Given 実行中または完了済みのジョブがある
-When `agent-exec tail <job_id> --lines 10 --max-bytes 1024` を実行する
+When `agent-exec tail <job_id> --tail-lines 10 --max-bytes 1024` を実行する
 Then `stdout_tail`/`stderr_tail` は制約内の内容であり `encoding` が含まれる
 And `run` / `start` のレスポンスには同等の snapshot フィールドは含まれない
 
