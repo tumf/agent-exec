@@ -65,7 +65,10 @@ binary="$target_dir/release/agent-exec"
 AGENT_EXEC_ROOT=$(mktemp -d) "$binary" run -- echo release-smoke | python3 -c 'import json, sys; response = json.load(sys.stdin); assert response["ok"] is True; assert response["state"] == "exited"; assert response["exit_code"] == 0'
 
 tar -C "$(dirname "$binary")" -czf "$dist_dir/$archive" agent-exec
-shasum -a 256 "$dist_dir/$archive" > "$dist_dir/$archive.sha256"
+(
+  cd "$dist_dir"
+  shasum -a 256 "$archive" > "$archive.sha256"
+)
 
 if "$upload"; then
   gh release view "$tag" >/dev/null

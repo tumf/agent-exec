@@ -22,3 +22,6 @@ Archive-gate evidence is recorded in completed task verification notes and final
 ## Acceptance Notes
 
 Repository-verifiable source paths and rerunnable commands are recorded in each completed implementation task above.
+
+## Acceptance #3 Failure Follow-up
+- [x] Generate the macOS checksum from inside the distribution directory so it records the archive basename, and verify the copied download artifacts with `shasum -a 256 -c`. (verification: integration - source paths: `scripts/release-macos.sh:67-71`, `tests/integration.rs:6015-6086`; command: `cargo test --test integration release_macos_checksum_verifies_after_download -- --ignored`)
