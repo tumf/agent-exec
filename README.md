@@ -1,5 +1,7 @@
 # agent-exec
 
+[Documentation site](https://tumf.github.io/agent-exec/)
+
 A durable command runner for AI agents: start a command now, observe it briefly, then retrieve or control the job later.
 
 Agent harnesses often need to run tests, builds, and deployments whose duration and output size are unknown. A synchronous subprocess can block the agent, while a detached shell command loses structured status and log discovery. `agent-exec` keeps the process running under a stable `job_id` and returns machine-readable JSON for later `status`, `tail`, `wait`, `kill`, or `restart` calls.

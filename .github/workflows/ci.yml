@@ -8,6 +8,15 @@ permissions:
   contents: read
 
 jobs:
+  site:
+    name: Validate site
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Validate site
+        run: python3 scripts/validate-site.py
+
   rust:
     name: Test (${{ matrix.os }})
     strategy:

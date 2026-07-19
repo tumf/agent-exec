@@ -1,0 +1,13 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Installation — agent-exec</title><link rel="stylesheet" href="../assets/site.css"></head><body><a class="skip-link" href="#main">Skip to content</a><header class="site-header"><nav aria-label="Primary"><a class="brand" href="../index.html">agent-exec</a><div class="nav-links"><a href="index.html">Docs</a><a href="quick-start.html">Quick start</a><a href="../index.html">Home</a></div></nav></header><main id="main"><h1>Installation</h1><p>Prebuilt binaries support Linux x86_64 and macOS Apple Silicon. Windows release binaries are not provided.</p><h2>Latest release</h2><pre><code>case "$(uname -s)-$(uname -m)" in
+  Linux-x86_64) TARGET=x86_64-unknown-linux-gnu ;;
+  Darwin-arm64) TARGET=aarch64-apple-darwin ;;
+  *) echo "No release binary for this platform" >&2; exit 1 ;;
+esac
+VERSION=$(curl -fsSL https://api.github.com/repos/tumf/agent-exec/releases/latest | sed -n 's/.*"tag_name": "v\([^"]*\)".*/\1/p')
+ARCHIVE="agent-exec-v${VERSION}-${TARGET}.tar.gz"
+curl -fLO "https://github.com/tumf/agent-exec/releases/download/v${VERSION}/${ARCHIVE}"
+curl -fLO "https://github.com/tumf/agent-exec/releases/download/v${VERSION}/${ARCHIVE}.sha256"
+shasum -a 256 -c "${ARCHIVE}.sha256"
+mkdir -p ~/.local/bin && tar -xzf "$ARCHIVE"
+install agent-exec ~/.local/bin/agent-exec
+~/.local/bin/agent-exec --version</code></pre><h2>Other targets</h2><p>Install from crates.io with <code>cargo install agent-exec --locked</code>, or build from a checkout with <code>cargo install --path . --locked</code>.</p></main><footer><a href="quick-start.html">Quick start</a><a href="../index.html">Home</a></footer></body></html>
