@@ -32,11 +32,11 @@ Start a long-running command without blocking the caller, save its `job_id`, the
 AGENT_EXEC=~/.local/bin/agent-exec
 JOB=$($AGENT_EXEC run --no-wait -- sh -c 'sleep 2; echo done' | sed -n 's/.*"job_id":"\([^"]*\)".*/\1/p')
 $AGENT_EXEC status "$JOB"
-$AGENT_EXEC tail "$JOB"
 $AGENT_EXEC wait "$JOB"
+$AGENT_EXEC tail "$JOB"
 ```
 
-`run` normally observes a job for up to 10 seconds, which catches many startup failures without blocking indefinitely. Use `--no-wait` when the caller must return immediately. Inline output is bounded; complete logs remain available at the paths in each response.
+`run` normally observes a job for up to 10 seconds, which catches many startup failures without blocking indefinitely. Use `--no-wait` when the caller must return immediately. `wait` reports the final state and exit code; use `tail` to retrieve output. Inline output is bounded; complete logs remain available at the paths in each response.
 
 ## Why not `nohup` or a plain subprocess?
 

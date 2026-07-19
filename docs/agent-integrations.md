@@ -96,4 +96,6 @@ agent-exec install-skills
 agent-exec install-skills --claude
 ```
 
+Without `--global`, the skill is installed under `.agents/skills` in the current directory, not under `$HOME`. Use `--global` for the global agent-skills directory. The success JSON reports the resolved installation `path`; verify that path before configuring the agent.
+
 The agent can then call `agent-exec run`, retain `job_id`, and continue with `status`, `tail`, `wait`, or `kill`.

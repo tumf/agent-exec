@@ -20,7 +20,8 @@ rm -f "$START_FILE"
 
 agent-exec status "$JOB_ID" | jq '{job_id, state, exit_code}'
 agent-exec tail "$JOB_ID" --tail-lines 10 | jq '{state, stdout}'
-agent-exec wait "$JOB_ID" --until 5 | jq '{job_id, state, exit_code, stdout}'
+agent-exec wait "$JOB_ID" --until 5 | jq '{job_id, state, exit_code}'
+agent-exec tail "$JOB_ID" --tail-lines 10 | jq '{state, stdout}'
 ```
 
 Expected progression:
@@ -29,10 +30,11 @@ Expected progression:
 run returned: state=running job_id=<persistent job id>
 {"job_id":"<same id>","state":"running","exit_code":null}
 {"state":"running","stdout":"started\n"}
-{"job_id":"<same id>","state":"exited","exit_code":0,"stdout":"started\nfinished\n"}
+{"job_id":"<same id>","state":"exited","exit_code":0}
+{"state":"exited","stdout":"started\nfinished\n"}
 ```
 
-The exact timing can make `status` report `exited` on a busy machine, but the invariant is the same: every command uses the same persisted `job_id`, and the complete output remains available after the initial observation deadline.
+The exact timing can make `status` report `exited` on a busy machine, but the invariant is the same: every command uses the same persisted `job_id`, and the complete output remains available after the initial observation deadline. `wait` waits for state and exit code; `tail` retrieves the logs.
 
 ## What this replaces
 
@@ -46,11 +48,12 @@ An MCP client gets the same lifecycle through the `run`, `status`, `tail`, and `
 
 ## Verify success
 
-The final object must contain:
+The final `wait` object must contain:
 
 - the same `job_id` returned by `run`
 - `state: "exited"`
 - `exit_code: 0`
-- both `started` and `finished` in `stdout`
+
+The following `tail` object must contain both `started` and `finished` in `stdout`.
 
 Use `agent-exec kill "$JOB_ID"` only when you explicitly want to cancel a running job.
