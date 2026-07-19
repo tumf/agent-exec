@@ -443,6 +443,25 @@ fn wait_bounds_large_output_and_preserves_full_log() {
 }
 
 #[test]
+fn wait_returns_output_after_root_process_exits_before_pipe_drain() {
+    let h = TestHarness::new();
+    let run_v = h.run(&[
+        "run",
+        "--",
+        "sh",
+        "-c",
+        "(sleep 1; printf 'late stdout\\n'; printf 'late stderr\\n' >&2) &",
+    ]);
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+
+    let wait_v = h.run(&["wait", "--until", "5", &job_id]);
+    assert_envelope(&wait_v, "wait", true);
+    assert_eq!(wait_v["state"].as_str(), Some("exited"));
+    assert_eq!(wait_v["stdout"].as_str(), Some("late stdout\n"));
+    assert_eq!(wait_v["stderr"].as_str(), Some("late stderr\n"));
+}
+
+#[test]
 fn wait_default_until_returns_non_terminal_for_long_running_job() {
     let h = TestHarness::new();
     let run_v = h.run(&["run", "sleep", "60"]);
@@ -2336,6 +2355,38 @@ fn schema_response_has_schema_object() {
         !schema.as_object().unwrap().is_empty(),
         "schema field must not be empty; got: {schema}"
     );
+}
+
+#[test]
+fn schema_wait_response_matches_wait_output_contract() {
+    let v = run_cmd_with_root(&["schema"], None);
+    let wait = &v["schema"]["definitions"]["WaitResponse"]["allOf"][1];
+    let required = wait["required"].as_array().expect("WaitResponse.required");
+    for field in [
+        "job_id",
+        "state",
+        "stdout",
+        "stderr",
+        "encoding",
+        "stdout_range",
+        "stderr_range",
+        "stdout_total_bytes",
+        "stderr_total_bytes",
+    ] {
+        assert!(
+            required.iter().any(|value| value.as_str() == Some(field)),
+            "WaitResponse must require {field}: {wait}"
+        );
+    }
+    let properties = &wait["properties"];
+    assert_eq!(properties["stdout"]["type"], "string");
+    assert_eq!(properties["stderr"]["type"], "string");
+    assert_eq!(properties["encoding"]["type"], "string");
+    assert_eq!(properties["stdout_range"]["minItems"], 2);
+    assert_eq!(properties["stderr_range"]["maxItems"], 2);
+    assert_eq!(properties["stdout_total_bytes"]["minimum"], 0);
+    assert_eq!(properties["stderr_total_bytes"]["minimum"], 0);
+    assert_eq!(properties["updated_at"]["type"], "string");
 }
 
 /// Task 3.2: `schema` response includes `generated_at` field.

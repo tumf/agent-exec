@@ -114,6 +114,7 @@ pub fn execute_inner(opts: KillOpts) -> Result<KillData> {
             pid: Some(pid),
             finished_at: Some(now.clone()),
             updated_at: now,
+            logs_drained: true,
             windows_job_name: None,
         };
         job_dir.write_state(&new_state)?;

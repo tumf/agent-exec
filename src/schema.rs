@@ -661,6 +661,10 @@ fn default_inherit_env() -> bool {
     true
 }
 
+fn default_logs_drained() -> bool {
+    true
+}
+
 impl JobMeta {
     /// Convenience accessor: returns the job ID.
     pub fn job_id(&self) -> &str {
@@ -719,6 +723,9 @@ pub struct JobState {
     pub finished_at: Option<String>,
     /// Last time this state was written to disk (RFC 3339).
     pub updated_at: String,
+    /// Whether the supervisor has finished draining output after terminal state.
+    #[serde(default = "default_logs_drained")]
+    pub logs_drained: bool,
     /// Windows-only: name of the Job Object used to manage the process tree.
     /// Present only when the supervisor successfully created and assigned a
     /// named Job Object; absent on non-Windows platforms and when creation

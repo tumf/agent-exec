@@ -80,7 +80,7 @@ pub fn wait_response(opts: WaitOpts) -> Result<Response<WaitData>> {
         let state = job_dir.read_state()?;
         debug!(job_id = %opts.job_id, state = ?state.status(), "wait poll");
 
-        if !state.status().is_non_terminal() {
+        if !state.status().is_non_terminal() && state.logs_drained {
             return Ok(Response::new("wait", build_wait_data(&job_dir, &state)));
         }
 
@@ -88,7 +88,9 @@ pub fn wait_response(opts: WaitOpts) -> Result<Response<WaitData>> {
             && std::time::Instant::now() >= dl
         {
             let mut data = build_wait_data(&job_dir, &state);
-            data.exit_code = None;
+            if state.status().is_non_terminal() {
+                data.exit_code = None;
+            }
             return Ok(Response::new("wait", data));
         }
 

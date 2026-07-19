@@ -1283,6 +1283,7 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
                     pid: Some(pid),
                     finished_at: Some(now_rfc3339()),
                     updated_at: now_rfc3339(),
+                    logs_drained: true,
                     windows_job_name: None,
                 };
                 // Best-effort: if writing state fails, we still propagate the
@@ -1390,6 +1391,7 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
         pid: Some(pid),
         finished_at: None,
         updated_at: now_rfc3339(),
+        logs_drained: true,
         windows_job_name,
     };
     job_dir.write_state(&state)?;
@@ -1563,7 +1565,7 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
     #[cfg(not(unix))]
     let (terminal_status, signal_name) = (JobStatus::Exited, None::<String>);
 
-    let state = JobState {
+    let mut state = JobState {
         job: JobStateJob {
             id: job_id.to_string(),
             status: terminal_status.clone(),
@@ -1577,6 +1579,7 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
         pid: Some(pid),
         finished_at: Some(finished_at.clone()),
         updated_at: now_rfc3339(),
+        logs_drained: false,
         windows_job_name: None, // not needed after process exits
     };
     job_dir.write_state(&state)?;
@@ -1612,6 +1615,10 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
     } else {
         drop(t_stderr); // detach: descendant holds the pipe open
     }
+
+    state.logs_drained = true;
+    state.updated_at = now_rfc3339();
+    job_dir.write_state(&state)?;
 
     // Join watcher if present; it exits promptly once child_done is set.
     if let Some(w) = watcher {
