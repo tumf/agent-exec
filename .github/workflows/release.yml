@@ -23,15 +23,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            archive: agent-exec-${{ github.ref_name }}-x86_64-apple-darwin.tar.gz
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             archive: agent-exec-${{ github.ref_name }}-x86_64-unknown-linux-gnu.tar.gz
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            archive: agent-exec-${{ github.ref_name }}-x86_64-pc-windows-msvc.zip
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -46,7 +40,6 @@ jobs:
           AGENT_EXEC_ROOT: ${{ runner.temp }}/agent-exec-smoke
         run: |
           binary="target/${{ matrix.target }}/release/agent-exec"
-          if [ "${{ runner.os }}" = "Windows" ]; then binary="$binary.exe"; fi
           "$binary" --version
           "$binary" run -- echo release-smoke | python3 -c 'import json, sys; response = json.load(sys.stdin); assert response["ok"] is True; assert response["state"] == "exited"; assert response["exit_code"] == 0'
       - name: Package archive and checksum
@@ -54,14 +47,8 @@ jobs:
         run: |
           mkdir dist
           binary="target/${{ matrix.target }}/release/agent-exec"
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            binary="$binary.exe"
-            cp "$binary" agent-exec.exe
-            7z a "dist/${{ matrix.archive }}" agent-exec.exe
-          else
-            cp "$binary" agent-exec
-            tar -czf "dist/${{ matrix.archive }}" agent-exec
-          fi
+          cp "$binary" agent-exec
+          tar -czf "dist/${{ matrix.archive }}" agent-exec
           cd dist
           shasum -a 256 "${{ matrix.archive }}" > "${{ matrix.archive }}.sha256"
       - uses: actions/upload-artifact@v4

@@ -6011,6 +6011,77 @@ fn version_flag_prints_version_and_exits_zero() {
     }
 }
 
+#[test]
+#[ignore = "heavy: builds the release binary and packages an archive"]
+fn release_macos_checksum_verifies_after_download() {
+    let tag = format!(
+        "v{}-checksum-test-{}",
+        env!("CARGO_PKG_VERSION"),
+        std::process::id()
+    );
+    let temp = tempfile::tempdir().expect("create temporary release directory");
+    let dist_dir = temp.path().join("dist");
+    let download_dir = temp.path().join("download");
+
+    let tag_output = Command::new("git")
+        .args(["tag", &tag, "HEAD"])
+        .output()
+        .expect("create temporary tag");
+    assert!(
+        tag_output.status.success(),
+        "failed to create temporary tag: {}",
+        String::from_utf8_lossy(&tag_output.stderr)
+    );
+
+    let output = Command::new("scripts/release-macos.sh")
+        .args(["--tag", &tag, "--dist-dir"])
+        .arg(&dist_dir)
+        .output()
+        .expect("run macOS release script");
+    let delete_output = Command::new("git")
+        .args(["tag", "-d", &tag])
+        .output()
+        .expect("delete temporary tag");
+    assert!(
+        delete_output.status.success(),
+        "failed to delete temporary tag: {}",
+        String::from_utf8_lossy(&delete_output.stderr)
+    );
+    assert!(
+        output.status.success(),
+        "macOS release script failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    std::fs::create_dir(&download_dir).expect("create download directory");
+    let target = match std::env::consts::ARCH {
+        "aarch64" => "aarch64-apple-darwin",
+        "x86_64" => "x86_64-apple-darwin",
+        arch => panic!("unsupported macOS architecture: {arch}"),
+    };
+    let archive = format!("agent-exec-{tag}-{target}.tar.gz");
+    let checksum = format!("{archive}.sha256");
+    std::fs::copy(dist_dir.join(&archive), download_dir.join(&archive)).expect("copy archive");
+    std::fs::copy(dist_dir.join(&checksum), download_dir.join(&checksum)).expect("copy checksum");
+
+    let checksum_text =
+        std::fs::read_to_string(download_dir.join(&checksum)).expect("read checksum");
+    assert!(
+        checksum_text.ends_with(&format!("  {archive}\n")),
+        "checksum must name the downloaded archive: {checksum_text}"
+    );
+    let verification = Command::new("shasum")
+        .args(["-a", "256", "-c", &checksum])
+        .current_dir(&download_dir)
+        .output()
+        .expect("verify downloaded checksum");
+    assert!(
+        verification.status.success(),
+        "downloaded checksum verification failed: {}",
+        String::from_utf8_lossy(&verification.stderr)
+    );
+}
+
 // ── prefix-based job ID lookup ─────────────────────────────────────────────────
 
 /// Helper: run a command and return (json, exit_code).

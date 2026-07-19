@@ -35,37 +35,28 @@ Precedence is `--compress` or `--rtk`, `[compression].default`, then the built-i
 
 ### GitHub Releases
 
-Download the archive for your platform from the matching `v*` GitHub Release, verify its checksum, extract it, and place `agent-exec` on your `PATH`.
-
-| Platform | Archive |
-| --- | --- |
-| macOS Intel | `agent-exec-v<VERSION>-x86_64-apple-darwin.tar.gz` |
-| Linux x86_64 (glibc) | `agent-exec-v<VERSION>-x86_64-unknown-linux-gnu.tar.gz` |
-| Windows x86_64 | `agent-exec-v<VERSION>-x86_64-pc-windows-msvc.zip` |
-
-Each archive has a matching `<ARCHIVE>.sha256` checksum file. On macOS or Linux, download both files, then verify and install:
+GitHub Actions builds the Linux x86_64 archive for each `v*` release. Download its matching checksum, then verify and install:
 
 ```bash
-# Replace <ARCHIVE> with the matching archive name.
-shasum -a 256 -c <ARCHIVE>.sha256
+ARCHIVE=agent-exec-v<VERSION>-x86_64-unknown-linux-gnu.tar.gz
+shasum -a 256 -c "$ARCHIVE.sha256"
 mkdir -p ~/.local/bin
-tar -xzf <ARCHIVE>
+tar -xzf "$ARCHIVE"
 mv agent-exec ~/.local/bin/
 agent-exec --version
 agent-exec run -- echo "release-smoke"
 ```
 
-On Windows PowerShell, verify and extract the matching archive:
+macOS artifacts are built locally on the trusted `mini` host after GitHub Actions creates the release. From a checkout at the release tag:
 
-```powershell
-Get-FileHash <ARCHIVE> -Algorithm SHA256
-Expand-Archive <ARCHIVE> -DestinationPath "$HOME\\bin\\agent-exec"
-$env:Path += ";$HOME\\bin\\agent-exec"
-agent-exec --version
-agent-exec run -- echo "release-smoke"
+```bash
+scripts/release-macos.sh --tag v<VERSION>
+scripts/release-macos.sh --tag v<VERSION> --upload
 ```
 
-Only the targets listed above have release artifacts. ARM, 32-bit, musl Linux, and other operating systems are unsupported by GitHub Release archives.
+The first command builds, smoke-tests, packages, and checksums the native architecture archive without network mutation. The second uploads it to the existing GitHub Release. Install the resulting macOS archive with the checksum, extraction, version, and managed-command steps above.
+
+Windows release binaries are not provided. ARM, 32-bit, musl Linux, Windows, and other unsupported targets can use crates.io or a source build.
 
 ### crates.io
 
