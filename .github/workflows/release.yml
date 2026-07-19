@@ -47,14 +47,8 @@ jobs:
         run: |
           mkdir dist
           binary="target/${{ matrix.target }}/release/agent-exec"
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            binary="$binary.exe"
-            cp "$binary" agent-exec.exe
-            7z a "dist/${{ matrix.archive }}" agent-exec.exe
-          else
-            cp "$binary" agent-exec
-            tar -czf "dist/${{ matrix.archive }}" agent-exec
-          fi
+          cp "$binary" agent-exec
+          tar -czf "dist/${{ matrix.archive }}" agent-exec
           cd dist
           shasum -a 256 "${{ matrix.archive }}" > "${{ matrix.archive }}.sha256"
       - uses: actions/upload-artifact@v4
