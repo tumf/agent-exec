@@ -14,3 +14,7 @@
 ## Final Validation
 
 Expected archive gate: `cflx openspec validate split-release-build-hosts --archive-gate`
+
+## Acceptance Notes
+
+Archive-gate evidence is recorded in completed task verification notes and final validation results.

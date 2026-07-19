@@ -40,7 +40,6 @@ jobs:
           AGENT_EXEC_ROOT: ${{ runner.temp }}/agent-exec-smoke
         run: |
           binary="target/${{ matrix.target }}/release/agent-exec"
-          if [ "${{ runner.os }}" = "Windows" ]; then binary="$binary.exe"; fi
           "$binary" --version
           "$binary" run -- echo release-smoke | python3 -c 'import json, sys; response = json.load(sys.stdin); assert response["ok"] is True; assert response["state"] == "exited"; assert response["exit_code"] == 0'
       - name: Package archive and checksum
