@@ -1,17 +1,54 @@
 # agent-exec
 
-A noninteractive job runner for agents. It runs commands as managed background jobs and returns structured responses on `stdout`.
+A durable command runner for AI agents: start a command now, observe it briefly, then retrieve or control the job later.
 
-## Core Concept
+Agent harnesses often need to run tests, builds, and deployments whose duration and output size are unknown. A synchronous subprocess can block the agent, while a detached shell command loses structured status and log discovery. `agent-exec` keeps the process running under a stable `job_id` and returns machine-readable JSON for later `status`, `tail`, `wait`, `kill`, or `restart` calls.
 
-`agent-exec` is designed for agent harnesses that must run commands with uncertain duration or output volume.
+## Try it in 30 seconds
 
-- Start with `agent-exec run -- <command> [args...]`.
-- Keep the default observation settings unless the workload requires different behavior.
-- Do not wrap ordinary commands in `sh -lc`; pass their `argv` after `--`.
-- Treat inline `stdout` and `stderr` as bounded excerpts. Full logs remain available through the paths in the response.
+Prebuilt binaries are available for Linux x86_64 and macOS Apple Silicon. This example downloads the latest release, verifies its SHA-256 checksum, and installs it in `~/.local/bin`:
 
-By default, `run` observes the job for up to 10 seconds. This bounded wait catches many startup failures without blocking indefinitely. `run` is intentionally not launch-only; use `--no-wait` when immediate return is required.
+```bash
+case "$(uname -s)-$(uname -m)" in
+  Linux-x86_64) TARGET=x86_64-unknown-linux-gnu ;;
+  Darwin-arm64) TARGET=aarch64-apple-darwin ;;
+  *) echo "No release binary for this platform" >&2; exit 1 ;;
+esac
+
+VERSION=$(curl -fsSL https://api.github.com/repos/tumf/agent-exec/releases/latest | sed -n 's/.*"tag_name": "v\([^"]*\)".*/\1/p')
+ARCHIVE="agent-exec-v${VERSION}-${TARGET}.tar.gz"
+curl -fLO "https://github.com/tumf/agent-exec/releases/download/v${VERSION}/${ARCHIVE}"
+curl -fLO "https://github.com/tumf/agent-exec/releases/download/v${VERSION}/${ARCHIVE}.sha256"
+shasum -a 256 -c "${ARCHIVE}.sha256"
+mkdir -p ~/.local/bin
+tar -xzf "$ARCHIVE"
+install agent-exec ~/.local/bin/agent-exec
+~/.local/bin/agent-exec --version
+```
+
+Start a long-running command without blocking the caller, save its `job_id`, then retrieve its status, logs, and final result:
+
+```bash
+AGENT_EXEC=~/.local/bin/agent-exec
+JOB=$($AGENT_EXEC run --no-wait -- sh -c 'sleep 2; echo done' | sed -n 's/.*"job_id":"\([^"]*\)".*/\1/p')
+$AGENT_EXEC status "$JOB"
+$AGENT_EXEC tail "$JOB"
+$AGENT_EXEC wait "$JOB"
+```
+
+`run` normally observes a job for up to 10 seconds, which catches many startup failures without blocking indefinitely. Use `--no-wait` when the caller must return immediately. Inline output is bounded; complete logs remain available at the paths in each response.
+
+## Why not `nohup` or a plain subprocess?
+
+| Capability | Plain subprocess | `nohup` | `agent-exec` |
+|---|---:|---:|---:|
+| Return without stopping the command | No | Yes | Yes |
+| Stable job identifier | No | No | Yes |
+| Structured status and exit result | Limited | No | Yes |
+| Discoverable stdout/stderr logs | Caller-managed | Caller-managed | Yes |
+| Later wait, tail, kill, and restart | Caller-managed | Caller-managed | Yes |
+
+Pass ordinary commands as `argv` after `--`. Use an explicit shell only when the workload needs pipelines, redirects, expansion, or compound statements.
 
 ## Output Contract
 
