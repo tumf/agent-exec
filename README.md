@@ -96,12 +96,12 @@ agent-exec kill <TAB>
 
 ## Quick Start
 
-### Short-lived job (`run` だけで結果確認)
+### Short-lived job (get results with `run` alone)
 
-既定では `run` が最大 10 秒待機し、inline output を返します。
+By default, `run` waits up to 10 seconds and returns inline output.
 
-通常はこのデフォルトのまま使ってください。`--no-wait` や `--forever`
-は例外用途です。
+Use this default for normal operation. Reserve `--no-wait` and `--forever`
+for exceptional cases.
 
 ```bash
 # 1. Start job and read inline output
@@ -205,9 +205,9 @@ agent-exec start "$JOB"
   settings to `meta.json` and writes `state.json` with `state="created"`.
   It returns `type="create"` and the `job_id`.
 - `start` reads the persisted definition and spawns the supervisor.
-  既定では最大 10 秒待機し、inline output（head 範囲）を返します。
+  By default, it waits up to 10 seconds and returns inline output from the head range.
 - `restart` reuses an existing job ID and persisted definition, terminating any running process before relaunching.
-- `run` は即時実行の convenience path で、同じ inline output 契約を返します（`--no-wait` で待機無効化可能）。
+- `run` is the convenience path for immediate execution and returns the same inline output contract. Use `--no-wait` to disable waiting.
 
 ### Persisted environment
 
@@ -283,7 +283,7 @@ agent-exec start [OPTIONS] <JOB_ID>
 Launches the job whose definition was persisted by `create`.
 
 `start` accepts wait controls (`--wait`, `--until`, `--forever`, `--no-wait`) and `--max-bytes` for head extraction.
-既定では bare `--wait`（`--wait true` と同義）と `--until 10` 相当で inline output を返し、`--no-wait`（`--wait false --until 0` 相当）で待機をスキップできます。
+By default, it behaves like bare `--wait` (equivalent to `--wait true`) with `--until 10` and returns inline output. Use `--no-wait` (equivalent to `--wait false --until 0`) to skip waiting.
 
 Returns `type="start"` with inline output fields (`stdout`, `stderr`, `stdout_range`, `stderr_range`, `stdout_total_bytes`, `stderr_total_bytes`, `encoding`).
 Only jobs in `created` state can be started; any other state returns `error.code="invalid_state"`.
