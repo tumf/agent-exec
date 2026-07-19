@@ -728,14 +728,66 @@ Then poll `GET http://host.docker.internal:19263/wait/{job_id}` until the job fi
 To allow container access, start the server with `--bind 0.0.0.0:19263` and ensure
 your firewall does **not** expose port 19263 to the public internet.
 
-## MCP observation duration
+## MCP — stdio managed-job server
 
-MCP hosts can configure two independent optional non-negative integer values:
+`agent-exec mcp` exposes the canonical managed-job lifecycle to MCP clients over stdio. It does not require the HTTP `serve` command: jobs use the same persisted metadata, detached supervisor, logs, and response envelopes as the CLI.
+
+Configure an MCP client to launch:
+
+```text
+command: agent-exec
+args: ["mcp"]
+```
+
+Configure the observation values in the MCP server process environment at the same time:
+
+```text
+AGENT_EXEC_MCP_DEFAULT_UNTIL_SECONDS=10
+AGENT_EXEC_MCP_MAX_UNTIL_SECONDS=55
+```
+
+`AGENT_EXEC_MCP_MAX_UNTIL_SECONDS` is the host-timeout safety setting. Set it below the MCP client's tool-request timeout so `run` and `wait` return before the client aborts the request. `AGENT_EXEC_MCP_DEFAULT_UNTIL_SECONDS` independently controls the omitted `until` value; it is capped by the maximum when necessary.
+
+Use a non-default jobs root only when required:
+
+```text
+command: agent-exec
+args: ["--root", "/path/to/jobs", "mcp"]
+```
+
+Hermes Native MCP example:
+
+```yaml
+mcp_servers:
+  agent-exec:
+    command: agent-exec
+    args: ["mcp"]
+```
+
+When MCP is unavailable, use `agent-exec run -- <command>` and the equivalent CLI observation commands.
+
+### MCP tools
+
+| Tool | Parameters | Behavior |
+|------|------------|----------|
+| `run` | `command: string[]`, `cwd?: string`, `env?: object`, `timeout?: integer`, `until?: integer` | Starts a detached managed job. `timeout` and `until` are seconds; omitted `until` defaults to 10 seconds. |
+| `status` | `job_id: string` | Returns the current canonical job status envelope. |
+| `tail` | `job_id: string`, `lines?: integer`, `max_bytes?: integer` | Reads bounded output tails; defaults to 50 lines and 65536 bytes. |
+| `wait` | `job_id: string`, `until?: integer` | Observes for a bounded duration; omitted `until` defaults to 30 seconds. MCP does not expose indefinite waiting. |
+| `kill` | `job_id: string` | Explicitly sends `TERM` using the canonical kill behavior. |
+
+Call `run` first and retain its returned `job_id`. Observe the job later with `status`, `tail`, or bounded `wait`. Closing the MCP transport, reaching a `wait` deadline, receiving no output, or encountering a tool error does not stop the managed job. Call `kill` only for an explicit cancellation request.
+
+The initial MCP `run` surface intentionally excludes CLI-only controls such as stdin, masking, notifications, tags, compression selection, and shell-wrapper configuration.
+
+### MCP observation duration
+
+MCP hosts can configure two independent optional non-negative integer values in the server process environment:
 
 - `AGENT_EXEC_MCP_DEFAULT_UNTIL_SECONDS` selects the shared omitted `until` for MCP `run` and `wait`.
 - `AGENT_EXEC_MCP_MAX_UNTIL_SECONDS` caps every MCP observation duration.
 
-For each call, agent-exec selects `explicit until`, then the configured default, then the legacy default (`run=10`, `wait=30`), and applies `min(requested, maximum)` when a maximum is configured. Over-cap calls proceed with the capped duration; they do not return a tool error or cancel the managed job.
+For each call, agent-exec selects the explicit `until`, then the configured default, then the legacy default (`run=10`, `wait=30`), and applies `min(requested, maximum)` when a maximum is configured. Over-cap calls proceed with the capped duration; they do not return a tool error or cancel the managed job.
 
 For OpenCode with a 60-second request deadline, set `AGENT_EXEC_MCP_MAX_UNTIL_SECONDS=55` and choose `AGENT_EXEC_MCP_DEFAULT_UNTIL_SECONDS` independently, for example `10`. Hermes and other MCP hosts should set both values for their own request deadline and desired omission behavior.
 
