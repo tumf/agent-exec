@@ -20,7 +20,7 @@ rm -f "$START_FILE"
 
 agent-exec status "$JOB_ID" | jq '{job_id, state, exit_code}'
 agent-exec tail "$JOB_ID" --tail-lines 10 | jq '{state, stdout}'
-agent-exec wait "$JOB_ID" --until 5 | jq '{job_id, state, exit_code}'
+agent-exec wait "$JOB_ID" --until 5 | jq '{job_id, state, exit_code, stdout, stderr}'
 agent-exec tail "$JOB_ID" --tail-lines 10 | jq '{state, stdout}'
 ```
 
@@ -30,11 +30,11 @@ Expected progression:
 run returned: state=running job_id=<persistent job id>
 {"job_id":"<same id>","state":"running","exit_code":null}
 {"state":"running","stdout":"started\n"}
-{"job_id":"<same id>","state":"exited","exit_code":0}
+{"job_id":"<same id>","state":"exited","exit_code":0,"stdout":"started\nfinished\n","stderr":""}
 {"state":"exited","stdout":"started\nfinished\n"}
 ```
 
-The exact timing can make `status` report `exited` on a busy machine, but the invariant is the same: every command uses the same persisted `job_id`, and the complete output remains available after the initial observation deadline. `wait` waits for state and exit code; `tail` retrieves the logs.
+The exact timing can make `status` report `exited` on a busy machine, but the invariant is the same: every command uses the same persisted `job_id`, and the complete output remains available after the initial observation deadline. `wait` returns completion state, exit code, and bounded output; use `tail` later for repeated log retrieval.
 
 ## What this replaces
 

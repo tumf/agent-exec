@@ -374,7 +374,14 @@
           "type": "object",
           "required": [
             "job_id",
-            "state"
+            "state",
+            "stdout",
+            "stderr",
+            "encoding",
+            "stdout_range",
+            "stderr_range",
+            "stdout_total_bytes",
+            "stderr_total_bytes"
           ],
           "properties": {
             "type": {
@@ -386,6 +393,7 @@
             "state": {
               "type": "string",
               "enum": [
+                "created",
                 "running",
                 "exited",
                 "killed",
@@ -398,6 +406,44 @@
                 "integer",
                 "null"
               ]
+            },
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "encoding": {
+              "type": "string"
+            },
+            "stdout_range": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "stderr_range": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "stdout_total_bytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "stderr_total_bytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "updated_at": {
+              "type": "string"
             }
           }
         }
@@ -442,8 +488,9 @@
         "state": {
           "type": "string",
           "enum": [
-            "running",
-            "exited",
+                "created",
+                "running",
+                "exited",
             "killed",
             "failed",
             "unknown"

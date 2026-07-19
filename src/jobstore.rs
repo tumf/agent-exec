@@ -433,6 +433,7 @@ impl JobDir {
             pid: None,
             finished_at: None,
             updated_at: crate::run::now_rfc3339_pub(),
+            logs_drained: true,
             windows_job_name: None,
         };
         self.write_state(&state)?;
@@ -472,6 +473,7 @@ impl JobDir {
             pid: Some(pid),
             finished_at: None,
             updated_at: crate::run::now_rfc3339_pub(),
+            logs_drained: true,
             windows_job_name,
         };
         self.write_state(&state)?;
@@ -663,6 +665,7 @@ mod tests {
             pid: Some(12345),
             finished_at: None,
             updated_at: "2024-01-01T00:00:01Z".to_string(),
+            logs_drained: true,
             windows_job_name: None,
         };
         job_dir.write_state(&state).unwrap();
@@ -706,6 +709,7 @@ mod tests {
                 pid: Some(100 + i),
                 finished_at: None,
                 updated_at: format!("2024-01-01T00:00:{:02}Z", i),
+                logs_drained: true,
                 windows_job_name: None,
             };
             job_dir.write_state(&state).unwrap();

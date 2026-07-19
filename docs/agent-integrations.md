@@ -12,7 +12,7 @@ test -x "$AGENT_EXEC"
 agent-exec --version
 ```
 
-After configuration, ask the agent to start a command with `run`, retain the returned `job_id`, and use `status`, `tail`, or `wait` later. An MCP request deadline or disconnected client does not stop the managed job. Use `kill` only for explicit cancellation.
+After configuration, ask the agent to start a command with `run`, retain the returned `job_id`, and use `wait` for completion state and bounded output. Use `tail` later for repeated log retrieval. An MCP request deadline or disconnected client does not stop the managed job. Use `kill` only for explicit cancellation.
 
 ## Claude Code
 
@@ -98,4 +98,4 @@ agent-exec install-skills --claude
 
 Without `--global`, the skill is installed under `.agents/skills` in the current directory, not under `$HOME`. Use `--global` for the global agent-skills directory. The success JSON reports the resolved installation `path`; verify that path before configuring the agent.
 
-The agent can then call `agent-exec run`, retain `job_id`, and continue with `status`, `tail`, `wait`, or `kill`.
+The agent can then call `agent-exec run`, retain `job_id`, use `wait` for completion output, and use `tail` for later or repeated log retrieval.

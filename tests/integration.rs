@@ -407,7 +407,95 @@ fn wait_returns_json_after_job_finishes() {
     let v = h.run(&["wait", "--until", "5", &job_id]);
     assert_envelope(&v, "wait", true);
     assert_eq!(v["job_id"].as_str().unwrap_or(""), job_id);
-    assert!(v.get("state").is_some(), "state missing");
+    assert_eq!(v["state"].as_str(), Some("exited"));
+    assert_eq!(v["exit_code"].as_i64(), Some(0));
+    assert_eq!(v["stdout"].as_str(), Some("done\n"));
+    assert_eq!(v["stderr"].as_str(), Some(""));
+    assert_eq!(v["encoding"].as_str(), Some("utf-8-lossy"));
+    assert_eq!(v["stdout_range"], serde_json::json!([0, 5]));
+    assert_eq!(v["stderr_range"], serde_json::json!([0, 0]));
+    assert_eq!(v["stdout_total_bytes"].as_u64(), Some(5));
+    assert_eq!(v["stderr_total_bytes"].as_u64(), Some(0));
+}
+
+#[test]
+fn wait_bounds_large_output_and_preserves_full_log() {
+    let h = TestHarness::new();
+    let run_v = h.run(&[
+        "run",
+        "--",
+        "sh",
+        "-c",
+        "i=0; while [ $i -lt 70000 ]; do printf x; i=$((i + 1)); done",
+    ]);
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+
+    let wait_v = h.run(&["wait", "--until", "5", &job_id]);
+    assert_envelope(&wait_v, "wait", true);
+    assert_eq!(wait_v["state"].as_str(), Some("exited"));
+    assert_eq!(wait_v["stdout"].as_str().map(str::len), Some(65_536));
+    assert_eq!(wait_v["stdout_range"], serde_json::json!([4_464, 70_000]));
+    assert_eq!(wait_v["stdout_total_bytes"].as_u64(), Some(70_000));
+
+    let tail_v = h.run(&["tail", "--max-bytes", "70000", &job_id]);
+    assert_eq!(tail_v["stdout"].as_str().map(str::len), Some(70_000));
+    assert_eq!(tail_v["stdout_total_bytes"].as_u64(), Some(70_000));
+}
+
+#[test]
+fn wait_returns_output_after_root_process_exits_before_pipe_drain() {
+    let h = TestHarness::new();
+    let run_v = h.run(&[
+        "run",
+        "--",
+        "sh",
+        "-c",
+        "(sleep 1; printf 'late stdout\\n'; printf 'late stderr\\n' >&2) &",
+    ]);
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+
+    let wait_v = h.run(&["wait", "--until", "5", &job_id]);
+    assert_envelope(&wait_v, "wait", true);
+    assert_eq!(wait_v["state"].as_str(), Some("exited"));
+    assert_eq!(wait_v["stdout"].as_str(), Some("late stdout\n"));
+    assert_eq!(wait_v["stderr"].as_str(), Some("late stderr\n"));
+}
+
+#[test]
+fn wait_after_term_returns_drained_output() {
+    let h = TestHarness::new();
+    let run_v = h.run(&[
+        "run",
+        "--",
+        "sh",
+        "-c",
+        r#"trap 'sleep 1; printf "late-after-term\n"; exit 0' TERM; while :; do sleep 1; done"#,
+    ]);
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let _ = h.run(&["kill", "--signal", "TERM", &job_id]);
+    let wait_v = h.run(&["wait", "--until", "5", &job_id]);
+
+    assert_eq!(wait_v["stdout"].as_str(), Some("late-after-term\n"));
+}
+
+#[test]
+fn wait_deadline_does_not_return_terminal_state_before_logs_drain() {
+    let h = TestHarness::new();
+    let run_v = h.run(&[
+        "run",
+        "--",
+        "sh",
+        "-c",
+        r#"(sleep 1; printf 'late stdout\n'; printf 'late stderr\n' >&2) &"#,
+    ]);
+    let job_id = run_v["job_id"].as_str().unwrap().to_string();
+
+    let wait_v = h.run(&["wait", "--until", "1", &job_id]);
+    assert_eq!(wait_v["state"].as_str(), Some("exited"));
+    assert_eq!(wait_v["stdout"].as_str(), Some("late stdout\n"));
+    assert_eq!(wait_v["stderr"].as_str(), Some("late stderr\n"));
 }
 
 #[test]
@@ -2304,6 +2392,72 @@ fn schema_response_has_schema_object() {
         !schema.as_object().unwrap().is_empty(),
         "schema field must not be empty; got: {schema}"
     );
+}
+
+#[test]
+fn schema_validates_actual_wait_responses() {
+    let h = TestHarness::new();
+    let created = h.run(&["create", "--", "echo", "schema-created-wait"]);
+    let created_wait = h.run(&["wait", "--until", "0", created["job_id"].as_str().unwrap()]);
+    assert_eq!(created_wait["state"], "created");
+
+    let running = h.run(&["run", "sleep", "60"]);
+    let deadline_wait = h.run(&["wait", "--until", "0", running["job_id"].as_str().unwrap()]);
+    let completed = h.run(&["run", "echo", "schema-wait"]);
+    let terminal_wait = h.run(&[
+        "wait",
+        "--until",
+        "5",
+        completed["job_id"].as_str().unwrap(),
+    ]);
+    let _ = h.run(&[
+        "kill",
+        "--signal",
+        "KILL",
+        running["job_id"].as_str().unwrap(),
+    ]);
+    let mut schema = run_cmd_with_root(&["schema"], None)["schema"].clone();
+    schema["$ref"] = serde_json::json!("#/definitions/WaitResponse");
+
+    let validator = jsonschema::validator_for(&schema).expect("compile schema");
+    for wait in [created_wait, deadline_wait, terminal_wait] {
+        assert!(
+            validator.validate(&wait).is_ok(),
+            "wait response must satisfy public schema: {wait}"
+        );
+    }
+}
+
+#[test]
+fn schema_wait_response_matches_wait_output_contract() {
+    let v = run_cmd_with_root(&["schema"], None);
+    let wait = &v["schema"]["definitions"]["WaitResponse"]["allOf"][1];
+    let required = wait["required"].as_array().expect("WaitResponse.required");
+    for field in [
+        "job_id",
+        "state",
+        "stdout",
+        "stderr",
+        "encoding",
+        "stdout_range",
+        "stderr_range",
+        "stdout_total_bytes",
+        "stderr_total_bytes",
+    ] {
+        assert!(
+            required.iter().any(|value| value.as_str() == Some(field)),
+            "WaitResponse must require {field}: {wait}"
+        );
+    }
+    let properties = &wait["properties"];
+    assert_eq!(properties["stdout"]["type"], "string");
+    assert_eq!(properties["stderr"]["type"], "string");
+    assert_eq!(properties["encoding"]["type"], "string");
+    assert_eq!(properties["stdout_range"]["minItems"], 2);
+    assert_eq!(properties["stderr_range"]["maxItems"], 2);
+    assert_eq!(properties["stdout_total_bytes"]["minimum"], 0);
+    assert_eq!(properties["stderr_total_bytes"]["minimum"], 0);
+    assert_eq!(properties["updated_at"]["type"], "string");
 }
 
 /// Task 3.2: `schema` response includes `generated_at` field.
@@ -6779,7 +6933,13 @@ fn run_inline_omits_completion_fields_for_long_jobs() {
 #[test]
 fn wait_timeout_returns_progress_hints() {
     let h = TestHarness::new();
-    let run_v = h.run(&["run", "--", "sh", "-c", "sleep 30"]);
+    let run_v = h.run(&[
+        "run",
+        "--",
+        "sh",
+        "-c",
+        "printf 'deadline stdout\\n'; printf 'deadline stderr\\n' >&2; sleep 30",
+    ]);
     assert_envelope(&run_v, "run", true);
     let job_id = run_v["job_id"].as_str().unwrap().to_string();
 
@@ -6802,6 +6962,17 @@ fn wait_timeout_returns_progress_hints() {
         wait_v.get("updated_at").is_some() && wait_v["updated_at"].is_string(),
         "updated_at should be present as string: {wait_v}"
     );
+    assert_eq!(wait_v["stdout"].as_str(), Some("deadline stdout\n"));
+    assert_eq!(wait_v["stderr"].as_str(), Some("deadline stderr\n"));
+    assert_eq!(wait_v["encoding"].as_str(), Some("utf-8-lossy"));
+    assert_eq!(
+        wait_v["stdout_range"],
+        serde_json::json!([0, "deadline stdout\n".len()])
+    );
+    assert_eq!(
+        wait_v["stderr_range"],
+        serde_json::json!([0, "deadline stderr\n".len()])
+    );
 
     // Clean up
     let _ = h.run(&["kill", &job_id]);
@@ -6810,7 +6981,13 @@ fn wait_timeout_returns_progress_hints() {
 #[test]
 fn wait_terminal_returns_progress_hints() {
     let h = TestHarness::new();
-    let run_v = h.run(&["run", "--", "echo", "progress_hints_test"]);
+    let run_v = h.run(&[
+        "run",
+        "--",
+        "sh",
+        "-c",
+        "printf 'progress_hints_test\\n'; printf 'progress_hints_error\\n' >&2",
+    ]);
     assert_envelope(&run_v, "run", true);
     let job_id = run_v["job_id"].as_str().unwrap().to_string();
 
@@ -6832,6 +7009,17 @@ fn wait_terminal_returns_progress_hints() {
     assert!(
         wait_v.get("updated_at").is_some() && wait_v["updated_at"].is_string(),
         "updated_at should be present as string: {wait_v}"
+    );
+    assert_eq!(wait_v["stdout"].as_str(), Some("progress_hints_test\n"));
+    assert_eq!(wait_v["stderr"].as_str(), Some("progress_hints_error\n"));
+    assert_eq!(wait_v["encoding"].as_str(), Some("utf-8-lossy"));
+    assert_eq!(
+        wait_v["stdout_range"],
+        serde_json::json!([0, "progress_hints_test\n".len()])
+    );
+    assert_eq!(
+        wait_v["stderr_range"],
+        serde_json::json!([0, "progress_hints_error\n".len()])
     );
 }
 

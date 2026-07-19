@@ -35,22 +35,27 @@ impl<'a> Default for WaitOpts<'a> {
     }
 }
 
-fn log_file_size(path: &std::path::Path) -> Option<u64> {
-    std::fs::metadata(path).ok().map(|m| m.len())
-}
+const INLINE_OUTPUT_LINES: u64 = 50;
+const INLINE_OUTPUT_MAX_BYTES: u64 = 65_536;
 
 pub fn build_wait_data(job_dir: &JobDir, state: &crate::schema::JobState) -> WaitData {
-    let stdout_total_bytes = log_file_size(&job_dir.stdout_path());
-    let stderr_total_bytes = log_file_size(&job_dir.stderr_path());
-    let updated_at = Some(state.updated_at.clone());
+    let stdout =
+        job_dir.read_tail_metrics("stdout.log", INLINE_OUTPUT_LINES, INLINE_OUTPUT_MAX_BYTES);
+    let stderr =
+        job_dir.read_tail_metrics("stderr.log", INLINE_OUTPUT_LINES, INLINE_OUTPUT_MAX_BYTES);
 
     WaitData {
         job_id: job_dir.job_id.clone(),
         state: state.status().as_str().to_string(),
         exit_code: state.exit_code(),
-        stdout_total_bytes,
-        stderr_total_bytes,
-        updated_at,
+        stdout: stdout.tail,
+        stderr: stderr.tail,
+        encoding: "utf-8-lossy".to_string(),
+        stdout_range: stdout.range,
+        stderr_range: stderr.range,
+        stdout_total_bytes: stdout.observed_bytes,
+        stderr_total_bytes: stderr.observed_bytes,
+        updated_at: Some(state.updated_at.clone()),
     }
 }
 
@@ -75,12 +80,13 @@ pub fn wait_response(opts: WaitOpts) -> Result<Response<WaitData>> {
         let state = job_dir.read_state()?;
         debug!(job_id = %opts.job_id, state = ?state.status(), "wait poll");
 
-        if !state.status().is_non_terminal() {
+        if !state.status().is_non_terminal() && state.logs_drained {
             return Ok(Response::new("wait", build_wait_data(&job_dir, &state)));
         }
 
         if let Some(dl) = deadline
             && std::time::Instant::now() >= dl
+            && state.status().is_non_terminal()
         {
             let mut data = build_wait_data(&job_dir, &state);
             data.exit_code = None;

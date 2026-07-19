@@ -19,7 +19,7 @@ use anyhow::Result;
 use tracing::info;
 
 use crate::jobstore::{InvalidJobState, JobDir, resolve_root};
-use crate::schema::{JobState, JobStateJob, JobStateResult, JobStatus, KillData, Response};
+use crate::schema::{JobStatus, KillData, Response};
 
 /// Options for the `kill` sub-command.
 #[derive(Debug)]
@@ -98,25 +98,6 @@ pub fn execute_inner(opts: KillOpts) -> Result<KillData> {
         send_signal(pid, &signal_upper)?;
 
         info!(job_id = %job_dir.job_id, pid, signal = %signal_upper, "signal sent");
-
-        let now = crate::run::now_rfc3339_pub();
-        let new_state = JobState {
-            job: JobStateJob {
-                id: job_dir.job_id.clone(),
-                status: JobStatus::Killed,
-                started_at: state.started_at().map(|s| s.to_string()),
-            },
-            result: JobStateResult {
-                exit_code: None,
-                signal: Some(signal_upper.clone()),
-                duration_ms: None,
-            },
-            pid: Some(pid),
-            finished_at: Some(now.clone()),
-            updated_at: now,
-            windows_job_name: None,
-        };
-        job_dir.write_state(&new_state)?;
     }
 
     if opts.no_wait {
