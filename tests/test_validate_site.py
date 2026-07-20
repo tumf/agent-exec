@@ -1,5 +1,9 @@
+import html
 import importlib.util
+import os
 from pathlib import Path
+import re
+import subprocess
 import tempfile
 import unittest
 
@@ -21,6 +25,22 @@ class ValidateSiteTests(unittest.TestCase):
 
     def test_validates_repository_site(self):
         self.assertEqual(validate_site.validate(), [])
+
+    def test_quick_start_commands_are_shell_valid(self):
+        quick_start = (Path(__file__).resolve().parents[1] / "site/docs/quick-start.html").read_text(encoding="utf-8")
+        command_block = re.search(r"<pre><code>(.*?)</code></pre>", quick_start, re.DOTALL)
+        self.assertIsNotNone(command_block)
+        commands = html.unescape(command_block.group(1))
+        self.assertNotRegex(commands, r"(?m)^\d+: ")
+        result = subprocess.run(
+            ["sh", "-n"],
+            input=commands,
+            text=True,
+            capture_output=True,
+            env={**os.environ, "PATH": "/usr/bin:/bin"},
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_rejects_invalid_html_contracts(self):
         temporary, root = self.site({

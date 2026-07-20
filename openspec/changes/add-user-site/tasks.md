@@ -58,3 +58,10 @@ Owner: repository maintainer. Decision due: 2026-07-27.
 Archive gate validation is recorded in Final Validation after all implementation tasks complete.
 Public deployment remains documented in Future Work because it requires merging to `main` and GitHub Actions.
 - [x] 出力契約の説明を現行動作に合わせる。`site/docs/output-contracts.html` はserve設定エラーのJSON envelopeとMCP startup errorを区別する。 (verification: integration - `python3 -m unittest tests/test_validate_site.py` passed; behavior verified against `src/serve.rs:55-88`)
+
+## Acceptance #5 Failure Follow-up
+- [x] Quick startのコマンド例から表示上の行番号を除去し、POSIX shell構文の回帰テストを追加する。（verification: integration - `python3 -m unittest tests/test_validate_site.py` passed; `test_quick_start_commands_are_shell_valid` checks the rendered first command block with `sh -n`）
+
+## Future Work
+
+- Public deployment remains pending: 2026-07-20 measurement of `https://tumf.github.io/agent-exec/` returned 404. Merge to `main`, wait for Pages deployment, then record HTTP 200 and the expected title. This requires repository-maintainer access outside this worktree.
