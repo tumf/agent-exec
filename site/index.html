@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Managed command jobs with durable IDs and structured JSON.">
+  <title>agent-exec — durable command jobs for AI agents</title>
+  <link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header"><nav aria-label="Primary"><a class="brand" href="index.html">agent-exec</a><div class="nav-links"><a href="docs/install.html">Install</a><a href="docs/quick-start.html">Quick start</a><a href="docs/lifecycle.html">Lifecycle</a><a href="docs/cli.html">CLI</a><a href="docs/integrations.html">Integrations</a><a href="https://github.com/tumf/agent-exec">GitHub</a></div></nav></header>
+  <main id="main">
+    <section class="hero"><p class="eyebrow">A durable command runner for AI agents</p><h1>Start now. Observe briefly. Reconnect when it matters.</h1><p class="lede">agent-exec runs unknown-duration commands as managed jobs and returns a stable <code>job_id</code> plus structured JSON for status, logs, and control.</p><p class="actions"><a class="button" href="docs/install.html">Install agent-exec</a><a class="text-link" href="docs/quick-start.html">Read the quick start</a></p></section>
+    <section aria-labelledby="workflow"><h2 id="workflow">One call starts work. One ID follows it.</h2><pre><code>JOB=$(agent-exec run --no-wait -- sh -c 'sleep 2; echo done' \
+  | sed -n 's/.*"job_id":"\([^"]*\)".*/\1/p')
+agent-exec wait "$JOB"
+# {"schema_version":"0.1","ok":true,"type":"wait","job_id":"…","state":"exited","exit_code":0,"stdout":"done\n","stderr":"","encoding":"utf-8-lossy","stdout_range":[0,5],"stderr_range":[0,0],"stdout_total_bytes":5,"stderr_total_bytes":0,"updated_at":"2026-07-20T00:00:00Z"}</code></pre><p><code>wait</code> returns the completion state, exit code, and bounded output. Use <code>tail</code> to reread logs later.</p></section>
+    <section aria-labelledby="comparison"><h2 id="comparison">More than a detached shell</h2><div class="table-wrap"><table><thead><tr><th>Capability</th><th>Subprocess</th><th>nohup</th><th>agent-exec</th></tr></thead><tbody><tr><th>Returns early</th><td>No</td><td>Yes</td><td>Yes</td></tr><tr><th>Stable job ID</th><td>No</td><td>No</td><td>Yes</td></tr><tr><th>Structured status and logs</th><td>Limited</td><td>No</td><td>Yes</td></tr><tr><th>Reconnect later</th><td>No</td><td>Manual</td><td>Yes</td></tr></tbody></table></div></section>
+    <section class="cards" aria-label="Product details"><article><h2>Release platforms</h2><p>Prebuilt binaries support Linux x86_64 and macOS Apple Silicon. Windows release binaries are not provided.</p><a href="docs/install.html">Installation details</a></article><article><h2>Agent integrations</h2><p>Use the same lifecycle through the CLI, MCP stdio server, or HTTP server.</p><a href="docs/integrations.html">Connect an agent</a></article><article><h2>Predictable output</h2><p>Response-producing CLI commands emit one JSON object on stdout. Diagnostics stay on stderr.</p><a href="docs/output-contracts.html">Output contracts</a></article></section>
+    <section class="cta" aria-labelledby="cta"><h2 id="cta">Keep long-running work observable.</h2><p><a class="button" href="docs/install.html">Get started</a> <a class="text-link" href="https://github.com/tumf/agent-exec/releases/latest">Latest release</a></p></section>
+  </main>
+  <footer><a href="docs/troubleshooting.html">Troubleshooting</a><a href="docs/release-verification.html">Release verification</a><a href="https://github.com/tumf/agent-exec">GitHub</a></footer>
+</body>
+</html>
