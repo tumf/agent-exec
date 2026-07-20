@@ -56,6 +56,7 @@ class ValidateSiteTests(unittest.TestCase):
         self.assertTrue(any("broken link" in error for error in errors))
         self.assertTrue(any("image missing alt" in error for error in errors))
         self.assertTrue(any("duplicate id" in error for error in errors))
+        self.assertTrue(any("missing html language" in error for error in errors))
 
     def test_rejects_missing_landmarks(self):
         temporary, root = self.site({"index.html": "<html><head><title>Page</title></head><body><main></main></body></html>"})

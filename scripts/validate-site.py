@@ -18,10 +18,13 @@ class PageParser(HTMLParser):
         self.ids, self.links, self.assets, self.images = set(), [], [], []
         self.duplicate_ids, self.main_count, self.landmarks = [], 0, set()
         self.title = None
+        self.html_lang = None
         self._in_title = False
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
+        if tag == "html":
+            self.html_lang = attrs.get("lang")
         if tag == "title":
             self._in_title = True
         if tag == "main":
@@ -77,6 +80,8 @@ def validate(root=ROOT):
         relative = page.relative_to(root.resolve())
         if not data.title or not data.title.strip():
             errors.append(f"missing title: {relative}")
+        if not data.html_lang or not data.html_lang.strip():
+            errors.append(f"missing html language: {relative}")
         if data.main_count != 1:
             errors.append(f"expected one main landmark: {relative}")
         if not {"header", "footer"}.issubset(data.landmarks):
