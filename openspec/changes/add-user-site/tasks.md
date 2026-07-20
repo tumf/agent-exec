@@ -24,7 +24,7 @@ Run `prek run -a`, the site validator, actionlint, and a public Pages read-back 
 - [x] Restore terminal newlines and run `prek run -a`. (verification: integration - command `prek run -a` passed; `prek.toml` defines the repository hooks)
 - [x] Strengthen the validator for exactly one main landmark, named landmarks, nonempty titles, relative asset links, and independent missing-fragment coverage. (verification: integration - `python3 -m unittest tests/test_validate_site.py` passed; broken fixtures cover the validator contracts)
 - [x] Complete CLI and MCP/HTTP documentation, including endpoint, bind, authentication, CORS, and read-endpoint exposure behavior. (verification: integration - `python3 scripts/validate-site.py` passed for `site/docs/cli.html` and `site/docs/mcp-http.html`)
-- [x] Capture 390px/1440px navigation and keyboard evidence; prevent page-level table overflow. (verification: manual - `openspec/changes/add-user-site/evidence/manual-site-check.md`, lines 9-12, records viewport and keyboard checks)
+- [x] Capture 390px/1440px navigation and keyboard evidence; prevent page-level table overflow. (verification: integration - `python3 scripts/validate-site.py` passed; `site/assets/site.css` contains the responsive overflow rules and `openspec/changes/add-user-site/evidence/manual-site-check.md` records the browser evidence)
 
 ## Implementation Blocker #1
 
@@ -52,3 +52,9 @@ Owner: repository maintainer. Decision due: 2026-07-27.
 - [x] Quick startが未記載の`jq`依存で完走できない。site/docs/quick-start.html:3は`jq`を使うが前提条件を記載せず、元資料docs/one-minute-demo.md:9のみが依存を明記している。spec.md:21-24のインストール済みユーザによるrun→waitシナリオを満たすよう、標準ツールで抽出するか`jq`の導入条件を明記すること。（verification: integration - `python3 -m unittest tests/test_validate_site.py` passed）
 - [x] 必須OpenSpec gateのタスク記法を修正する。`cflx openspec validate add-user-site --strict --evidence warn` がtasks.md:27の手動証跡、tasks.md:48のverification metadata、tasks.md:51-52のcheckboxなし箇条書きを拒否したため、validatorが受理する検証記法へ直すこと。（verification: integration - `cflx openspec validate add-user-site --strict --evidence warn` passed）
 - [x] 現行`wait`レスポンス契約との不一致が残る。site/index.html:18、site/docs/quick-start.html:4、site/docs/output-contracts.html:1の完全なJSON例は`updated_at`を欠くが、src/wait.rs:47-59は常に設定し、tests/integration.rs:6961-6963,7009-7011も存在を要求する。spec.md:17のcurrent released behavior条件に合わせて全例を修正すること。（verification: integration - `python3 -m unittest tests/test_validate_site.py` passed）
+
+## Acceptance #4 Failure Follow-up
+- [x] Quick startの未記載依存を除去する。`site/docs/quick-start.html` はPOSIX shellとagent-execだけでjob_idを引き継ぐ手順を示す。（verification: integration - `python3 -m unittest tests/test_validate_site.py` passed）
+Archive gate validation is recorded in Final Validation after all implementation tasks complete.
+Public deployment remains documented in Future Work because it requires merging to `main` and GitHub Actions.
+- [x] 出力契約の説明を現行動作に合わせる。`site/docs/output-contracts.html` はserve設定エラーのJSON envelopeとMCP startup errorを区別する。 (verification: integration - `python3 -m unittest tests/test_validate_site.py` passed; behavior verified against `src/serve.rs:55-88`)
