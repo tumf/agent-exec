@@ -1,4 +1,38 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent integrations — agent-exec</title><link rel="stylesheet" href="../assets/site.css"></head><body><a class="skip-link" href="#main">Skip to content</a><header class="site-header"><nav aria-label="Primary"><a class="brand" href="../index.html">agent-exec</a><a href="index.html">Docs</a></nav></header><main id="main"><h1>Agent integrations</h1><p>Resolve an absolute executable path because MCP clients may not inherit an interactive shell PATH.</p><pre><code>AGENT_EXEC="$(command -v agent-exec)"
-test -x "$AGENT_EXEC"</code></pre><h2>Claude Code</h2><pre><code>claude mcp add --scope local agent-exec -- "$AGENT_EXEC" mcp</code></pre><h2>Codex CLI</h2><pre><code>codex mcp add agent-exec -- "$AGENT_EXEC" mcp</code></pre><h2>OpenCode</h2><pre><code>{
-  "mcp": {"agent-exec": {"type":"local", "command":["/absolute/path/to/agent-exec", "mcp"], "enabled":true}}
-}</code></pre><h2>Hermes Agent</h2><pre><code>hermes mcp add agent-exec --command "$AGENT_EXEC" --args mcp</code></pre><p>Without MCP, install the embedded CLI skill with <code>agent-exec install-skills</code>.</p></main><footer><a href="mcp-http.html">MCP and HTTP</a><a href="../index.html">Home</a></footer></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="description" content="Connect agent-exec to Claude Code, Codex CLI, OpenCode, or Hermes Agent over MCP.">
+  <title>Agent integrations — agent-exec</title>
+  <link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header"><nav class="site-nav" aria-label="Primary"><a class="brand" href="../index.html">agent-exec</a><div class="nav-links"><a href="index.html">Docs</a><a href="install.html">Install</a><a href="lifecycle.html">Lifecycle</a><a href="cli.html">CLI</a><a aria-current="page" href="integrations.html">Integrations</a></div><div class="nav-actions"><a href="https://github.com/tumf/agent-exec">GitHub</a><a class="nav-cta" href="quick-start.html">Quick start</a></div></nav></header>
+  <main id="main" class="docs-layout">
+    <aside class="docs-sidebar"><nav aria-label="Documentation"><ul><li><a href="index.html">Overview</a></li><li><a href="install.html">Install</a></li><li><a href="quick-start.html">Quick start</a></li><li><a href="lifecycle.html">Lifecycle</a></li><li><a href="cli.html">CLI</a></li><li><a href="mcp-http.html">MCP + HTTP</a></li><li><a aria-current="page" href="integrations.html">Integrations</a></li><li><a href="output-contracts.html">Output</a></li><li><a href="troubleshooting.html">Troubleshooting</a></li><li><a href="release-verification.html">Verification</a></li></ul></nav></aside>
+    <article class="doc-content">
+      <h1>Agent integrations</h1>
+      <p>Resolve an absolute executable path first. MCP clients may not inherit your interactive shell <code>PATH</code>.</p>
+      <pre><code>AGENT_EXEC="$(command -v agent-exec)"
+test -x "$AGENT_EXEC"</code></pre>
+      <h2>Claude Code</h2><pre><code>claude mcp add --scope local agent-exec -- "$AGENT_EXEC" mcp</code></pre>
+      <h2>Codex CLI</h2><pre><code>codex mcp add agent-exec -- "$AGENT_EXEC" mcp</code></pre>
+      <h2>OpenCode</h2><pre><code>{
+  "mcp": {
+    "agent-exec": {
+      "type": "local",
+      "command": ["/absolute/path/to/agent-exec", "mcp"],
+      "enabled": true
+    }
+  }
+}</code></pre>
+      <h2>Hermes Agent</h2><pre><code>hermes mcp add agent-exec --command "$AGENT_EXEC" --args mcp</code></pre>
+      <h2>CLI skill</h2><p>Without MCP, install the embedded CLI skill with <code>agent-exec install-skills</code>.</p>
+      <p><a class="text-link" href="mcp-http.html">Review MCP and HTTP behavior</a></p>
+    </article>
+  </main>
+  <footer class="site-footer"><p><a class="brand" href="../index.html">agent-exec</a> · Agent integrations.</p><nav aria-label="Footer"><a href="mcp-http.html">MCP + HTTP</a><a href="troubleshooting.html">Troubleshooting</a></nav></footer>
+</body>
+</html>

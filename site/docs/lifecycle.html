@@ -1,1 +1,37 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Job lifecycle — agent-exec</title><link rel="stylesheet" href="../assets/site.css"></head><body><a class="skip-link" href="#main">Skip to content</a><header class="site-header"><nav aria-label="Primary"><a class="brand" href="../index.html">agent-exec</a><a href="index.html">Docs</a></nav></header><main id="main"><h1>Job lifecycle</h1><p><code>run</code> creates a persisted job and normally observes it briefly. The returned <code>job_id</code> identifies the same job for <code>status</code>, <code>wait</code>, <code>tail</code>, <code>kill</code>, and <code>restart</code>.</p><ol><li>Run a command and retain the <code>job_id</code>.</li><li>Use <code>status</code> for current state.</li><li>Use <code>wait</code> for a bounded observation window and terminal exit code when available.</li><li>Use <code>tail</code> for bounded, repeatable log excerpts.</li><li>Use <code>kill</code> only to explicitly cancel a running job.</li></ol><p>Initial observation ending does not stop the managed command.</p></main><footer><a href="quick-start.html">Quick start</a><a href="../index.html">Home</a></footer></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="description" content="Understand the durable agent-exec job lifecycle and when to use status, wait, tail, kill, or restart.">
+  <title>Job lifecycle — agent-exec</title>
+  <link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header"><nav class="site-nav" aria-label="Primary"><a class="brand" href="../index.html">agent-exec</a><div class="nav-links"><a href="index.html">Docs</a><a href="install.html">Install</a><a aria-current="page" href="lifecycle.html">Lifecycle</a><a href="cli.html">CLI</a><a href="integrations.html">Integrations</a></div><div class="nav-actions"><a href="https://github.com/tumf/agent-exec">GitHub</a><a class="nav-cta" href="quick-start.html">Quick start</a></div></nav></header>
+  <main id="main" class="docs-layout">
+    <aside class="docs-sidebar"><nav aria-label="Documentation"><ul><li><a href="index.html">Overview</a></li><li><a href="install.html">Install</a></li><li><a href="quick-start.html">Quick start</a></li><li><a aria-current="page" href="lifecycle.html">Lifecycle</a></li><li><a href="cli.html">CLI</a></li><li><a href="mcp-http.html">MCP + HTTP</a></li><li><a href="integrations.html">Integrations</a></li><li><a href="output-contracts.html">Output</a></li><li><a href="troubleshooting.html">Troubleshooting</a></li><li><a href="release-verification.html">Verification</a></li></ul></nav></aside>
+    <article class="doc-content">
+      <h1>Job lifecycle</h1>
+      <p><code>run</code> creates a persisted job and normally observes it briefly. The returned <code>job_id</code> identifies that same job for every later operation.</p>
+      <ol>
+        <li><strong>Start.</strong> Run a command and retain the <code>job_id</code>.</li>
+        <li><strong>Inspect.</strong> Use <code>status</code> for current state without waiting.</li>
+        <li><strong>Observe.</strong> Use <code>wait</code> for a bounded observation window and the terminal exit code when available.</li>
+        <li><strong>Read.</strong> Use <code>tail</code> for bounded, repeatable log excerpts and retained log paths.</li>
+        <li><strong>Control.</strong> Use <code>kill</code> only to explicitly cancel a running job, or <code>restart</code> to start a new execution from its definition.</li>
+      </ol>
+      <p class="notice">An observation deadline ending does not stop the managed command.</p>
+      <h2>Default observation</h2>
+      <p><code>run</code> waits for up to 10 seconds by default. This catches many immediate startup failures in one agent turn. Use <code>--no-wait</code> when the caller must return immediately.</p>
+      <h2>Reconnect later</h2>
+      <pre><code>agent-exec status "$JOB_ID"
+agent-exec wait "$JOB_ID"
+agent-exec tail "$JOB_ID"</code></pre>
+      <p><a class="text-link" href="cli.html">Review every CLI command</a></p>
+    </article>
+  </main>
+  <footer class="site-footer"><p><a class="brand" href="../index.html">agent-exec</a> · Job lifecycle.</p><nav aria-label="Footer"><a href="quick-start.html">Quick start</a><a href="cli.html">CLI</a></nav></footer>
+</body>
+</html>

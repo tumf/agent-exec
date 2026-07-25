@@ -1,1 +1,34 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Release verification — agent-exec</title><link rel="stylesheet" href="../assets/site.css"></head><body><a class="skip-link" href="#main">Skip to content</a><header class="site-header"><nav aria-label="Primary"><a class="brand" href="../index.html">agent-exec</a><a href="index.html">Docs</a></nav></header><main id="main"><h1>Release verification</h1><ol><li>Download the release archive and matching <code>.sha256</code> file.</li><li>Verify it before installation: <code>shasum -a 256 -c "$ARCHIVE.sha256"</code>.</li><li>Extract and run <code>agent-exec --version</code>.</li><li>Smoke test managed execution: <code>agent-exec run -- echo release-smoke</code>.</li></ol><p>GitHub Actions builds Linux x86_64 archives for version tags. macOS artifacts are built and packaged on the trusted macOS host for the release tag.</p></main><footer><a href="install.html">Installation</a><a href="../index.html">Home</a></footer></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="description" content="Verify an agent-exec release checksum, binary version, and managed-command behavior before use.">
+  <title>Release verification — agent-exec</title>
+  <link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header"><nav class="site-nav" aria-label="Primary"><a class="brand" href="../index.html">agent-exec</a><div class="nav-links"><a href="index.html">Docs</a><a href="install.html">Install</a><a href="lifecycle.html">Lifecycle</a><a href="cli.html">CLI</a><a href="integrations.html">Integrations</a></div><div class="nav-actions"><a href="https://github.com/tumf/agent-exec">GitHub</a><a class="nav-cta" href="quick-start.html">Quick start</a></div></nav></header>
+  <main id="main" class="docs-layout">
+    <aside class="docs-sidebar"><nav aria-label="Documentation"><ul><li><a href="index.html">Overview</a></li><li><a href="install.html">Install</a></li><li><a href="quick-start.html">Quick start</a></li><li><a href="lifecycle.html">Lifecycle</a></li><li><a href="cli.html">CLI</a></li><li><a href="mcp-http.html">MCP + HTTP</a></li><li><a href="integrations.html">Integrations</a></li><li><a href="output-contracts.html">Output</a></li><li><a href="troubleshooting.html">Troubleshooting</a></li><li><a aria-current="page" href="release-verification.html">Verification</a></li></ul></nav></aside>
+    <article class="doc-content">
+      <h1>Release verification</h1>
+      <p>Verify the downloaded archive before installing it, then test both the binary identity and one managed command.</p>
+      <ol>
+        <li>Download the release archive and its matching <code>.sha256</code> file.</li>
+        <li>Verify it before installation.</li>
+        <li>Extract the archive and check the binary version.</li>
+        <li>Smoke-test managed execution.</li>
+      </ol>
+      <pre><code>shasum -a 256 -c "$ARCHIVE.sha256"
+agent-exec --version
+agent-exec run -- echo release-smoke</code></pre>
+      <h2>Build provenance</h2>
+      <p>GitHub Actions builds Linux x86_64 archives for version tags. macOS artifacts are built and packaged on the trusted macOS host for the release tag.</p>
+      <p><a class="text-link" href="https://github.com/tumf/agent-exec/releases/latest">Open the latest release</a></p>
+    </article>
+  </main>
+  <footer class="site-footer"><p><a class="brand" href="../index.html">agent-exec</a> · Release verification.</p><nav aria-label="Footer"><a href="install.html">Install</a><a href="https://github.com/tumf/agent-exec/releases/latest">Latest release</a></nav></footer>
+</body>
+</html>

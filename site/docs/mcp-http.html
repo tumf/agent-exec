@@ -2,36 +2,35 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="description" content="Use the agent-exec MCP stdio tools or loopback HTTP server with documented authentication and response contracts.">
   <title>MCP and HTTP — agent-exec</title>
   <link rel="stylesheet" href="../assets/site.css">
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
-  <header class="site-header"><nav aria-label="Primary"><a class="brand" href="../index.html">agent-exec</a><a href="index.html">Docs</a></nav></header>
-  <main id="main">
-    <h1>MCP and HTTP</h1>
-    <h2>MCP stdio</h2>
-    <p><code>agent-exec mcp</code> exposes <code>run</code>, <code>status</code>, <code>tail</code>, <code>wait</code>, and <code>kill</code>. A disconnected client does not stop the managed job; reconnect with its <code>job_id</code>.</p>
-    <pre><code>AGENT_EXEC="$(command -v agent-exec)"
+  <header class="site-header"><nav class="site-nav" aria-label="Primary"><a class="brand" href="../index.html">agent-exec</a><div class="nav-links"><a href="index.html">Docs</a><a href="install.html">Install</a><a href="lifecycle.html">Lifecycle</a><a href="cli.html">CLI</a><a href="integrations.html">Integrations</a></div><div class="nav-actions"><a href="https://github.com/tumf/agent-exec">GitHub</a><a class="nav-cta" href="quick-start.html">Quick start</a></div></nav></header>
+  <main id="main" class="docs-layout">
+    <aside class="docs-sidebar"><nav aria-label="Documentation"><ul><li><a href="index.html">Overview</a></li><li><a href="install.html">Install</a></li><li><a href="quick-start.html">Quick start</a></li><li><a href="lifecycle.html">Lifecycle</a></li><li><a href="cli.html">CLI</a></li><li><a aria-current="page" href="mcp-http.html">MCP + HTTP</a></li><li><a href="integrations.html">Integrations</a></li><li><a href="output-contracts.html">Output</a></li><li><a href="troubleshooting.html">Troubleshooting</a></li><li><a href="release-verification.html">Verification</a></li></ul></nav></aside>
+    <article class="doc-content">
+      <h1>MCP and HTTP</h1>
+      <p>The same managed-job lifecycle is available over stdio MCP and a local HTTP server. A disconnected client does not stop the job; reconnect with its <code>job_id</code>.</p>
+      <h2>MCP stdio</h2>
+      <p><code>agent-exec mcp</code> exposes <code>run</code>, <code>status</code>, <code>tail</code>, <code>wait</code>, and <code>kill</code>.</p>
+      <pre><code>AGENT_EXEC="$(command -v agent-exec)"
 "$AGENT_EXEC" mcp</code></pre>
-    <h2>HTTP server</h2>
-    <p><code>agent-exec serve</code> binds to <code>127.0.0.1:19263</code> by default. <code>--port</code> changes only the loopback port. A non-loopback <code>--bind</code> requires <code>--insecure</code> and a nonempty <code>AGENT_EXEC_SERVE_TOKEN</code>.</p>
-    <p>The token uses <code>Authorization: Bearer</code> authentication only for <code>POST /exec</code> and <code>POST /kill/{id}</code>. It does not protect read endpoints, so keep the default loopback bind or add a firewall, private network, or authenticating reverse proxy. Do not expose the server directly to the public internet.</p>
-    <p><code>--allow-origin</code> permits one explicit CORS origin. The wildcard <code>*</code> is rejected.</p>
-    <div class="table-wrap"><table><thead><tr><th>Method</th><th>Endpoint</th><th>Equivalent</th></tr></thead><tbody>
-      <tr><td>GET</td><td><code>/health</code></td><td>Health envelope</td></tr>
-      <tr><td>POST</td><td><code>/exec</code></td><td><code>run</code></td></tr>
-      <tr><td>GET</td><td><code>/status/{id}</code></td><td><code>status</code></td></tr>
-      <tr><td>GET</td><td><code>/tail/{id}</code></td><td><code>tail</code></td></tr>
-      <tr><td>GET</td><td><code>/wait/{id}</code></td><td><code>wait --forever</code></td></tr>
-      <tr><td>POST</td><td><code>/kill/{id}</code></td><td><code>kill</code></td></tr>
-    </tbody></table></div>
-    <p>Documented handler responses use the CLI <code>schema_version</code>, <code>ok</code>, and <code>type</code> envelope. Router-level unmatched paths and methods are outside this response contract. <code>POST /exec</code> requires a nonempty <code>command</code> array of strings. Optional fields are <code>cwd</code> (string), <code>env</code> (string-to-string object), <code>timeout</code> (seconds), <code>wait</code> (default <code>true</code>), <code>until</code> (default <code>10</code>), and <code>max_bytes</code> (default <code>65536</code>). Unknown fields are rejected.</p>
-    <pre><code>curl -X POST http://127.0.0.1:19263/exec \
+      <h2>HTTP server</h2>
+      <p><code>agent-exec serve</code> binds to <code>127.0.0.1:19263</code> by default. <code>--port</code> changes only the loopback port. A non-loopback <code>--bind</code> requires <code>--insecure</code> and a nonempty <code>AGENT_EXEC_SERVE_TOKEN</code>.</p>
+      <p class="notice">Bearer authentication protects only <code>POST /exec</code> and <code>POST /kill/{id}</code>. Read endpoints remain unprotected. Keep the default loopback bind or add a private network, firewall, or authenticating reverse proxy. Do not expose the server directly to the public internet.</p>
+      <p><code>--allow-origin</code> permits one explicit CORS origin. The wildcard <code>*</code> is rejected.</p>
+      <div class="table-wrap"><table><thead><tr><th scope="col">Method</th><th scope="col">Endpoint</th><th scope="col">Equivalent</th></tr></thead><tbody><tr><td>GET</td><td><code>/health</code></td><td>Health envelope</td></tr><tr><td>POST</td><td><code>/exec</code></td><td><code>run</code></td></tr><tr><td>GET</td><td><code>/status/{id}</code></td><td><code>status</code></td></tr><tr><td>GET</td><td><code>/tail/{id}</code></td><td><code>tail</code></td></tr><tr><td>GET</td><td><code>/wait/{id}</code></td><td><code>wait --forever</code></td></tr><tr><td>POST</td><td><code>/kill/{id}</code></td><td><code>kill</code></td></tr></tbody></table></div>
+      <h2>Start one HTTP job</h2>
+      <pre><code>curl -X POST http://127.0.0.1:19263/exec \
   -H 'Content-Type: application/json' \
   -d '{"command":["sh","-c","echo hello"]}'</code></pre>
+      <p>Documented handler responses use the CLI <code>schema_version</code>, <code>ok</code>, and <code>type</code> envelope. <code>POST /exec</code> requires a nonempty <code>command</code> array of strings. Optional fields are <code>cwd</code>, <code>env</code>, <code>timeout</code>, <code>wait</code>, <code>until</code>, and <code>max_bytes</code>. Unknown fields are rejected.</p>
+    </article>
   </main>
-  <footer><a href="integrations.html">Integrations</a><a href="../index.html">Home</a></footer>
+  <footer class="site-footer"><p><a class="brand" href="../index.html">agent-exec</a> · MCP and HTTP.</p><nav aria-label="Footer"><a href="integrations.html">Integrations</a><a href="output-contracts.html">Output contract</a></nav></footer>
 </body>
 </html>

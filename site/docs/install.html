@@ -1,13 +1,43 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Installation — agent-exec</title><link rel="stylesheet" href="../assets/site.css"></head><body><a class="skip-link" href="#main">Skip to content</a><header class="site-header"><nav aria-label="Primary"><a class="brand" href="../index.html">agent-exec</a><div class="nav-links"><a href="index.html">Docs</a><a href="quick-start.html">Quick start</a><a href="../index.html">Home</a></div></nav></header><main id="main"><h1>Installation</h1><p>Prebuilt binaries support Linux x86_64 and macOS Apple Silicon. Windows release binaries are not provided.</p><h2>Latest release</h2><pre><code>case "$(uname -s)-$(uname -m)" in
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="description" content="Install agent-exec from a verified release binary, crates.io, or source.">
+  <title>Installation — agent-exec</title>
+  <link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header"><nav class="site-nav" aria-label="Primary"><a class="brand" href="../index.html">agent-exec</a><div class="nav-links"><a href="index.html">Docs</a><a aria-current="page" href="install.html">Install</a><a href="lifecycle.html">Lifecycle</a><a href="cli.html">CLI</a><a href="integrations.html">Integrations</a></div><div class="nav-actions"><a href="https://github.com/tumf/agent-exec">GitHub</a><a class="nav-cta" href="quick-start.html">Quick start</a></div></nav></header>
+  <main id="main" class="docs-layout">
+    <aside class="docs-sidebar"><nav aria-label="Documentation"><ul><li><a href="index.html">Overview</a></li><li><a aria-current="page" href="install.html">Install</a></li><li><a href="quick-start.html">Quick start</a></li><li><a href="lifecycle.html">Lifecycle</a></li><li><a href="cli.html">CLI</a></li><li><a href="mcp-http.html">MCP + HTTP</a></li><li><a href="integrations.html">Integrations</a></li><li><a href="output-contracts.html">Output</a></li><li><a href="troubleshooting.html">Troubleshooting</a></li><li><a href="release-verification.html">Verification</a></li></ul></nav></aside>
+    <article class="doc-content">
+      <h1>Installation</h1>
+      <p>Prebuilt binaries support Linux x86_64 and macOS Apple Silicon. Windows release binaries are not provided.</p>
+      <h2>Install the latest release</h2>
+      <pre><code>case "$(uname -s)-$(uname -m)" in
   Linux-x86_64) TARGET=x86_64-unknown-linux-gnu ;;
   Darwin-arm64) TARGET=aarch64-apple-darwin ;;
-  *) echo "No release binary for this platform" >&2; exit 1 ;;
+  *) echo "No release binary for this platform" &gt;&amp;2; exit 1 ;;
 esac
+
 VERSION=$(curl -fsSL https://api.github.com/repos/tumf/agent-exec/releases/latest | sed -n 's/.*"tag_name": "v\([^"]*\)".*/\1/p')
 ARCHIVE="agent-exec-v${VERSION}-${TARGET}.tar.gz"
 curl -fLO "https://github.com/tumf/agent-exec/releases/download/v${VERSION}/${ARCHIVE}"
 curl -fLO "https://github.com/tumf/agent-exec/releases/download/v${VERSION}/${ARCHIVE}.sha256"
 shasum -a 256 -c "${ARCHIVE}.sha256"
-mkdir -p ~/.local/bin && tar -xzf "$ARCHIVE"
+mkdir -p ~/.local/bin &amp;&amp; tar -xzf "$ARCHIVE"
 install agent-exec ~/.local/bin/agent-exec
-~/.local/bin/agent-exec --version</code></pre><h2>Other targets</h2><p>Install from crates.io with <code>cargo install agent-exec --locked</code>, or build from a checkout with <code>cargo install --path . --locked</code>.</p></main><footer><a href="quick-start.html">Quick start</a><a href="../index.html">Home</a></footer></body></html>
+~/.local/bin/agent-exec --version</code></pre>
+      <p class="notice">Verify the matching <code>.sha256</code> file before installing the binary.</p>
+      <h2>Install with Cargo</h2>
+      <p>For other targets, install the published crate with <code>cargo install agent-exec --locked</code>.</p>
+      <h2>Build from a checkout</h2>
+      <p>From the repository root, run <code>cargo install --path . --locked</code>.</p>
+      <p><a class="text-link" href="quick-start.html">Run your first managed job</a></p>
+    </article>
+  </main>
+  <footer class="site-footer"><p><a class="brand" href="../index.html">agent-exec</a> · Installation.</p><nav aria-label="Footer"><a href="quick-start.html">Quick start</a><a href="release-verification.html">Verify releases</a></nav></footer>
+</body>
+</html>

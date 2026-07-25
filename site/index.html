@@ -2,27 +2,72 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Run unknown-duration commands as durable jobs for AI agents. Reconnect by job_id for status, logs, waiting, or control — all as structured JSON.">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="description" content="Run unknown-duration commands as durable jobs for AI agents. Catch startup failures, reconnect by job_id, and read structured JSON output.">
   <title>agent-exec — durable command jobs for AI agents</title>
   <link rel="stylesheet" href="assets/site.css">
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
-  <header class="site-header"><nav aria-label="Primary"><a class="brand" href="index.html">agent-exec</a><div class="nav-links"><a href="docs/install.html">Install</a><a href="docs/quick-start.html">Quick start</a><a href="docs/lifecycle.html">Lifecycle</a><a href="docs/cli.html">CLI</a><a href="docs/integrations.html">Integrations</a><a href="https://github.com/tumf/agent-exec">GitHub</a></div></nav></header>
+  <header class="site-header">
+    <nav class="site-nav" aria-label="Primary">
+      <a class="brand" href="index.html">agent-exec</a>
+      <div class="nav-links"><a href="docs/index.html">Docs</a><a href="docs/install.html">Install</a><a href="docs/lifecycle.html">Lifecycle</a><a href="docs/cli.html">CLI</a><a href="docs/integrations.html">Integrations</a></div>
+      <div class="nav-actions"><a href="https://github.com/tumf/agent-exec">GitHub</a><a class="nav-cta" href="docs/quick-start.html">Quick start</a></div>
+    </nav>
+  </header>
   <main id="main">
-    <section class="hero"><p class="eyebrow">Durable command jobs for AI agents</p><h1>Run long commands as jobs. Reconnect by <code>job_id</code>.</h1><p class="lede">agent-exec starts unknown-duration commands as managed jobs and returns a stable <code>job_id</code>. Check <code>status</code>, reread logs with <code>tail</code>, block with <code>wait</code>, or <code>kill</code> — each as one structured JSON object.</p><p class="actions"><a class="button" href="docs/install.html">Install agent-exec</a><a class="text-link" href="docs/quick-start.html">Quick start</a></p><p class="hero-meta">Prebuilt binaries: Linux x86_64 · macOS Apple Silicon · <a href="https://github.com/tumf/agent-exec/releases/latest">Latest release on GitHub</a></p></section>
-    <section aria-labelledby="workflow"><h2 id="workflow">Start once. Reconnect with the job_id.</h2><pre><code># 1. Start — returns a job_id immediately
-JOB=$(agent-exec run --no-wait -- sh -c 'sleep 2; echo done' \
-  | sed -n 's/.*"job_id":"\([^"]*\)".*/\1/p')
+    <section class="hero">
+      <div class="hero-copy">
+        <h1>Run it now. Reconnect when it finishes.</h1>
+        <p class="lede">agent-exec turns unknown-duration commands into durable jobs. It watches the risky first seconds, returns one JSON response, and keeps the process available through a stable <code>job_id</code>.</p>
+        <p class="actions"><a class="button" href="docs/install.html">Install agent-exec</a><a class="text-link" href="docs/quick-start.html">Run your first job</a></p>
+        <p class="hero-meta">Prebuilt for Linux x86_64 and macOS Apple Silicon. Windows binaries are not provided.</p>
+      </div>
+      <figure class="command-proof">
+        <figcaption>One command · one response · one durable job</figcaption>
+        <pre><code>$ agent-exec run -- cargo test --all
+{
+  "ok": true,
+  "type": "run",
+  "job_id": "a4f27c91…",
+  "state": "running",
+  <span class="code-dim">"stdout": "Compiling agent-exec…"</span>
+}</code></pre>
+      </figure>
+    </section>
 
-# 2. Reconnect later — completion state, exit code, and bounded output
-agent-exec wait "$JOB"
-# {"schema_version":"0.1","ok":true,"type":"wait","job_id":"…","state":"exited","exit_code":0,"stdout":"done\n","stderr":"","encoding":"utf-8-lossy","stdout_range":[0,5],"stderr_range":[0,0],"stdout_total_bytes":5,"stderr_total_bytes":0,"updated_at":"2026-07-20T00:00:00Z"}</code></pre><p><code>wait</code> returns the completion state, exit code, and bounded output. Use <code>tail</code> to reread logs later.</p></section>
-    <section aria-labelledby="comparison"><h2 id="comparison">More than a detached shell</h2><div class="table-wrap"><table><thead><tr><th scope="col">Capability</th><th scope="col">Subprocess</th><th scope="col">nohup</th><th scope="col">agent-exec</th></tr></thead><tbody><tr><th scope="row">Returns early</th><td>No</td><td>Yes</td><td>Yes</td></tr><tr><th scope="row">Stable job ID</th><td>No</td><td>No</td><td>Yes</td></tr><tr><th scope="row">Structured status and logs</th><td>Limited</td><td>No</td><td>Yes</td></tr><tr><th scope="row">Reconnect later</th><td>No</td><td>Manual</td><td>Yes</td></tr></tbody></table></div></section>
-    <section class="cards" aria-label="Product details"><article><h2>Release platforms</h2><p>Prebuilt binaries support Linux x86_64 and macOS Apple Silicon. Windows release binaries are not provided.</p><a href="docs/install.html">Installation details</a></article><article><h2>Agent integrations</h2><p>Use the same lifecycle through the CLI, MCP stdio server, or HTTP server.</p><a href="docs/integrations.html">Connect an agent</a></article><article><h2>Predictable output</h2><p>Response-producing CLI commands emit one JSON object on stdout. Diagnostics stay on stderr.</p><a href="docs/output-contracts.html">Output contracts</a></article></section>
-    <section class="cta" aria-labelledby="cta"><h2 id="cta">Keep long-running work observable.</h2><p><a class="button" href="docs/install.html">Install agent-exec</a> <a class="text-link" href="https://github.com/tumf/agent-exec/releases/latest">Latest release</a></p></section>
+    <section class="principle" aria-labelledby="principle-title">
+      <h2 id="principle-title">Catch a bad start without another round trip.</h2>
+      <p><code>run</code> observes for up to 10 seconds by default. Fast failures arrive in the first response; longer work continues as a job. Use <code>--no-wait</code> only when immediate return matters more than startup feedback.</p>
+    </section>
+
+    <section aria-labelledby="lifecycle-title">
+      <div class="workflow-head"><h2 id="lifecycle-title">The same job, whenever you return.</h2><p>Every operation is bounded, non-interactive, and machine-readable. Keep the <code>job_id</code>; choose what the agent needs next.</p></div>
+      <ol class="lifecycle-list">
+        <li><code>status</code><p>Read the current state without waiting.</p></li>
+        <li><code>wait</code><p>Observe until a bounded deadline and receive the exit code when terminal.</p></li>
+        <li><code>tail</code><p>Retrieve bounded stdout and stderr again, with byte ranges and retained log paths.</p></li>
+        <li><code>kill</code><p>Explicitly stop the process. An observation deadline never stops the job.</p></li>
+      </ol>
+    </section>
+
+    <section aria-labelledby="comparison-title">
+      <div class="workflow-head"><h2 id="comparison-title">Detached shell, with a contract.</h2><p>Durability is only useful when the next agent turn can discover what happened.</p></div>
+      <div class="table-wrap"><table><thead><tr><th scope="col">Capability</th><th scope="col">Subprocess</th><th scope="col">nohup</th><th scope="col">agent-exec</th></tr></thead><tbody><tr><th scope="row">Return before completion</th><td>No</td><td>Yes</td><td>Yes</td></tr><tr><th scope="row">Stable job identifier</th><td>No</td><td>No</td><td>Yes</td></tr><tr><th scope="row">Structured state and exit result</th><td>Limited</td><td>No</td><td>Yes</td></tr><tr><th scope="row">Discoverable retained logs</th><td>Caller-managed</td><td>Caller-managed</td><td>Yes</td></tr><tr><th scope="row">Reconnect later</th><td>Caller-managed</td><td>Manual</td><td>Yes</td></tr></tbody></table></div>
+    </section>
+
+    <section aria-labelledby="routes-title">
+      <div class="workflow-head"><h2 id="routes-title">Use one lifecycle from any agent surface.</h2><p>The CLI contract also powers MCP and HTTP integrations. No separate job model to learn.</p></div>
+      <div class="routes">
+        <article><h3>CLI</h3><p>Response-producing commands emit exactly one JSON object on stdout. Diagnostics stay on stderr; raw output remains available even when inline compression is enabled.</p><a href="docs/output-contracts.html">Read the output contract</a></article>
+        <article><h3>MCP</h3><p>Expose <code>run</code>, <code>status</code>, <code>tail</code>, <code>wait</code>, and <code>kill</code> over stdio.</p><a href="docs/integrations.html">Connect an agent</a></article>
+        <article><h3>HTTP</h3><p>Serve the lifecycle on loopback for local tools and controlled automation.</p><a href="docs/mcp-http.html">Review HTTP safety</a></article>
+      </div>
+    </section>
+
+    <section class="final-cta" aria-labelledby="cta-title"><h2 id="cta-title">Keep the command running. Keep the result findable.</h2><p><a class="button" href="docs/install.html">Install agent-exec</a></p></section>
   </main>
-  <footer><a href="docs/troubleshooting.html">Troubleshooting</a><a href="docs/release-verification.html">Release verification</a><a href="https://github.com/tumf/agent-exec">GitHub</a></footer>
+  <footer class="site-footer"><p><a class="brand" href="index.html">agent-exec</a> · Durable jobs for agents.</p><nav aria-label="Footer"><a href="docs/troubleshooting.html">Troubleshooting</a><a href="docs/release-verification.html">Verify releases</a><a href="https://github.com/tumf/agent-exec/releases/latest">Latest release</a></nav></footer>
 </body>
 </html>

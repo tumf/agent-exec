@@ -1,4 +1,31 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Quick start — agent-exec</title><link rel="stylesheet" href="../assets/site.css"></head><body><a class="skip-link" href="#main">Skip to content</a><header class="site-header"><nav aria-label="Primary"><a class="brand" href="../index.html">agent-exec</a><div class="nav-links"><a href="index.html">Docs</a><a href="lifecycle.html">Lifecycle</a><a href="../index.html">Home</a></div></nav></header><main id="main"><h1>Quick start</h1><p>Start a job, retain its stable <code>job_id</code>, then wait for a bounded completion result.</p><pre><code>agent-exec run --until 1 -- sh -c 'echo started; sleep 3; echo finished'
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="description" content="Start an agent-exec job, retain its job_id, and retrieve a bounded completion result.">
+  <title>Quick start — agent-exec</title>
+  <link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header"><nav class="site-nav" aria-label="Primary"><a class="brand" href="../index.html">agent-exec</a><div class="nav-links"><a href="index.html">Docs</a><a href="install.html">Install</a><a href="lifecycle.html">Lifecycle</a><a href="cli.html">CLI</a><a href="integrations.html">Integrations</a></div><div class="nav-actions"><a href="https://github.com/tumf/agent-exec">GitHub</a><a class="nav-cta" aria-current="page" href="quick-start.html">Quick start</a></div></nav></header>
+  <main id="main" class="docs-layout">
+    <aside class="docs-sidebar"><nav aria-label="Documentation"><ul><li><a href="index.html">Overview</a></li><li><a href="install.html">Install</a></li><li><a aria-current="page" href="quick-start.html">Quick start</a></li><li><a href="lifecycle.html">Lifecycle</a></li><li><a href="cli.html">CLI</a></li><li><a href="mcp-http.html">MCP + HTTP</a></li><li><a href="integrations.html">Integrations</a></li><li><a href="output-contracts.html">Output</a></li><li><a href="troubleshooting.html">Troubleshooting</a></li><li><a href="release-verification.html">Verification</a></li></ul></nav></aside>
+    <article class="doc-content">
+      <h1>Quick start</h1>
+      <p>Start a job, retain its stable <code>job_id</code>, then wait for a bounded completion result.</p>
+      <pre><code>agent-exec run --until 1 -- sh -c 'echo started; sleep 3; echo finished'
 # Copy the job_id from the JSON response:
 job_id='paste-job-id-here'
-agent-exec wait "$job_id" --until 5</code></pre><p>The commands use only <code>agent-exec</code> and a POSIX shell; no JSON parser is required. A successful wait returns a terminal <code>state</code>, <code>exit_code: 0</code>, and bounded <code>stdout</code> and <code>stderr</code>. Run <code>agent-exec tail &lt;job_id&gt;</code> for later or repeated log retrieval.</p><pre><code>{"schema_version":"0.1","ok":true,"type":"wait","job_id":"&lt;same id&gt;","state":"exited","exit_code":0,"stdout":"started\nfinished\n","stderr":"","encoding":"utf-8-lossy","stdout_range":[0,17],"stderr_range":[0,0],"stdout_total_bytes":17,"stderr_total_bytes":0,"updated_at":"2026-07-20T00:00:00Z"}</code></pre></main><footer><a href="lifecycle.html">Lifecycle</a><a href="../index.html">Home</a></footer></body></html>
+agent-exec wait "$job_id" --until 5</code></pre>
+      <p>The commands use only <code>agent-exec</code> and a POSIX shell; no JSON parser is required. The first observation deadline does not stop the command.</p>
+      <h2>Read the result</h2>
+      <pre><code>{"schema_version":"0.1","ok":true,"type":"wait","job_id":"&lt;same id&gt;","state":"exited","exit_code":0,"stdout":"started\nfinished\n","stderr":"","encoding":"utf-8-lossy","stdout_range":[0,17],"stderr_range":[0,0],"stdout_total_bytes":17,"stderr_total_bytes":0,"updated_at":"2026-07-20T00:00:00Z"}</code></pre>
+      <p>A successful wait returns a terminal <code>state</code>, <code>exit_code: 0</code>, and bounded <code>stdout</code> and <code>stderr</code>. Run <code>agent-exec tail &lt;job_id&gt;</code> for later or repeated log retrieval.</p>
+      <p><a class="text-link" href="lifecycle.html">Choose the next lifecycle command</a></p>
+    </article>
+  </main>
+  <footer class="site-footer"><p><a class="brand" href="../index.html">agent-exec</a> · Quick start.</p><nav aria-label="Footer"><a href="lifecycle.html">Lifecycle</a><a href="output-contracts.html">Output contract</a></nav></footer>
+</body>
+</html>

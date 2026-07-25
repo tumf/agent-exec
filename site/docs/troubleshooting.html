@@ -1,1 +1,35 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Troubleshooting — agent-exec</title><link rel="stylesheet" href="../assets/site.css"></head><body><a class="skip-link" href="#main">Skip to content</a><header class="site-header"><nav aria-label="Primary"><a class="brand" href="../index.html">agent-exec</a><a href="index.html">Docs</a></nav></header><main id="main"><h1>Troubleshooting</h1><h2>Command cannot be found</h2><p>Use the absolute executable path, especially for MCP clients: <code>AGENT_EXEC="$(command -v agent-exec)"</code>.</p><h2>Job is still running</h2><p>Keep its <code>job_id</code>, then call <code>agent-exec wait "$JOB_ID"</code> with a suitable deadline. The observation deadline does not end the job.</p><h2>Need more output</h2><p>Call <code>agent-exec tail "$JOB_ID"</code>. Responses include bounded excerpts and paths to retained logs.</p><h2>Need diagnostics</h2><p>Set <code>RUST_LOG=debug</code>; diagnostics go to stderr, preserving JSON-only stdout.</p></main><footer><a href="release-verification.html">Release verification</a><a href="../index.html">Home</a></footer></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="description" content="Resolve common agent-exec PATH, running-job, output, and diagnostic issues.">
+  <title>Troubleshooting — agent-exec</title>
+  <link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header"><nav class="site-nav" aria-label="Primary"><a class="brand" href="../index.html">agent-exec</a><div class="nav-links"><a href="index.html">Docs</a><a href="install.html">Install</a><a href="lifecycle.html">Lifecycle</a><a href="cli.html">CLI</a><a href="integrations.html">Integrations</a></div><div class="nav-actions"><a href="https://github.com/tumf/agent-exec">GitHub</a><a class="nav-cta" href="quick-start.html">Quick start</a></div></nav></header>
+  <main id="main" class="docs-layout">
+    <aside class="docs-sidebar"><nav aria-label="Documentation"><ul><li><a href="index.html">Overview</a></li><li><a href="install.html">Install</a></li><li><a href="quick-start.html">Quick start</a></li><li><a href="lifecycle.html">Lifecycle</a></li><li><a href="cli.html">CLI</a></li><li><a href="mcp-http.html">MCP + HTTP</a></li><li><a href="integrations.html">Integrations</a></li><li><a href="output-contracts.html">Output</a></li><li><a aria-current="page" href="troubleshooting.html">Troubleshooting</a></li><li><a href="release-verification.html">Verification</a></li></ul></nav></aside>
+    <article class="doc-content">
+      <h1>Troubleshooting</h1>
+      <p>Start with the job ID and the output streams. agent-exec keeps diagnostics separate from its machine-readable response.</p>
+      <h2>Command cannot be found</h2>
+      <p>Use the absolute executable path, especially for MCP clients:</p>
+      <pre><code>AGENT_EXEC="$(command -v agent-exec)"
+test -x "$AGENT_EXEC"</code></pre>
+      <h2>Job is still running</h2>
+      <p>Keep its <code>job_id</code>, then call <code>agent-exec wait "$JOB_ID"</code> with a suitable deadline. The observation deadline does not end the job.</p>
+      <h2>Need more output</h2>
+      <p>Call <code>agent-exec tail "$JOB_ID"</code>. Responses include bounded excerpts, byte ranges, total byte counts, and paths to retained logs.</p>
+      <h2>Need diagnostics</h2>
+      <p>Set <code>RUST_LOG=debug</code>. Diagnostics go to stderr, preserving JSON-only stdout.</p>
+      <pre><code>RUST_LOG=debug agent-exec status "$JOB_ID"</code></pre>
+      <h2>HTTP request is unsafe</h2>
+      <p>Return to the default loopback bind. Non-loopback HTTP requires explicit <code>--insecure</code>, a bearer token, and network-level protection for unprotected read endpoints.</p>
+    </article>
+  </main>
+  <footer class="site-footer"><p><a class="brand" href="../index.html">agent-exec</a> · Troubleshooting.</p><nav aria-label="Footer"><a href="output-contracts.html">Output contract</a><a href="release-verification.html">Verify releases</a></nav></footer>
+</body>
+</html>

@@ -1,1 +1,30 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Output contracts — agent-exec</title><link rel="stylesheet" href="../assets/site.css"></head><body><a class="skip-link" href="#main">Skip to content</a><header class="site-header"><nav aria-label="Primary"><a class="brand" href="../index.html">agent-exec</a><a href="index.html">Docs</a></nav></header><main id="main"><h1>Output contracts</h1><p>Response-producing CLI commands write exactly one JSON object to stdout by default. Pass <code>--yaml</code> for YAML. Diagnostic logs go to stderr and are controlled by <code>RUST_LOG</code>, <code>-v</code>, and <code>-vv</code>.</p><p>CLI and documented HTTP handler success and error responses use the same envelope: <code>schema_version</code>, <code>ok</code>, and <code>type</code>, plus command-specific fields. Router-level unmatched paths and methods are outside this response contract. Output excerpts include <code>encoding</code>, byte ranges, and total byte counts; log paths identify complete retained logs.</p><pre><code>{"schema_version":"0.1","ok":true,"type":"wait","job_id":"&lt;id&gt;","state":"exited","exit_code":0,"stdout":"done\n","stderr":"","encoding":"utf-8-lossy","stdout_range":[0,5],"stderr_range":[0,0],"stdout_total_bytes":5,"stderr_total_bytes":0,"updated_at":"2026-07-20T00:00:00Z"}</code></pre><p>Generated completions, MCP stdio protocol, and Clap help/version output are not response envelopes. The <code>serve</code> command emits a JSON error envelope for startup configuration failures such as an unsafe bind, a missing token for a non-loopback bind, or a wildcard CORS origin. MCP startup errors are outside the response-envelope contract.</p></main><footer><a href="cli.html">CLI</a><a href="../index.html">Home</a></footer></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="description" content="Understand agent-exec JSON and YAML response envelopes, diagnostics, output ranges, and retained log paths.">
+  <title>Output contracts — agent-exec</title>
+  <link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header"><nav class="site-nav" aria-label="Primary"><a class="brand" href="../index.html">agent-exec</a><div class="nav-links"><a href="index.html">Docs</a><a href="install.html">Install</a><a href="lifecycle.html">Lifecycle</a><a href="cli.html">CLI</a><a href="integrations.html">Integrations</a></div><div class="nav-actions"><a href="https://github.com/tumf/agent-exec">GitHub</a><a class="nav-cta" href="quick-start.html">Quick start</a></div></nav></header>
+  <main id="main" class="docs-layout">
+    <aside class="docs-sidebar"><nav aria-label="Documentation"><ul><li><a href="index.html">Overview</a></li><li><a href="install.html">Install</a></li><li><a href="quick-start.html">Quick start</a></li><li><a href="lifecycle.html">Lifecycle</a></li><li><a href="cli.html">CLI</a></li><li><a href="mcp-http.html">MCP + HTTP</a></li><li><a href="integrations.html">Integrations</a></li><li><a aria-current="page" href="output-contracts.html">Output</a></li><li><a href="troubleshooting.html">Troubleshooting</a></li><li><a href="release-verification.html">Verification</a></li></ul></nav></aside>
+    <article class="doc-content">
+      <h1>Output contracts</h1>
+      <p>Response-producing CLI commands write exactly one JSON object to stdout by default. Pass <code>--yaml</code> for YAML. Diagnostic logs go to stderr and are controlled by <code>RUST_LOG</code>, <code>-v</code>, and <code>-vv</code>.</p>
+      <h2>Response envelope</h2>
+      <p>CLI and documented HTTP handler success and error responses use <code>schema_version</code>, <code>ok</code>, and <code>type</code>, plus command-specific fields. Output excerpts include <code>encoding</code>, byte ranges, and total byte counts; log paths identify complete retained logs.</p>
+      <pre><code>{"schema_version":"0.1","ok":true,"type":"wait","job_id":"&lt;id&gt;","state":"exited","exit_code":0,"stdout":"done\n","stderr":"","encoding":"utf-8-lossy","stdout_range":[0,5],"stderr_range":[0,0],"stdout_total_bytes":5,"stderr_total_bytes":0,"updated_at":"2026-07-20T00:00:00Z"}</code></pre>
+      <h2>Boundaries</h2>
+      <p>Generated completions, MCP stdio protocol, and Clap help/version output are not response envelopes. Router-level unmatched HTTP paths and methods are also outside this contract.</p>
+      <p>The <code>serve</code> command emits a JSON error envelope for startup configuration failures such as an unsafe bind, a missing token for a non-loopback bind, or a wildcard CORS origin. MCP startup errors are outside the response-envelope contract.</p>
+      <h2>Raw and compressed output</h2>
+      <p>Inline compression can reduce response size, but raw <code>stdout</code>, <code>stderr</code>, ranges, totals, encoding, and retained log paths remain canonical.</p>
+    </article>
+  </main>
+  <footer class="site-footer"><p><a class="brand" href="../index.html">agent-exec</a> · Output contracts.</p><nav aria-label="Footer"><a href="cli.html">CLI</a><a href="troubleshooting.html">Troubleshooting</a></nav></footer>
+</body>
+</html>
