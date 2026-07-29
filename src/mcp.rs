@@ -72,6 +72,15 @@ struct RunParams {
     env: Option<std::collections::BTreeMap<String, String>>,
     timeout: Option<f64>,
     until: Option<f64>,
+    /// Inline UTF-8 bytes fed to the managed child's stdin. Mutually exclusive
+    /// with `stdin_file`. Unlike the CLI `--stdin`, a "-" value is literal input:
+    /// the MCP stdio transport carries protocol frames only and is never read as
+    /// job stdin.
+    stdin: Option<String>,
+    /// Path to a file readable by the MCP server process (server-local, not
+    /// client-local). Its bytes are snapshotted into the job directory before the
+    /// child launches. Mutually exclusive with `stdin`.
+    stdin_file: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -176,6 +185,24 @@ fn env_vars(
         .collect()
 }
 
+/// Resolve the MCP `run` stdin fields into the canonical [`run::StdinSource`].
+///
+/// Deliberately not [`run::resolve_stdin_source`]: that helper maps `"-"` to
+/// `StdinSource::CallerStdin`, and MCP has no caller stdin stream to read. The
+/// process stdin is the JSON-RPC transport, so `"-"` stays literal inline input
+/// here and the two fields are rejected as a pair before any job is created.
+fn stdin_source(
+    stdin: Option<String>,
+    stdin_file: Option<String>,
+) -> Result<Option<run::StdinSource>, String> {
+    match (stdin, stdin_file) {
+        (Some(_), Some(_)) => Err("stdin and stdin_file cannot be used together".to_string()),
+        (Some(value), None) => Ok(Some(run::StdinSource::Inline(value))),
+        (None, Some(path)) => Ok(Some(run::StdinSource::File(path))),
+        (None, None) => Ok(None),
+    }
+}
+
 fn envelope(result: Result<impl serde::Serialize>) -> Json<Value> {
     match result {
         Ok(value) => Json(serde_json::to_value(value).expect("response serialization")),
@@ -200,6 +227,8 @@ fn domain_error(error: anyhow::Error) -> ErrorResponse {
         .is_some()
     {
         "invalid_state"
+    } else if error.downcast_ref::<crate::run::StdinTooLarge>().is_some() {
+        "stdin_too_large"
     } else {
         "internal_error"
     };
@@ -230,6 +259,10 @@ impl Mcp {
             Ok(value) => value,
             Err(message) => return tool_error(message),
         };
+        let stdin = match stdin_source(params.stdin, params.stdin_file) {
+            Ok(value) => value,
+            Err(message) => return tool_error(message),
+        };
         envelope(run::run_response(run::RunOpts {
             command: params.command,
             root: self.root.as_deref(),
@@ -237,6 +270,8 @@ impl Mcp {
             env_vars,
             timeout_ms: timeout.saturating_mul(1000),
             until_seconds: until,
+            stdin,
+            stdin_max_bytes: run::DEFAULT_STDIN_MAX_BYTES,
             ..Default::default()
         }))
     }
@@ -307,8 +342,9 @@ mod tests {
 
     use super::{
         DEFAULT_UNTIL_ENV, MAX_UNTIL_ENV, RunParams, env_vars, parse_until_seconds_value, seconds,
-        until_seconds,
+        stdin_source, until_seconds,
     };
+    use crate::run::StdinSource;
 
     #[test]
     fn run_params_reject_unknown_fields() {
@@ -318,6 +354,47 @@ mod tests {
                 "mask": ["SECRET"]
             }))
             .is_err()
+        );
+    }
+
+    #[test]
+    fn run_params_accept_optional_stdin_fields() {
+        let params = serde_json::from_value::<RunParams>(serde_json::json!({
+            "command": ["true"],
+            "stdin": "alpha\n"
+        }))
+        .expect("inline stdin params");
+        assert_eq!(params.stdin.as_deref(), Some("alpha\n"));
+        assert_eq!(params.stdin_file, None);
+
+        let params = serde_json::from_value::<RunParams>(serde_json::json!({
+            "command": ["true"],
+            "stdin_file": "/tmp/input.txt"
+        }))
+        .expect("file stdin params");
+        assert_eq!(params.stdin, None);
+        assert_eq!(params.stdin_file.as_deref(), Some("/tmp/input.txt"));
+    }
+
+    #[test]
+    fn stdin_source_maps_mcp_fields_without_caller_stdin() {
+        assert!(stdin_source(None, None).unwrap().is_none());
+        assert!(matches!(
+            stdin_source(Some("alpha".to_string()), None).unwrap(),
+            Some(StdinSource::Inline(value)) if value == "alpha"
+        ));
+        // MCP process stdin is the JSON-RPC transport, so "-" is literal input.
+        assert!(matches!(
+            stdin_source(Some("-".to_string()), None).unwrap(),
+            Some(StdinSource::Inline(value)) if value == "-"
+        ));
+        assert!(matches!(
+            stdin_source(None, Some("/tmp/input.txt".to_string())).unwrap(),
+            Some(StdinSource::File(path)) if path == "/tmp/input.txt"
+        ));
+        assert_eq!(
+            stdin_source(Some("-".to_string()), Some("/tmp/input.txt".to_string())).unwrap_err(),
+            "stdin and stdin_file cannot be used together"
         );
     }
 

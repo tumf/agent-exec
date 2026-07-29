@@ -92,6 +92,19 @@ impl McpProcess {
     }
 }
 
+/// Read a job's persisted `meta.json` from an isolated harness root.
+fn job_meta(root: &str, job_id: &str) -> Value {
+    let path = std::path::Path::new(root).join(job_id).join("meta.json");
+    serde_json::from_str(&std::fs::read_to_string(&path).expect("read meta.json")).expect("meta")
+}
+
+/// Read the canonical job-local stdin materialization named by `meta.stdin_file`.
+fn job_stdin_bytes(root: &str, job_id: &str) -> Vec<u8> {
+    let meta = job_meta(root, job_id);
+    let name = meta["stdin_file"].as_str().expect("meta.stdin_file");
+    std::fs::read(std::path::Path::new(root).join(job_id).join(name)).expect("read stdin.bin")
+}
+
 #[test]
 fn mcp_invalid_until_configuration_fails_before_serving_and_reports_to_stderr() {
     let harness = TestHarness::new();
@@ -490,6 +503,281 @@ fn mcp_reaps_finished_supervisors() {
         let status = mcp.call(10 + offset as u64, "status", json!({ "job_id": job_id }));
         assert_envelope(&status, "status", true);
         assert_eq!(status["state"], "exited");
+    }
+}
+
+#[test]
+fn mcp_run_schema_exposes_optional_stdin_fields() {
+    let harness = TestHarness::new();
+    let mut mcp = McpProcess::start(harness.root());
+    mcp.initialize();
+    let listed = mcp.request(3, "tools/list", json!({}));
+    let run = listed["result"]["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .find(|tool| tool["name"] == "run")
+        .expect("run tool")
+        .clone();
+    let schema = &run["inputSchema"];
+
+    // Unknown definition-time controls stay rejected by the generated schema.
+    assert_eq!(schema["additionalProperties"], json!(false));
+    assert_eq!(schema["required"], json!(["command"]));
+    for field in ["stdin", "stdin_file"] {
+        let property = &schema["properties"][field];
+        assert_eq!(property["type"], "string", "{field} must be a string field");
+        assert!(
+            !schema["required"]
+                .as_array()
+                .expect("required")
+                .contains(&json!(field)),
+            "{field} must stay optional"
+        );
+        assert!(
+            property["description"].as_str().is_some_and(|text| {
+                text.contains("stdin_file") || text.contains("server-local")
+            }),
+            "{field} must document its semantics: {property}"
+        );
+    }
+    // The path is resolved by the MCP server process, not the client.
+    assert!(
+        schema["properties"]["stdin_file"]["description"]
+            .as_str()
+            .expect("stdin_file description")
+            .contains("server-local")
+    );
+}
+
+#[test]
+fn mcp_run_accepts_inline_stdin_through_the_canonical_lifecycle() {
+    let harness = TestHarness::new();
+    let mut mcp = McpProcess::start(harness.root());
+    mcp.initialize();
+    let run = mcp.call(
+        3,
+        "run",
+        json!({ "command": ["cat"], "stdin": "alpha\nbeta\n" }),
+    );
+    assert_envelope(&run, "run", true);
+    assert_eq!(run["state"], "exited");
+    assert_eq!(run["stdout"], "alpha\nbeta\n");
+    assert_eq!(run["stderr"], "");
+
+    let job_id = run["job_id"].as_str().expect("job id");
+    assert_eq!(job_meta(harness.root(), job_id)["stdin_file"], "stdin.bin");
+    assert_eq!(job_stdin_bytes(harness.root(), job_id), b"alpha\nbeta\n");
+}
+
+#[test]
+fn mcp_run_treats_inline_dash_as_literal_input() {
+    let harness = TestHarness::new();
+    let mut mcp = McpProcess::start(harness.root());
+    mcp.initialize();
+    let run = mcp.call(3, "run", json!({ "command": ["cat"], "stdin": "-" }));
+    assert_envelope(&run, "run", true);
+    assert_eq!(run["state"], "exited");
+    assert_eq!(run["stdout"], "-");
+
+    let job_id = run["job_id"].as_str().expect("job id");
+    assert_eq!(job_stdin_bytes(harness.root(), job_id), b"-");
+
+    // The server never waited for a second caller-stdin stream: it is still
+    // serving JSON-RPC on the same transport.
+    let status = mcp.call(4, "status", json!({ "job_id": job_id }));
+    assert_envelope(&status, "status", true);
+}
+
+#[test]
+fn mcp_run_snapshots_a_server_local_stdin_file() {
+    let harness = TestHarness::new();
+    let inputs = tempfile::tempdir().expect("input dir");
+    let source = inputs.path().join("input.txt");
+    std::fs::write(&source, b"snapshot bytes\n").expect("write stdin source");
+
+    let mut mcp = McpProcess::start(harness.root());
+    mcp.initialize();
+    let run = mcp.call(
+        3,
+        "run",
+        json!({ "command": ["cat"], "stdin_file": source.to_str().expect("utf-8 path") }),
+    );
+    assert_envelope(&run, "run", true);
+    assert_eq!(run["state"], "exited");
+    assert_eq!(run["stdout"], "snapshot bytes\n");
+
+    let job_id = run["job_id"].as_str().expect("job id");
+    assert_eq!(job_meta(harness.root(), job_id)["stdin_file"], "stdin.bin");
+    assert_eq!(job_stdin_bytes(harness.root(), job_id), b"snapshot bytes\n");
+
+    // The job owns a copy: later source edits cannot alter the job input.
+    std::fs::write(&source, b"mutated after launch\n").expect("mutate stdin source");
+    assert_eq!(job_stdin_bytes(harness.root(), job_id), b"snapshot bytes\n");
+}
+
+#[test]
+fn mcp_run_rejects_conflicting_stdin_without_creating_job() {
+    let harness = TestHarness::new();
+    let inputs = tempfile::tempdir().expect("input dir");
+    let source = inputs.path().join("input.txt");
+    std::fs::write(&source, b"unused\n").expect("write stdin source");
+
+    let mut mcp = McpProcess::start(harness.root());
+    mcp.initialize();
+    let result = mcp.call(
+        3,
+        "run",
+        json!({
+            "command": ["cat"],
+            "stdin": "inline",
+            "stdin_file": source.to_str().expect("utf-8 path")
+        }),
+    );
+    assert_eq!(result["isError"], true);
+    assert!(
+        result["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("stdin_file")),
+        "conflict message must name the conflicting fields: {result}"
+    );
+    assert!(
+        std::fs::read_dir(harness.root())
+            .expect("root")
+            .next()
+            .is_none(),
+        "a rejected stdin definition must not create a job"
+    );
+
+    // The rejection is protocol-safe: the same session keeps serving tools.
+    let run = mcp.call(4, "run", json!({ "command": ["echo", "ok"] }));
+    assert_envelope(&run, "run", true);
+    assert_eq!(run["stdout"], "ok\n");
+}
+
+#[test]
+fn mcp_run_without_stdin_keeps_null_child_stdin_and_protocol_transport() {
+    let harness = TestHarness::new();
+    let mut mcp = McpProcess::start(harness.root());
+    mcp.initialize();
+    let run = mcp.call(
+        3,
+        "run",
+        json!({ "command": ["sh", "-c", "cat; printf 'eof\\n'"] }),
+    );
+    assert_envelope(&run, "run", true);
+    assert_eq!(run["state"], "exited");
+    // The child saw EOF immediately instead of consuming JSON-RPC frames.
+    assert_eq!(run["stdout"], "eof\n");
+
+    let job_id = run["job_id"].as_str().expect("job id");
+    assert_eq!(job_meta(harness.root(), job_id)["stdin_file"], Value::Null);
+    assert!(
+        !std::path::Path::new(harness.root())
+            .join(job_id)
+            .join("stdin.bin")
+            .exists()
+    );
+
+    // Subsequent protocol messages are still readable by the MCP server.
+    let status = mcp.call(4, "status", json!({ "job_id": job_id }));
+    assert_envelope(&status, "status", true);
+    assert_eq!(status["state"], "exited");
+}
+
+#[test]
+fn mcp_run_rejects_unreadable_stdin_file_before_child_launch() {
+    let harness = TestHarness::new();
+    let inputs = tempfile::tempdir().expect("input dir");
+    let missing = inputs.path().join("missing.txt");
+    let unreadable = inputs.path().join("unreadable.txt");
+    std::fs::write(&unreadable, b"secret\n").expect("write unreadable source");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000))
+            .expect("drop read permission");
+    }
+
+    let mut mcp = McpProcess::start(harness.root());
+    mcp.initialize();
+
+    let mut candidates = vec![missing];
+    // Root ignores mode bits, so only assert the unreadable case when it is real.
+    #[cfg(unix)]
+    if std::fs::read(&unreadable).is_err() {
+        candidates.push(unreadable.clone());
+    }
+
+    for (offset, path) in candidates.iter().enumerate() {
+        let result = mcp.call(
+            3 + offset as u64,
+            "run",
+            json!({ "command": ["cat"], "stdin_file": path.to_str().expect("utf-8 path") }),
+        );
+        assert_envelope(&result, "error", false);
+        // The failure lands before child launch: no supervisor state exists and
+        // the job definition never claims a stdin materialization.
+        for entry in std::fs::read_dir(harness.root()).expect("root") {
+            let job_dir = entry.expect("job dir").path();
+            assert!(
+                !job_dir.join("state.json").exists(),
+                "no supervisor may start for a failed stdin definition: {}",
+                job_dir.display()
+            );
+            let meta: Value = serde_json::from_str(
+                &std::fs::read_to_string(job_dir.join("meta.json")).expect("read meta.json"),
+            )
+            .expect("meta");
+            assert_eq!(meta["stdin_file"], Value::Null);
+        }
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o600));
+    }
+}
+
+/// MCP always uses the canonical 64 MiB `DEFAULT_STDIN_MAX_BYTES` (a configurable
+/// MCP limit is deliberately out of scope), so both oversize paths have to move
+/// that much data to reach the rejection. That makes this test run for seconds;
+/// it stays in the default suite because the limit is a required contract.
+#[test]
+fn mcp_run_rejects_oversized_stdin_before_child_launch() {
+    let limit = agent_exec::run::DEFAULT_STDIN_MAX_BYTES;
+    let harness = TestHarness::new();
+    let inputs = tempfile::tempdir().expect("input dir");
+    let oversized = inputs.path().join("oversized.bin");
+    std::fs::File::create(&oversized)
+        .expect("create oversized source")
+        .set_len(limit + 1)
+        .expect("size oversized source");
+
+    let mut mcp = McpProcess::start(harness.root());
+    mcp.initialize();
+
+    for (offset, arguments) in [
+        json!({ "command": ["cat"], "stdin_file": oversized.to_str().expect("utf-8 path") }),
+        json!({ "command": ["cat"], "stdin": "a".repeat(limit as usize + 1) }),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let result = mcp.call(3 + offset as u64, "run", arguments);
+        assert_envelope(&result, "error", false);
+        assert_eq!(result["error"]["code"], "stdin_too_large");
+        for entry in std::fs::read_dir(harness.root()).expect("root") {
+            let job_dir = entry.expect("job dir").path();
+            // Oversize aborts inside the bounded copy, which discards stdin.bin.
+            assert!(!job_dir.join("stdin.bin").exists());
+            assert!(
+                !job_dir.join("state.json").exists(),
+                "no supervisor may start for oversized stdin: {}",
+                job_dir.display()
+            );
+        }
     }
 }
 
