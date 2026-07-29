@@ -10,6 +10,33 @@ MCP `run` の inline および file-backed stdin は CLI `run` と同じ bounded
 
 MCP `run` の成功結果は CLI `run` と同じ `type="run"` response envelope を含み、`job_id`, `state`, `stdout`, `stderr`, `stdout_range`, `stderr_range`, `stdout_total_bytes`, `stderr_total_bytes`, `stdout_log_path`, `stderr_log_path` を返さなければならない（MUST）。
 
+#### Scenario: configured run default is used when until is omitted
+
+**Given**: the MCP server has `AGENT_EXEC_MCP_DEFAULT_UNTIL_SECONDS=20` and no maximum
+**When**: the client calls `run` without `until`
+**Then**: inline observation is bounded to 20 seconds
+
+#### Scenario: over-maximum run is rounded down
+
+**Given**: the MCP server has `AGENT_EXEC_MCP_MAX_UNTIL_SECONDS=55`
+**When**: the client calls `run` with `until=100`
+**Then**: the tool proceeds using an effective `until` of 55 seconds
+**And**: it returns a successful canonical run envelope instead of an over-maximum error
+**And**: the managed job remains detached if the effective observation deadline expires
+
+#### Scenario: maximum caps the legacy run default
+
+**Given**: no default environment variable and `AGENT_EXEC_MCP_MAX_UNTIL_SECONDS=5`
+**When**: the client calls `run` without `until`
+**Then**: the legacy 10-second default is rounded down to 5 seconds
+
+#### Scenario: MCP run rejects an empty command without creating a job
+
+**Given**: an MCP client is connected to an isolated jobs root
+**When**: it calls `run` with an empty command array
+**Then**: the call returns a protocol-safe error result
+**And**: no new job directory is created
+
 #### Scenario: MCP run passes inline stdin through the canonical lifecycle
 
 **Given**: an MCP client calls `run` for a command that echoes stdin with `stdin="alpha\nbeta\n"`

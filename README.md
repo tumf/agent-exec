@@ -729,7 +729,7 @@ When MCP is unavailable, use `agent-exec run -- <command>` with CLI observation 
 
 | Tool | Parameters | Behavior |
 |------|------------|----------|
-| `run` | `command: string[]`, `cwd?: string`, `env?: object`, `timeout?: integer`, `until?: integer` | Starts a detached job. `timeout` and `until` are seconds; the legacy omitted `until` is 10 seconds unless configured. |
+| `run` | `command: string[]`, `cwd?: string`, `env?: object`, `timeout?: integer`, `until?: integer`, `stdin?: string`, `stdin_file?: string` | Starts a detached job. `timeout` and `until` are seconds; the legacy omitted `until` is 10 seconds unless configured. |
 | `status` | `job_id: string` | Returns canonical job status. |
 | `tail` | `job_id: string`, `lines?: integer`, `max_bytes?: integer` | Reads bounded tails; defaults are 50 lines and 65,536 bytes. |
 | `wait` | `job_id: string`, `until?: integer` | Observes for a bounded duration and returns bounded stdout/stderr output metadata; the legacy omitted `until` is 30 seconds unless configured. Indefinite MCP waits are not supported. |
@@ -737,7 +737,9 @@ When MCP is unavailable, use `agent-exec run -- <command>` with CLI observation 
 
 Retain the job ID returned by `run`. Closing the MCP transport, reaching an observation deadline, receiving no output, or encountering a tool error does not stop the job. Use `kill` only for explicit cancellation.
 
-The MCP `run` tool intentionally omits CLI-only input, masking, notification, tag, compression, and shell-wrapper controls.
+MCP `run` accepts job stdin through the same materialization as the CLI. Supply `stdin` for inline UTF-8 bytes or `stdin_file` for a path readable by the MCP server process; the two are mutually exclusive and a conflicting call fails without creating a job. `stdin_file` is snapshotted into the job directory before launch, so later edits to the source file do not change a running job's input. Unlike CLI `--stdin`, `stdin: "-"` is one literal dash byte: the MCP stdio transport carries protocol frames and is never read as job stdin. When both are omitted the child receives null stdin. Input above the 64 MiB limit, or an unreadable `stdin_file`, fails before the child launches.
+
+The MCP `run` tool intentionally omits CLI-only masking, notification, tag, compression, and shell-wrapper controls.
 
 For an MCP host with a 60-second request deadline, a maximum of 55 seconds leaves time for the response to return. The default can remain shorter, such as 10 seconds.
 
