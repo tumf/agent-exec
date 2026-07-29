@@ -411,6 +411,40 @@ pub fn materialize_stdin_for_job(
     materialize_stdin(job_dir, stdin, max_bytes)
 }
 
+/// Take ownership of a child process spawned by agent-exec so its exit status is
+/// collected once it terminates.
+///
+/// On Unix, dropping `std::process::Child` does not wait for the process, so a
+/// long-lived launcher (`mcp`, `serve`) accumulates one zombie entry per finished
+/// supervisor until it exits. A dedicated thread owns exactly this `Child` and
+/// waits for it. No process-wide `SIGCHLD` handler and no `waitpid(-1, ...)` is
+/// installed, so exit statuses owned by other components are never consumed.
+///
+/// Reaping is resource cleanup only: it never signals the child, never blocks the
+/// caller, and never touches persisted job state, so managed jobs stay detached.
+/// If the launcher exits first, the operating system reparents the still-running
+/// child exactly as before.
+#[cfg(unix)]
+pub fn reap_spawned_child(mut child: std::process::Child) {
+    let child_pid = child.id();
+    let spawned = std::thread::Builder::new()
+        .name("agent-exec-reaper".to_string())
+        .spawn(move || match child.wait() {
+            Ok(status) => debug!(child_pid, ?status, "reaped spawned child"),
+            Err(err) => debug!(child_pid, %err, "failed to reap spawned child"),
+        });
+    if let Err(err) = spawned {
+        // Falling back to the previous drop-without-wait behavior is preferable to
+        // failing the launch: the job itself is unaffected by a missing reaper.
+        debug!(child_pid, %err, "failed to start reaper thread");
+    }
+}
+
+/// Windows waits for process handles through the existing Job Object lifecycle and
+/// has no zombie-entry semantics, so ownership transfer is a no-op there.
+#[cfg(not(unix))]
+pub fn reap_spawned_child(_child: std::process::Child) {}
+
 /// Spawn the supervisor process and write the initial running state to `state.json`.
 ///
 /// Returns the supervisor PID and the actual `started_at` timestamp.
@@ -520,6 +554,11 @@ pub fn spawn_supervisor_process(
             }
         }
     }
+
+    // Keep ownership of the supervisor child so long-lived launchers collect its
+    // exit status instead of leaking a zombie entry. This does not wait here, so
+    // the launch response and managed-job detachment are unchanged.
+    reap_spawned_child(supervisor);
 
     Ok((supervisor_pid, started_at))
 }
