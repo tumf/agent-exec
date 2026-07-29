@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "agent-exec"
-version = "0.2.29"
+version = "0.2.30"
 dependencies = [
  "anyhow",
  "axum",
