@@ -336,6 +336,8 @@ agent-exec create [OPTIONS] -- <COMMAND> [ARGS...]
 
 `--stdin VALUE` and `--stdin-file PATH` are mutually exclusive. Their contents are copied to `<job-directory>/stdin.bin`; later `start` reuses the persisted file reference.
 
+Unlike `run`, `create` never captures piped stdin implicitly: a `create` definition stores input only when `--stdin`, `--stdin -`, or `--stdin-file` is given explicitly. Without one of those, the child of a later `start` receives null stdin.
+
 The response includes `job_id`, `state`, `stdout_log_path`, and `stderr_log_path`.
 
 ### `start`: launch a created job
@@ -373,9 +375,9 @@ Common options:
 | `--env-file <FILE>` | None | Load environment variables from a file; repeatable. |
 | `--no-inherit-env` | `false` | Do not inherit the launcher environment. |
 | `--mask <KEY>` | None | Mask the named `--env` value in display metadata; repeatable. |
-| `--stdin <VALUE>` | None | Provide input directly; `--stdin -` reads noninteractive caller input. |
-| `--stdin-file <PATH>` | None | Copy file content to job-local input. |
-| `--stdin-max-bytes <BYTES>` | 64 MiB | Limit materialized input size. |
+| `--stdin <VALUE>` | None | Provide input directly; `--stdin -` reads noninteractive caller input. Omit both stdin flags to forward piped caller input automatically. |
+| `--stdin-file <PATH>` | None | Copy file content to job-local input; takes precedence over automatic detection. |
+| `--stdin-max-bytes <BYTES>` | 64 MiB | Limit materialized input size, including automatically forwarded input. |
 | `--wait [true|false]` | `true` | Enable inline observation. A bare `--wait` means `true`. |
 | `--until <SECONDS>` | `10` | Bound inline observation. |
 | `--forever` | `false` | Observe until the job becomes terminal. |
@@ -391,6 +393,11 @@ Common options:
 Input examples:
 
 ```bash
+# Piped or redirected input is forwarded automatically; no stdin flag required.
+printf 'abc' | agent-exec run -- cat
+agent-exec run -- cat < ./input.txt
+
+# The explicit forms remain available and behave exactly as before.
 printf 'abc' | agent-exec run --stdin - -- cat
 
 agent-exec run --stdin - -- cat <<'EOF'
@@ -401,6 +408,10 @@ EOF
 agent-exec run --stdin "abc" -- cat
 agent-exec run --stdin-file ./input.txt -- cat
 ```
+
+When neither `--stdin` nor `--stdin-file` is given, `run` reads its own stdin to EOF only if that stdin is not a terminal. The bytes go through the same path as `--stdin -`: they are materialized into `<job-directory>/stdin.bin`, recorded in `meta.json.stdin_file`, and bounded by `--stdin-max-bytes`. Input above that limit fails before the job launches with `error.code` set to `stdin_too_large`.
+
+`--stdin` and `--stdin-file` are authoritative: when either is present, caller stdin is not read implicitly. When stdin is a terminal and no stdin option is given, `run` does not read it, does not block, and the child receives null stdin. Automatic detection applies to `run` only — `create`, `start`, `restart`, and the MCP surfaces stay explicit-only.
 
 If `--stdin -` receives a terminal instead of redirected input, the command fails with `error.code` set to `stdin_required`.
 

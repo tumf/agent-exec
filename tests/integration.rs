@@ -349,6 +349,294 @@ fn run_without_stdin_keeps_null_stdin_behavior() {
     );
 }
 
+/// Collapse whitespace runs so assertions survive clap's help-text line wrapping.
+fn squeeze_whitespace(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+#[test]
+fn run_forwards_piped_stdin_without_explicit_option() {
+    let h = TestHarness::new();
+    let input = b"alpha\nbeta\n";
+
+    let v = run_cmd_with_root_and_stdin(&["run", "--", "cat"], Some(h.root()), input);
+    assert_envelope(&v, "run", true);
+    let job_id = v["job_id"].as_str().expect("job_id missing").to_string();
+
+    let wait_v = wait_until_terminal(&h, &job_id);
+    assert_eq!(wait_v["state"].as_str().unwrap_or(""), "exited");
+
+    let tail_v = h.run(&["tail", &job_id]);
+    let stdout = tail_v["stdout"].as_str().unwrap_or("");
+    assert_eq!(
+        stdout, "alpha\nbeta\n",
+        "implicit piped stdin should reach the child verbatim: {stdout:?}"
+    );
+
+    let meta_path = std::path::Path::new(h.root())
+        .join(&job_id)
+        .join("meta.json");
+    let meta: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(meta_path).expect("read meta.json"))
+            .expect("parse meta.json");
+    assert_eq!(
+        meta["stdin_file"].as_str().unwrap_or(""),
+        "stdin.bin",
+        "implicit stdin must reuse the materialized stdin.bin contract: {meta}"
+    );
+
+    let stdin_path = std::path::Path::new(h.root())
+        .join(&job_id)
+        .join("stdin.bin");
+    let materialized = std::fs::read(&stdin_path).expect("read stdin.bin");
+    assert_eq!(
+        materialized, input,
+        "stdin.bin should hold the exact piped bytes"
+    );
+}
+
+#[test]
+fn run_explicit_stdin_takes_precedence_over_piped_input() {
+    let h = TestHarness::new();
+
+    let v = run_cmd_with_root_and_stdin(
+        &["run", "--stdin", "explicit", "--", "cat"],
+        Some(h.root()),
+        b"piped-input",
+    );
+    assert_envelope(&v, "run", true);
+    let job_id = v["job_id"].as_str().expect("job_id missing").to_string();
+
+    let wait_v = wait_until_terminal(&h, &job_id);
+    assert_eq!(wait_v["state"].as_str().unwrap_or(""), "exited");
+
+    let tail_v = h.run(&["tail", &job_id]);
+    assert_eq!(
+        tail_v["stdout"].as_str().unwrap_or(""),
+        "explicit",
+        "explicit --stdin must suppress implicit pipe capture: {tail_v}"
+    );
+
+    let stdin_path = std::path::Path::new(h.root())
+        .join(&job_id)
+        .join("stdin.bin");
+    let materialized = std::fs::read(&stdin_path).expect("read stdin.bin");
+    assert_eq!(materialized, b"explicit");
+}
+
+#[test]
+fn run_explicit_stdin_file_takes_precedence_over_piped_input() {
+    let h = TestHarness::new();
+    let src_path = std::path::Path::new(h.root()).join("explicit-source.txt");
+    std::fs::write(&src_path, b"from-file").expect("write stdin source file");
+
+    let v = run_cmd_with_root_and_stdin(
+        &[
+            "run",
+            "--stdin-file",
+            src_path.to_str().expect("utf8 path"),
+            "--",
+            "cat",
+        ],
+        Some(h.root()),
+        b"piped-input",
+    );
+    assert_envelope(&v, "run", true);
+    let job_id = v["job_id"].as_str().expect("job_id missing").to_string();
+
+    let wait_v = wait_until_terminal(&h, &job_id);
+    assert_eq!(wait_v["state"].as_str().unwrap_or(""), "exited");
+
+    let tail_v = h.run(&["tail", &job_id]);
+    assert_eq!(
+        tail_v["stdout"].as_str().unwrap_or(""),
+        "from-file",
+        "explicit --stdin-file must suppress implicit pipe capture: {tail_v}"
+    );
+}
+
+#[test]
+fn run_implicit_stdin_respects_stdin_max_bytes() {
+    let h = TestHarness::new();
+    let limit: usize = 1024;
+    let oversized = vec![b'x'; limit * 4];
+
+    let output = run_raw_with_root_and_stdin(
+        &["run", "--stdin-max-bytes", &limit.to_string(), "--", "cat"],
+        Some(h.root()),
+        Some(&oversized),
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("stdout should be JSON");
+    assert_eq!(v["ok"].as_bool(), Some(false), "expected failure: {v}");
+    assert_eq!(
+        v["error"]["code"].as_str(),
+        Some("stdin_too_large"),
+        "implicit stdin must reuse the stdin_too_large contract: {v}"
+    );
+
+    // The job must fail before launch: no supervisor state was ever written.
+    let root = std::path::Path::new(h.root());
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for entry in entries.flatten() {
+            let dir = entry.path();
+            assert!(
+                !dir.join("state.json").exists(),
+                "oversized implicit stdin must not leave a runnable job: {}",
+                dir.display()
+            );
+        }
+    }
+}
+
+#[test]
+fn create_does_not_capture_piped_stdin_implicitly() {
+    let h = TestHarness::new();
+
+    let create_v = run_cmd_with_root_and_stdin(
+        &["create", "--", "cat"],
+        Some(h.root()),
+        b"should-be-ignored",
+    );
+    assert_envelope(&create_v, "create", true);
+    let job_id = create_v["job_id"]
+        .as_str()
+        .expect("job_id missing")
+        .to_string();
+
+    let meta_path = std::path::Path::new(h.root())
+        .join(&job_id)
+        .join("meta.json");
+    let meta: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(meta_path).expect("read meta.json"))
+            .expect("parse meta.json");
+    assert!(
+        meta.get("stdin_file").is_none() || meta["stdin_file"].is_null(),
+        "create must keep stdin explicit-only: {meta}"
+    );
+    assert!(
+        !std::path::Path::new(h.root())
+            .join(&job_id)
+            .join("stdin.bin")
+            .exists(),
+        "create must not materialize implicitly piped stdin"
+    );
+
+    let start_v = h.run(&["start", &job_id]);
+    assert_envelope(&start_v, "start", true);
+    let wait_v = wait_until_terminal(&h, &job_id);
+    assert_eq!(wait_v["state"].as_str().unwrap_or(""), "exited");
+    let tail_v = h.run(&["tail", &job_id]);
+    assert_eq!(
+        tail_v["stdout"].as_str().unwrap_or(""),
+        "",
+        "child stdin must stay null for a create definition without stdin options"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn run_with_tty_stdin_and_no_stdin_option_does_not_read_terminal() {
+    let h = TestHarness::new();
+    let bin = binary();
+    let command = format!("AGENT_EXEC_ROOT={} {} run -- cat", h.root(), bin.display());
+
+    let mut cmd = std::process::Command::new("script");
+    if cfg!(target_os = "macos") {
+        cmd.arg("-q")
+            .arg("/dev/null")
+            .arg("sh")
+            .arg("-lc")
+            .arg(&command);
+    } else {
+        cmd.arg("-q")
+            .arg("-e")
+            .arg("-c")
+            .arg(&command)
+            .arg("/dev/null");
+    }
+
+    let output = cmd.output().expect("run script tty wrapper");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{stdout}\n{stderr}");
+    let json_start = combined
+        .find('{')
+        .expect("tty wrapper output should include a JSON envelope");
+    let v: serde_json::Value =
+        serde_json::from_str(combined[json_start..].trim()).expect("parse tty run JSON");
+
+    assert!(
+        v["ok"].as_bool().unwrap_or(false),
+        "run with tty stdin and no stdin option must succeed without blocking: {v}"
+    );
+    let job_id = v["job_id"].as_str().expect("job_id missing").to_string();
+
+    let meta_path = std::path::Path::new(h.root())
+        .join(&job_id)
+        .join("meta.json");
+    let meta: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(meta_path).expect("read meta.json"))
+            .expect("parse meta.json");
+    assert!(
+        meta.get("stdin_file").is_none() || meta["stdin_file"].is_null(),
+        "tty stdin must not be materialized: {meta}"
+    );
+    assert!(
+        !std::path::Path::new(h.root())
+            .join(&job_id)
+            .join("stdin.bin")
+            .exists(),
+        "tty stdin must not produce stdin.bin"
+    );
+}
+
+#[test]
+fn run_help_documents_implicit_piped_stdin() {
+    let output = Command::new(binary())
+        .args(["run", "--help"])
+        .output()
+        .expect("run --help");
+    assert!(output.status.success(), "run --help should exit zero");
+    let help = squeeze_whitespace(&String::from_utf8_lossy(&output.stdout));
+
+    assert!(
+        help.contains("piped or redirected (non-tty) caller stdin is forwarded automatically"),
+        "run --help must document implicit piped stdin: {help}"
+    );
+    assert!(
+        help.contains("`producer | agent-exec run -- consumer`"),
+        "run --help must show the pipeline shorthand: {help}"
+    );
+    assert!(
+        help.contains("takes precedence and suppresses that detection"),
+        "run --help must document explicit-source precedence: {help}"
+    );
+    assert!(
+        help.contains("A tty stdin is never read"),
+        "run --help must document tty behavior: {help}"
+    );
+    assert!(
+        help.contains("`create` never captures stdin implicitly"),
+        "run --help must document the create exclusion: {help}"
+    );
+}
+
+#[test]
+fn create_help_documents_explicit_only_stdin() {
+    let output = Command::new(binary())
+        .args(["create", "--help"])
+        .output()
+        .expect("create --help");
+    assert!(output.status.success(), "create --help should exit zero");
+    let help = squeeze_whitespace(&String::from_utf8_lossy(&output.stdout));
+
+    assert!(
+        help.contains("`create` never captures piped stdin implicitly"),
+        "create --help must document explicit-only stdin: {help}"
+    );
+}
+
 #[test]
 fn create_start_reuses_stdin_definition() {
     let h = TestHarness::new();
