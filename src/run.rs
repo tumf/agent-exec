@@ -156,7 +156,12 @@ impl<'a> Default for RunOpts<'a> {
 /// Shared by `run::execute` and `start::execute`.
 #[derive(Debug, Clone)]
 pub enum StdinSource {
+    /// Explicit `--stdin -`: caller stdin is required and must be non-interactive.
     CallerStdin,
+    /// Caller stdin detected implicitly by `run` because it is not a tty and no
+    /// explicit stdin option was given. Unlike `CallerStdin`, an empty read is
+    /// treated as "no stdin configured" rather than an empty `stdin.bin`.
+    ImplicitCallerStdin,
     Inline(String),
     File(String),
 }
@@ -195,6 +200,41 @@ pub fn resolve_stdin_source(
     }
 }
 
+/// Decide the stdin source for a `run` invocation from already-known tty state.
+///
+/// Explicit `--stdin` / `--stdin-file` stay authoritative. Only when neither is
+/// present and caller stdin is not a terminal does `run` capture it implicitly,
+/// so `producer | agent-exec run -- consumer` forwards bytes without requiring
+/// `--stdin -`. A tty caller stdin is never read, keeping `run` non-interactive.
+///
+/// Kept separate from the tty probe so the decision is unit-testable.
+pub fn resolve_run_stdin_source_with_tty(
+    stdin: Option<String>,
+    stdin_file: Option<String>,
+    stdin_is_tty: bool,
+) -> Option<StdinSource> {
+    match resolve_stdin_source(stdin, stdin_file) {
+        Some(explicit) => Some(explicit),
+        None if stdin_is_tty => None,
+        None => Some(StdinSource::ImplicitCallerStdin),
+    }
+}
+
+/// `run`-specific stdin resolution against this process's real stdin.
+///
+/// Only the CLI `run` surface uses this; `create`, `start`, `restart`, `serve`,
+/// and the MCP surfaces keep stdin explicit-only via [`resolve_stdin_source`].
+pub fn resolve_run_stdin_source(
+    stdin: Option<String>,
+    stdin_file: Option<String>,
+) -> Option<StdinSource> {
+    resolve_run_stdin_source_with_tty(stdin, stdin_file, std::io::stdin().is_terminal())
+}
+
+/// Reject `--stdin -` against an interactive terminal.
+///
+/// `ImplicitCallerStdin` is never produced for a tty caller, so it needs no
+/// check here.
 pub fn validate_stdin_source(stdin: Option<&StdinSource>) -> Result<()> {
     if matches!(stdin, Some(StdinSource::CallerStdin)) {
         let stdin = std::io::stdin();
@@ -267,7 +307,7 @@ fn materialize_stdin(
     };
 
     let copy_result = match source {
-        StdinSource::CallerStdin => {
+        StdinSource::CallerStdin | StdinSource::ImplicitCallerStdin => {
             let mut stdin = std::io::stdin();
             std::io::copy(&mut stdin, &mut target).context("materialize caller stdin to stdin.bin")
         }
@@ -275,7 +315,7 @@ fn materialize_stdin(
             use std::io::Write;
             target
                 .write_all(value.as_bytes())
-                .map(|_| 0u64)
+                .map(|_| value.len() as u64)
                 .context("write inline stdin to stdin.bin")
         }
         StdinSource::File(path) => {
@@ -286,18 +326,33 @@ fn materialize_stdin(
         }
     };
 
-    if let Err(e) = copy_result {
-        let _ = std::fs::remove_file(&target_path);
-        let is_too_large = e
-            .chain()
-            .any(|cause| cause.to_string().contains("stdin_too_large"));
-        if is_too_large {
-            return Err(anyhow::anyhow!(StdinTooLarge(format!(
-                "stdin_too_large: input exceeds {} byte limit",
-                max_bytes
-            ))));
+    let copied = match copy_result {
+        Ok(copied) => copied,
+        Err(e) => {
+            drop(target);
+            let _ = std::fs::remove_file(&target_path);
+            let is_too_large = e
+                .chain()
+                .any(|cause| cause.to_string().contains("stdin_too_large"));
+            if is_too_large {
+                return Err(anyhow::anyhow!(StdinTooLarge(format!(
+                    "stdin_too_large: input exceeds {} byte limit",
+                    max_bytes
+                ))));
+            }
+            return Err(e);
         }
-        return Err(e);
+    };
+
+    // An implicitly detected stdin that yields no bytes (for example `< /dev/null`
+    // or an already-closed pipe) is indistinguishable from "no stdin configured"
+    // for the child, so keep the historical null child stdin instead of leaving an
+    // empty stdin.bin and a stdin_file reference behind. Explicit sources always
+    // materialize, so `--stdin ""` and `--stdin -` keep their existing behavior.
+    if copied == 0 && matches!(source, StdinSource::ImplicitCallerStdin) {
+        drop(target);
+        let _ = std::fs::remove_file(&target_path);
+        return Ok(None);
     }
 
     Ok(Some(target_name))
@@ -1988,5 +2043,39 @@ mod tests {
     fn rfc3339_known_date() {
         // 2024-01-01T00:00:00Z = 1704067200
         assert_eq!(format_rfc3339(1704067200), "2024-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn run_stdin_is_implicit_when_caller_stdin_is_piped() {
+        assert!(matches!(
+            resolve_run_stdin_source_with_tty(None, None, false),
+            Some(StdinSource::ImplicitCallerStdin)
+        ));
+    }
+
+    #[test]
+    fn run_stdin_stays_absent_when_caller_stdin_is_a_tty() {
+        assert!(resolve_run_stdin_source_with_tty(None, None, true).is_none());
+    }
+
+    #[test]
+    fn explicit_run_stdin_options_win_over_implicit_detection() {
+        assert!(matches!(
+            resolve_run_stdin_source_with_tty(Some("explicit".to_string()), None, false),
+            Some(StdinSource::Inline(v)) if v == "explicit"
+        ));
+        assert!(matches!(
+            resolve_run_stdin_source_with_tty(Some("-".to_string()), None, false),
+            Some(StdinSource::CallerStdin)
+        ));
+        assert!(matches!(
+            resolve_run_stdin_source_with_tty(None, Some("/tmp/in.txt".to_string()), false),
+            Some(StdinSource::File(p)) if p == "/tmp/in.txt"
+        ));
+    }
+
+    #[test]
+    fn create_style_resolution_never_captures_stdin_implicitly() {
+        assert!(resolve_stdin_source(None, None).is_none());
     }
 }

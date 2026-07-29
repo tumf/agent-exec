@@ -153,6 +153,9 @@ enum Command {
         mask: Vec<String>,
 
         /// Provide stdin content directly. Use `--stdin -` to read from caller stdin.
+        ///
+        /// `create` never captures piped stdin implicitly; input must be requested
+        /// explicitly with `--stdin` or `--stdin-file`.
         #[arg(long, value_name = "VALUE", conflicts_with = "stdin_file")]
         stdin: Option<String>,
 
@@ -314,10 +317,22 @@ enum Command {
         inherit_env: bool,
         #[arg(long = "mask", value_name = "KEY")]
         mask: Vec<String>,
+        /// Provide stdin content directly. Use `--stdin -` to read from caller stdin.
+        ///
+        /// With neither --stdin nor --stdin-file, piped or redirected (non-tty) caller
+        /// stdin is forwarded automatically, so `producer | agent-exec run -- consumer`
+        /// works without extra flags. An explicit --stdin or --stdin-file takes
+        /// precedence and suppresses that detection. A tty stdin is never read, so an
+        /// interactive `agent-exec run -- cat` does not block and the child gets null
+        /// stdin. `create` never captures stdin implicitly.
         #[arg(long, value_name = "VALUE", conflicts_with = "stdin_file")]
         stdin: Option<String>,
+        /// Read stdin content from file and materialize it into the job directory.
+        /// Takes precedence over automatic piped-stdin detection.
         #[arg(long, value_name = "PATH", value_hint = ValueHint::FilePath, conflicts_with = "stdin")]
         stdin_file: Option<String>,
+        /// Maximum bytes allowed for materialized stdin.bin, including automatically
+        /// forwarded piped stdin (default: 64 MiB).
         #[arg(long, value_name = "BYTES", default_value_t = agent_exec::run::DEFAULT_STDIN_MAX_BYTES)]
         stdin_max_bytes: u64,
         #[arg(long = "tag", value_name = "TAG", value_parser = parse_stored_tag)]
@@ -911,7 +926,25 @@ struct ResolvedDefinitionOptions {
 }
 
 impl DefinitionOptions {
+    /// Resolve a definition whose stdin stays explicit-only (`create`).
     fn resolve(self) -> Result<ResolvedDefinitionOptions> {
+        let stdin =
+            agent_exec::run::resolve_stdin_source(self.stdin.clone(), self.stdin_file.clone());
+        self.resolve_with_stdin(stdin)
+    }
+
+    /// Resolve a `run` definition, which additionally forwards piped (non-tty)
+    /// caller stdin when neither `--stdin` nor `--stdin-file` was given.
+    fn resolve_for_run(self) -> Result<ResolvedDefinitionOptions> {
+        let stdin =
+            agent_exec::run::resolve_run_stdin_source(self.stdin.clone(), self.stdin_file.clone());
+        self.resolve_with_stdin(stdin)
+    }
+
+    fn resolve_with_stdin(
+        self,
+        stdin: Option<agent_exec::run::StdinSource>,
+    ) -> Result<ResolvedDefinitionOptions> {
         let shell_wrapper = agent_exec::config::resolve_shell_wrapper(
             self.shell_wrapper.as_deref(),
             self.config.as_deref(),
@@ -924,7 +957,7 @@ impl DefinitionOptions {
             env_files: self.env_files,
             inherit_env: !self.no_inherit_env,
             mask: self.mask,
-            stdin: agent_exec::run::resolve_stdin_source(self.stdin, self.stdin_file),
+            stdin,
             stdin_max_bytes: self.stdin_max_bytes,
             progress_every_ms: self.progress_every.saturating_mul(1000),
             notify_command: self.notify_command,
@@ -1262,7 +1295,7 @@ fn run(cli: Cli) -> Result<()> {
                 output_command,
                 output_file,
             }
-            .resolve()?;
+            .resolve_for_run()?;
             agent_exec::run::execute(agent_exec::run::RunOpts {
                 command,
                 root: root.as_deref(),
