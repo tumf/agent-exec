@@ -433,6 +433,66 @@ fn mcp_rejects_invalid_input_before_clamping_or_creating_a_job() {
     assert_envelope(&kill, "kill", true);
 }
 
+/// Regression for the zombie accumulation observed on long-lived `agent-exec mcp`
+/// servers: every finished supervisor stayed as an uncollected child of the server.
+/// The server here stays alive across several short jobs, so its own process-table
+/// children are the evidence. Disconnect semantics are unchanged and stay covered
+/// by `mcp_disconnect_does_not_cancel_a_managed_job`.
+#[cfg(unix)]
+#[test]
+fn mcp_reaps_finished_supervisors() {
+    use std::time::Duration;
+    use support::proc_table::{poll_until, zombie_children};
+
+    let harness = TestHarness::new();
+    let mut mcp = McpProcess::start(harness.root());
+    mcp.initialize();
+
+    let mut job_ids = Vec::new();
+    for id in 3..6 {
+        let run = mcp.call(
+            id,
+            "run",
+            json!({ "command": ["echo", "reap"], "until": 0 }),
+        );
+        assert_envelope(&run, "run", true);
+        job_ids.push(run["job_id"].as_str().expect("job id").to_string());
+    }
+
+    // The supervisors must have exited before their absence proves anything, so
+    // settle terminal state off the persisted contract instead of inline waiting.
+    let terminal = |job_id: &str| {
+        let path = std::path::Path::new(harness.root())
+            .join(job_id)
+            .join("state.json");
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+            .is_some_and(|state| state["job"]["status"] == "exited")
+    };
+    assert!(
+        poll_until(Duration::from_secs(2), || job_ids
+            .iter()
+            .all(|job_id| terminal(job_id))),
+        "short MCP jobs did not reach terminal state"
+    );
+
+    let mcp_pid = mcp.child.id();
+    assert!(
+        poll_until(Duration::from_millis(500), || zombie_children(mcp_pid)
+            .is_empty()),
+        "MCP server {mcp_pid} still owns unreaped supervisor children: {:?}",
+        zombie_children(mcp_pid)
+    );
+
+    // Reaping must not block the server thread or corrupt the stdio JSON-RPC stream.
+    for (offset, job_id) in job_ids.iter().enumerate() {
+        let status = mcp.call(10 + offset as u64, "status", json!({ "job_id": job_id }));
+        assert_envelope(&status, "status", true);
+        assert_eq!(status["state"], "exited");
+    }
+}
+
 #[test]
 fn mcp_preserves_missing_job_domain_errors() {
     let harness = TestHarness::new();

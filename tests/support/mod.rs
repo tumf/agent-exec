@@ -224,6 +224,64 @@ pub fn assert_common_fields(json: &serde_json::Value) {
     assert!(json.get("type").is_some(), "missing type in: {json}");
 }
 
+/// Process-table inspection helpers used by the supervisor-reaping regressions.
+///
+/// These read `ps` rather than `/proc` so they work on every supported Unix.
+#[cfg(unix)]
+pub mod proc_table {
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    /// The `ps` STAT column for `pid`, or `None` when the PID is no longer in the
+    /// process table (i.e. it was reaped).
+    pub fn process_stat(pid: u32) -> Option<String> {
+        let output = Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid.to_string()])
+            .output()
+            .expect("run ps");
+        let stat = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if stat.is_empty() { None } else { Some(stat) }
+    }
+
+    /// `true` when `pid` is still present as an uncollected (zombie) child.
+    pub fn is_zombie(pid: u32) -> bool {
+        process_stat(pid).is_some_and(|stat| stat.starts_with('Z'))
+    }
+
+    /// PIDs of `parent`'s direct children currently in zombie state.
+    pub fn zombie_children(parent: u32) -> Vec<u32> {
+        let output = Command::new("ps")
+            .args(["-A", "-o", "pid=,ppid=,stat="])
+            .output()
+            .expect("run ps");
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.split_whitespace();
+                let pid: u32 = fields.next()?.parse().ok()?;
+                let ppid: u32 = fields.next()?.parse().ok()?;
+                let stat = fields.next()?;
+                (ppid == parent && stat.starts_with('Z')).then_some(pid)
+            })
+            .collect()
+    }
+
+    /// Poll `condition` until it is true or `budget` elapses; returns the final value.
+    /// Bounded so the regressions stay fast on success and still tolerate scheduling.
+    pub fn poll_until(budget: Duration, mut condition: impl FnMut() -> bool) -> bool {
+        let deadline = Instant::now() + budget;
+        loop {
+            if condition() {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
 fn parse_json_stdout(output: &Output, args: &[&str]) -> serde_json::Value {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);

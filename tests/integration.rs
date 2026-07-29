@@ -8362,3 +8362,88 @@ fn compression_schema_and_help_list_modes_without_auto() {
     assert!(help.contains("--rtk <MODE>"));
     assert!(help.contains("route"));
 }
+
+// ── supervisor reaping (Unix) ──────────────────────────────────────────────────
+//
+// `spawn_supervisor_process` hands every supervisor `Child` to
+// `agent_exec::run::reap_spawned_child`. These tests pin that ownership contract
+// at the shared spawn boundary: the launcher must collect the child's exit status
+// without blocking the launch response or signalling the still-running workload.
+// The live-launcher process-table regression lives in `tests/mcp_integration.rs`
+// (`mcp_reaps_finished_supervisors`).
+
+#[cfg(unix)]
+fn spawn_detached_child(script: &str) -> std::process::Child {
+    Command::new("/bin/sh")
+        .args(["-c", script])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn child")
+}
+
+#[cfg(unix)]
+#[test]
+fn supervisor_reaping_collects_owned_child_exit_status() {
+    use std::time::Duration;
+    use support::proc_table::{is_zombie, poll_until, process_stat};
+
+    // Control: a child that is only dropped stays in the process table as a
+    // zombie. This is the pre-fix behavior, and it keeps the assertion below from
+    // passing vacuously on a host where `ps` reports nothing useful.
+    let leaked = spawn_detached_child("exit 0");
+    let leaked_pid = leaked.id();
+    drop(leaked);
+    assert!(
+        poll_until(Duration::from_millis(500), || is_zombie(leaked_pid)),
+        "a dropped child must stay unreaped for this regression to be meaningful; \
+         pid {leaked_pid} stat={:?}",
+        process_stat(leaked_pid)
+    );
+
+    // Subject: ownership transfer collects the exit status, so the PID leaves the
+    // process table instead of lingering as a zombie child of this launcher.
+    let owned = spawn_detached_child("exit 0");
+    let owned_pid = owned.id();
+    agent_exec::run::reap_spawned_child(owned);
+    assert!(
+        poll_until(Duration::from_millis(500), || process_stat(owned_pid)
+            .is_none()),
+        "owned child {owned_pid} was not reaped; stat={:?}",
+        process_stat(owned_pid)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn supervisor_reaping_neither_blocks_the_launcher_nor_signals_the_child() {
+    use std::time::{Duration, Instant};
+    use support::proc_table::process_stat;
+
+    let child = spawn_detached_child("sleep 30");
+    let pid = child.id();
+
+    let started = Instant::now();
+    agent_exec::run::reap_spawned_child(child);
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_millis(200),
+        "ownership transfer must not wait for the child: took {elapsed:?}"
+    );
+
+    // The workload keeps running: reaping never signals and never joins.
+    std::thread::sleep(Duration::from_millis(50));
+    let stat = process_stat(pid).expect("child must still be in the process table");
+    assert!(
+        !stat.starts_with('Z'),
+        "reaping must not terminate a running child; pid {pid} stat={stat}"
+    );
+
+    // The reaper thread collects the status once the child is terminated.
+    let killed = Command::new("kill")
+        .args(["-KILL", &pid.to_string()])
+        .status()
+        .expect("kill child");
+    assert!(killed.success(), "failed to clean up child {pid}");
+}
