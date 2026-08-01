@@ -47,8 +47,8 @@ The default embedded constructor SHALL use the current consumer executable as th
 - A separate Rust consumer can construct one client with an explicit jobs root and call typed `run`, `status`, `tail`, `list`, and `kill` operations without spawning the public `agent-exec` CLI or parsing JSON.
 - Embedded `run` preserves the existing default bounded inline observation behavior and allows an explicit no-wait launch.
 - A launched job remains managed after the original consumer process exits because supervision remains in a detached re-executed process.
-- The consumer's startup delegation handles only the exact reserved agent-exec supervisor invocation; ordinary consumer arguments remain untouched.
-- Missing startup delegation or an unusable supervisor executable causes a bounded launch failure and does not leave a falsely running job record.
+- The consumer's startup delegation claims only an exact reserved marker at `argv[1]`; invocations without it remain untouched, while claimed invocations with malformed generated arguments fail closed before consumer argument handling.
+- Missing startup delegation, malformed delegated arguments, or an unusable supervisor executable causes failure within a fixed five-second startup acknowledgement deadline, records terminal `failed` without an intermediate `running` transition, and does not launch a workload or emit a completion notification.
 - Typed status, tail, list, and kill preserve current job lookup, tag filtering, byte totals/ranges, state, exit-code, and TERM semantics.
 - `list` gains a non-printing typed response path; library calls never write command JSON to consumer stdout or diagnostics to consumer stdout.
 - The public CLI's JSON envelopes, exit codes, help, defaults, jobstore layout, logs, notifications, masking, timeout behavior, process-tree handling, and Windows Job Object behavior remain compatible.

@@ -22,4 +22,19 @@ And any accepted fix must be verified against this workload-liveness case, not o
 
 **Given**: a consumer selects its own executable for supervision but does not delegate the reserved startup invocation
 **When**: the typed API attempts to launch a job
-**Then**: launch fails without reporting success or leaving durable state that falsely identifies a nonexistent supervisor as running
+**Then**: launch fails within the fixed five-second startup acknowledgement deadline
+**And**: the pre-created job has a terminal `failed` state without an intermediate `running` transition
+**And**: no workload is launched and no completion notification is emitted
+
+#### Scenario: Embedded supervisor acknowledges startup
+
+**Given**: a consumer delegates a valid reserved supervisor invocation
+**When**: delegated supervision validates the explicit root and job identity and completes required platform setup
+**Then**: the supervisor atomically writes the initial `running` state with its own PID within five seconds
+**And**: the launcher's configured inline observation period begins only after that acknowledgement
+
+#### Scenario: Late supervisor acknowledgement is rejected
+
+**Given**: the launcher has recorded terminal `failed` after the startup acknowledgement deadline
+**When**: the delegated process later attempts to acknowledge startup
+**Then**: it does not overwrite the terminal state or launch the workload
