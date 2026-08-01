@@ -82,6 +82,7 @@ pub fn execute(opts: RestartOpts) -> Result<()> {
     let (supervisor_pid, started_at) = spawn_supervisor_process(
         &job_dir,
         SpawnSupervisorParams {
+            supervisor_exe: crate::run::default_supervisor_exe()?,
             job_id: job_dir.job_id.clone(),
             root: root.clone(),
             full_log_path,
@@ -268,6 +269,14 @@ fn reset_per_run_artifacts(job_dir: &JobDir) -> Result<()> {
                 .with_context(|| format!("remove stale {}", completion_event_path.display()));
         }
     }
+
+    // The acknowledgement marker is per launch attempt, so a reused job
+    // directory must start the next launch with an unclaimed marker.
+    crate::run::clear_supervisor_ack(job_dir)?;
+
+    // Reset to `created` so the next launch's `running` transition is written by
+    // the delegated supervisor rather than inherited from the previous run.
+    job_dir.init_state_created()?;
 
     Ok(())
 }

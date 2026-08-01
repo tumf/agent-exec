@@ -115,7 +115,24 @@ pub struct ListOpts<'a> {
 }
 
 /// Execute `list`: enumerate jobs and emit JSON.
+///
+/// This is the CLI adapter only: enumeration lives in [`list_data`] so embedded
+/// callers can obtain the same result without any stdout write.
 pub fn execute(opts: ListOpts) -> Result<()> {
+    list_response(opts)?.print();
+    Ok(())
+}
+
+/// Build the `list` JSON envelope without printing it.
+pub fn list_response(opts: ListOpts) -> Result<Response<ListData>> {
+    Ok(Response::new("list", list_data(opts)?))
+}
+
+/// Enumerate jobs and return the typed result.
+///
+/// This is the single implementation of list semantics (cwd/tag/state filtering,
+/// ordering, truncation, skipped counting). Nothing here writes to stdout.
+pub fn list_data(opts: ListOpts) -> Result<ListData> {
     let root = resolve_root(opts.root);
     let root_str = root.display().to_string();
 
@@ -146,17 +163,12 @@ pub fn execute(opts: ListOpts) -> Result<()> {
     // If root does not exist, return an empty list (normal termination).
     if !root.exists() {
         debug!(root = %root_str, "root does not exist; returning empty list");
-        let response = Response::new(
-            "list",
-            ListData {
-                root: root_str,
-                jobs: vec![],
-                truncated: false,
-                skipped: 0,
-            },
-        );
-        response.print();
-        return Ok(());
+        return Ok(ListData {
+            root: root_str,
+            jobs: vec![],
+            truncated: false,
+            skipped: 0,
+        });
     }
 
     // Read directory entries.
@@ -294,15 +306,10 @@ pub fn execute(opts: ListOpts) -> Result<()> {
         "list complete"
     );
 
-    let response = Response::new(
-        "list",
-        ListData {
-            root: root_str,
-            jobs,
-            truncated,
-            skipped,
-        },
-    );
-    response.print();
-    Ok(())
+    Ok(ListData {
+        root: root_str,
+        jobs,
+        truncated,
+        skipped,
+    })
 }

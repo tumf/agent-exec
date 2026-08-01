@@ -913,6 +913,81 @@ When output-match notification metadata is active, the supervisor evaluates newl
 }
 ```
 
+## Embedding in a Rust program
+
+A Rust program that links `agent-exec` can manage jobs through a typed API
+instead of spawning the `agent-exec` executable and reparsing JSON. See the
+`agent_exec::embedded` module docs for the full contract.
+
+Managed jobs stay managed because supervision runs in a **detached process**,
+never an in-process thread — the supervisor owns the workload's stdout/stderr,
+timeout escalation, notifications, state updates, and process-tree cleanup long
+after the launching call returns. So embedded launch re-executes a supervisor
+executable, which by default is the consumer's own binary. That is why the
+consumer has to install the startup delegation **before its own argument
+parsing**:
+
+```rust
+use agent_exec::embedded::{EmbeddedClient, KillRequest, ListRequest, RunRequest,
+                           SupervisorDelegation, TailRequest};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // 1. Reserved supervisor invocations are claimed here and never reach the
+    //    consumer's own CLI. Ordinary invocations fall through untouched.
+    if agent_exec::embedded::delegate_supervisor_startup()? == SupervisorDelegation::Supervised {
+        return Ok(());
+    }
+
+    // 2. The jobs root is always explicit for embedded callers: no
+    //    AGENT_EXEC_ROOT / XDG fallback is applied.
+    let client = EmbeddedClient::new("/var/lib/my-app/agent-exec-jobs")?;
+
+    // 3. Typed calls only — no JSON, no stdout writes, no CLI subprocess.
+    let launched = client.run(RunRequest::new(vec!["echo hello".to_string()]))?;
+    let status = client.status(&launched.job_id)?;
+    let tail = client.tail(TailRequest::new(&launched.job_id))?;
+    let jobs = client.list(ListRequest::all())?;
+    let killed = client.kill(KillRequest::new(&launched.job_id))?;
+    println!("{} {} {} {}", status.state, tail.encoding, jobs.jobs.len(), killed.signal);
+    Ok(())
+}
+```
+
+**Reserved invocation ownership.** Delegation claims a process only when
+`argv[1]` is exactly the reserved marker; anything else returns
+`NotSupervisor` with the consumer's arguments unchanged. Once claimed, the
+generated argument grammar is parsed strictly, and missing, duplicated,
+malformed, or unexpected arguments fail closed instead of falling through to
+consumer command handling. The marker is a private dispatch token, not an
+authentication boundary and not a stable end-user CLI; delegated supervision
+also validates the explicit root and job identity against the pre-created
+metadata before acknowledging startup.
+
+**Supervisor executable override.** `EmbeddedClient::with_supervisor_exe`
+selects a different trusted executable for tests and unusual packaging. It must
+install the same delegation.
+
+**Lifecycle guarantees.** `run` returns only after the delegated supervisor
+acknowledges startup within a fixed five-second deadline, so a `running` result
+means supervision really claimed the job and will outlive the launching process.
+A launch that never produced validated supervision — missing delegation,
+malformed delegated arguments, an unusable supervisor executable, or an expired
+deadline — persists terminal `failed` with no intermediate `running`
+transition, launches no workload, and emits no completion notification. The
+deadline is a launch-integrity check rather than workload observation, so it
+also applies to no-wait launches, and the inline observation budget starts only
+after acknowledgement.
+
+**API shape and errors.** The API is synchronous, matching the jobstore. Every
+operation returns `JobError`, whose `kind()` and `is_retryable()` let callers
+distinguish `job_not_found`, `ambiguous_job_id`, `invalid_input`,
+`invalid_state`, `launch_failed`, `io_error`, and `internal_error` without
+parsing message text.
+
+The standalone CLI, MCP server, and HTTP server are adapters over this same
+typed implementation, so their JSON envelopes, exit codes, and job semantics are
+unchanged.
+
 ## Logging
 
 Diagnostic logs use `stderr` only:

@@ -3,6 +3,7 @@
 ## Purpose
 TBD - created by archiving change define-agent-exec-contract-v0-1. Update Purpose after archive.
 ## Requirements
+
 ### Requirement: CLI サブコマンド構成
 
 `agent-exec` は `schema` サブコマンドを提供しなければならない（MUST）。`schema` は stdout に `type="schema"` の JSON を 1 つ出力しなければならない（MUST）。`schema` の JSON は `schema_format` と `schema` を含み、`schema_format` は `json-schema-draft-07` でなければならない（MUST）。
@@ -109,3 +110,54 @@ Then 終了コードは `1` である
 **When**: `agent-exec status <shared-prefix>` is executed
 **Then**: `error.details.candidates` contains 20 entries
 **And**: `error.details.truncated` is `true`
+
+### Requirement: Embedded typed managed-job API
+
+The Rust crate SHALL expose a synchronous typed API for `run`, `status`, `tail`, `list`, and `kill` that operates on an explicit jobs root without invoking the public `agent-exec` CLI, parsing command JSON, or writing command responses to stdout. The API SHALL return domain types for job identity, state, output ranges and totals, list summaries, signal observations, and structured error categories. It SHALL preserve the same jobstore, lookup, tag, observation, timeout, signal, logging, masking, notification, and process-tree semantics used by the standalone CLI.
+
+#### Scenario: Consumer manages a job without CLI JSON
+
+**Given**: a Rust consumer links the crate, configures an isolated jobs root, and installs supervisor startup delegation
+**When**: it calls typed run, status, tail, list, and kill methods
+**Then**: each operation returns Rust domain data without spawning the public CLI or parsing/printing a JSON response
+**And**: the job remains visible through the same persisted jobstore contract
+
+#### Scenario: Embedded list filters by recovery tags
+
+**Given**: multiple jobs exist under one explicit root with different persisted tags
+**When**: the consumer calls typed list with repeated tag filters and all-directory scope
+**Then**: the result contains only jobs satisfying every tag pattern and preserves current ordering, truncation, skipped-count, state, and exit-code semantics
+
+#### Scenario: Embedded errors are machine-classifiable
+
+**Given**: a consumer requests a missing or ambiguous job, submits invalid input, or encounters supervisor launch or storage failure
+**When**: the typed operation returns an error
+**Then**: the consumer can distinguish the stable error category and retryability without parsing human-readable message text
+
+### Requirement: Embedding supervisor startup delegation
+
+The crate SHALL expose a startup delegation entrypoint for embedding binaries. It SHALL claim an invocation only when the exact reserved supervisor marker occurs at `argv[1]`, return immediately without altering ordinary consumer startup otherwise, and execute the same detached supervision implementation used by the standalone CLI for a valid invocation. Once the marker is claimed, missing, duplicate, malformed, or unexpected generated arguments SHALL fail closed without entering normal consumer handling. The marker is a reserved dispatch token rather than an authentication boundary; delegated supervision SHALL validate the explicit root and job identity against pre-created metadata before acknowledging startup. The embedded client SHALL default supervision to the current executable and SHALL allow an explicit trusted supervisor executable override.
+
+#### Scenario: Ordinary consumer invocation is untouched
+
+**Given**: the embedding binary starts with its normal application arguments
+**When**: it calls the delegation entrypoint before its own argument parser
+**Then**: delegation reports that the process is not a supervisor invocation and the consumer receives its original arguments unchanged
+
+#### Scenario: Reserved invocation runs supervision
+
+**Given**: the embedded client re-executes the configured binary with a valid reserved supervisor invocation
+**When**: startup delegation examines the invocation
+**Then**: it runs supervision to terminal state without entering the consumer's normal command handling
+
+#### Scenario: Reserved marker claims the invocation
+
+**Given**: the exact reserved supervisor marker occurs at `argv[1]`
+**When**: required generated arguments are missing, duplicated, malformed, or followed by unexpected trailing arguments
+**Then**: delegation returns a bounded error and does not pass the invocation to normal consumer argument handling
+
+#### Scenario: Malformed reserved invocation fails closed
+
+**Given**: the process contains the reserved supervisor marker but required identity, root, or execution arguments are malformed or missing
+**When**: startup delegation examines it
+**Then**: it returns a bounded error and does not run either supervision or normal consumer command handling

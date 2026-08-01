@@ -80,6 +80,7 @@ pub fn execute(opts: StartOpts) -> Result<()> {
     let (supervisor_pid, started_at) = spawn_supervisor_process(
         &job_dir,
         SpawnSupervisorParams {
+            supervisor_exe: crate::run::default_supervisor_exe()?,
             job_id: job_dir.job_id.clone(),
             root: root.clone(),
             full_log_path: full_log_path.clone(),

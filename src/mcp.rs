@@ -229,6 +229,11 @@ fn domain_error(error: anyhow::Error) -> ErrorResponse {
         "invalid_state"
     } else if error.downcast_ref::<crate::run::StdinTooLarge>().is_some() {
         "stdin_too_large"
+    } else if error
+        .downcast_ref::<crate::run::SupervisorLaunchFailed>()
+        .is_some()
+    {
+        "launch_failed"
     } else {
         "internal_error"
     };
