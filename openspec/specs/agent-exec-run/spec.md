@@ -6,7 +6,7 @@ TBD - created by archiving change define-agent-exec-run-supervise-v0-1. Update P
 
 ### Requirement: run の監視分離
 
-Issue `#5` verification must distinguish between visible success output and actual workload termination. A job must not be considered reliably complete merely because its logs contain apparent success lines, and regressions for lingering `running` state must include a reproduction shape where the wrapped workload process itself may remain alive after success-like output (MUST).
+Issue `#5` verification must distinguish between visible success output and actual workload termination. A job must not be considered reliably complete merely because its logs contain apparent success lines, and regressions for lingering `running` state must include a reproduction shape where the wrapped workload process itself may remain alive after success-like output (MUST). The same detached supervisor and workload-liveness semantics SHALL apply whether a job is launched through the standalone CLI, MCP/HTTP adapters, or the embedded Rust API. Embedded launch SHALL re-execute an explicitly selected supervisor executable and SHALL NOT substitute an in-process thread whose lifetime is tied to the caller.
 
 #### Scenario: cflx-like workload logs success before job leaves running
 
@@ -15,6 +15,33 @@ And the job still has a live wrapped workload process after those lines are visi
 When `agent-exec status <job_id>` and `agent-exec wait <job_id>` are evaluated for issue `#5`
 Then the regression analysis must treat this as a distinct failure shape from descendant-held stdio only
 And any accepted fix must be verified against this workload-liveness case, not only shell-only synthetic cases
+
+#### Scenario: Embedded launcher exits while workload continues
+
+**Given**: a consumer links the agent-exec crate, delegates the reserved supervisor invocation at startup, and launches a managed job through the typed API
+**When**: the original consumer process exits before the workload
+**Then**: the detached supervisor continues recording output and terminal state and another client instance can observe and control the same job through the explicit jobs root
+
+#### Scenario: Embedded supervisor delegation is missing
+
+**Given**: a consumer selects its own executable for supervision but does not delegate the reserved startup invocation
+**When**: the typed API attempts to launch a job
+**Then**: launch fails within the fixed five-second startup acknowledgement deadline
+**And**: the pre-created job has a terminal `failed` state without an intermediate `running` transition
+**And**: no workload is launched and no completion notification is emitted
+
+#### Scenario: Embedded supervisor acknowledges startup
+
+**Given**: a consumer delegates a valid reserved supervisor invocation
+**When**: delegated supervision validates the explicit root and job identity and completes required platform setup
+**Then**: the supervisor atomically writes the initial `running` state with its own PID within five seconds
+**And**: the launcher's configured inline observation period begins only after that acknowledgement
+
+#### Scenario: Late supervisor acknowledgement is rejected
+
+**Given**: the launcher has recorded terminal `failed` after the startup acknowledgement deadline
+**When**: the delegated process later attempts to acknowledge startup
+**Then**: it does not overwrite the terminal state or launch the workload
 
 ### Requirement: head/tail 観測契約
 
