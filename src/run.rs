@@ -110,6 +110,10 @@ pub struct RunOpts<'a> {
     /// Resolved shell wrapper argv used to execute command strings.
     /// e.g. `["sh", "-lc"]` or `["bash", "-lc"]`.
     pub shell_wrapper: Vec<String>,
+    /// Executable re-executed with the reserved supervisor invocation.
+    /// `None` = the current executable (correct for the standalone CLI and for
+    /// embedded consumers that install the startup delegation entrypoint).
+    pub supervisor_exe: Option<std::path::PathBuf>,
 }
 
 impl<'a> Default for RunOpts<'a> {
@@ -147,6 +151,7 @@ impl<'a> Default for RunOpts<'a> {
             output_command: None,
             output_file: None,
             shell_wrapper: crate::config::default_shell_wrapper(),
+            supervisor_exe: None,
         }
     }
 }
@@ -167,6 +172,12 @@ pub enum StdinSource {
 }
 
 pub struct SpawnSupervisorParams {
+    /// Executable re-executed with the reserved supervisor invocation.
+    ///
+    /// The standalone CLI passes its own executable. Embedded consumers pass the
+    /// executable that installs [`crate::embedded::delegate_supervisor_startup`],
+    /// which defaults to the consumer binary itself.
+    pub supervisor_exe: std::path::PathBuf,
     pub job_id: String,
     pub root: std::path::PathBuf,
     pub full_log_path: String,
@@ -391,6 +402,206 @@ impl std::fmt::Display for StdinTooLarge {
 
 impl std::error::Error for StdinTooLarge {}
 
+/// Sentinel error type for supervisor launch failures.
+///
+/// Raised when the selected supervisor executable cannot be spawned, exits
+/// before acknowledging startup (for example an embedding consumer that never
+/// installed [`crate::embedded::delegate_supervisor_startup`]), or fails to
+/// acknowledge within [`SUPERVISOR_ACK_TIMEOUT`]. Callers map it to the stable
+/// `launch_failed` error code.
+#[derive(Debug)]
+pub struct SupervisorLaunchFailed(pub String);
+
+impl std::fmt::Display for SupervisorLaunchFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "supervisor launch failed: {}", self.0)
+    }
+}
+
+impl std::error::Error for SupervisorLaunchFailed {}
+
+/// Fixed startup acknowledgement deadline for a delegated supervisor.
+///
+/// This is a launch-integrity check rather than workload observation, so it
+/// applies to no-wait launches too and is independent of `--until`.
+pub const SUPERVISOR_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+const SUPERVISOR_ACK_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
+
+/// Grace period the launcher allows for the state write that immediately follows
+/// a supervisor acknowledgement it lost the marker race against.
+const SUPERVISOR_ACK_GRACE: std::time::Duration = std::time::Duration::from_millis(1000);
+
+/// Name of the per-launch acknowledgement marker inside a job directory.
+///
+/// The marker is claimed with an atomic `create_new`, which is the mutual
+/// exclusion primitive between the launcher (committing terminal `failed` after
+/// the deadline) and the delegated supervisor (committing `running`). Exactly one
+/// of them can win, so a late supervisor can never resurrect a failed launch and
+/// the launcher can never mark a live supervisor as failed.
+pub const SUPERVISOR_ACK_FILE: &str = "supervisor.ack";
+
+/// Atomically claim the startup acknowledgement marker for this launch attempt.
+///
+/// Returns `Ok(true)` when the caller claimed it, `Ok(false)` when the other side
+/// already did.
+pub fn claim_supervisor_ack(job_dir: &JobDir) -> Result<bool> {
+    let path = job_dir.path.join(SUPERVISOR_ACK_FILE);
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+    {
+        Ok(_) => Ok(true),
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(err) => Err(anyhow::Error::new(err))
+            .with_context(|| format!("claim supervisor acknowledgement marker {}", path.display())),
+    }
+}
+
+/// Remove the acknowledgement marker so the job directory can be launched again.
+///
+/// Used by `restart`, which reuses an existing job directory for a new run.
+pub fn clear_supervisor_ack(job_dir: &JobDir) -> Result<()> {
+    let path = job_dir.path.join(SUPERVISOR_ACK_FILE);
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(anyhow::Error::new(err))
+            .with_context(|| format!("clear supervisor acknowledgement marker {}", path.display())),
+    }
+}
+
+/// Resolve the default supervisor executable (the current process executable).
+pub fn default_supervisor_exe() -> Result<std::path::PathBuf> {
+    std::env::current_exe().context("resolve current exe")
+}
+
+/// Persist the terminal `failed` state for a job whose launch never started a workload.
+///
+/// No `running` transition and no completion notification are produced: the
+/// workload never ran, so there is nothing to report as finished. The job
+/// directory is preserved so `status` and `list` observers can still see it.
+fn write_launch_failed_state(job_dir: &JobDir) -> Result<()> {
+    let now = now_rfc3339();
+    let state = JobState {
+        job: JobStateJob {
+            id: job_dir.job_id.clone(),
+            status: JobStatus::Failed,
+            started_at: None,
+        },
+        result: JobStateResult {
+            exit_code: None,
+            signal: None,
+            duration_ms: None,
+        },
+        pid: None,
+        finished_at: Some(now.clone()),
+        updated_at: now,
+        logs_drained: true,
+        windows_job_name: None,
+    };
+    job_dir.write_state(&state)
+}
+
+/// Commit a launch failure, unless a delegated supervisor acknowledged first.
+///
+/// Returns `Ok(started_at)` when the supervisor won the marker race after all (the
+/// launch actually succeeded), and `Err(SupervisorLaunchFailed)` when the launcher
+/// won and recorded terminal `failed`.
+fn commit_launch_failure(job_dir: &JobDir, reason: String) -> Result<String> {
+    let launcher_won = claim_supervisor_ack(job_dir).unwrap_or(true);
+    if launcher_won {
+        if let Err(err) = write_launch_failed_state(job_dir) {
+            warn!(
+                job_id = %job_dir.job_id,
+                error = %err,
+                "failed to persist terminal failed state for a failed launch"
+            );
+        }
+        return Err(anyhow::Error::new(SupervisorLaunchFailed(reason)));
+    }
+
+    // The supervisor claimed the marker first; its `running` write follows
+    // immediately, so wait briefly for it before deciding.
+    let deadline = std::time::Instant::now() + SUPERVISOR_ACK_GRACE;
+    loop {
+        if let Some(started_at) = read_acknowledged_started_at(job_dir) {
+            debug!(
+                job_id = %job_dir.job_id,
+                "supervisor acknowledged startup while the launcher was committing failure"
+            );
+            return Ok(started_at);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(anyhow::Error::new(SupervisorLaunchFailed(format!(
+                "{reason} (supervisor claimed the acknowledgement marker but never \
+                 published a running state)"
+            ))));
+        }
+        std::thread::sleep(SUPERVISOR_ACK_POLL_INTERVAL);
+    }
+}
+
+/// Read the acknowledged `started_at`, or `None` while the job is still `created`.
+fn read_acknowledged_started_at(job_dir: &JobDir) -> Option<String> {
+    let state = job_dir.read_state().ok()?;
+    if *state.status() == JobStatus::Created {
+        return None;
+    }
+    Some(
+        state
+            .started_at()
+            .map(|s| s.to_string())
+            .unwrap_or_else(now_rfc3339),
+    )
+}
+
+/// Wait for the delegated supervisor to acknowledge startup.
+///
+/// Acknowledgement is the supervisor's atomic transition of the pre-created job
+/// out of `created`. Three failure shapes are detected: the supervisor exits
+/// early (no delegation installed, or delegation rejected the invocation), it
+/// never acknowledges within [`SUPERVISOR_ACK_TIMEOUT`], or it acknowledged after
+/// the launcher already committed failure.
+fn await_supervisor_ack(job_dir: &JobDir, supervisor: &mut std::process::Child) -> Result<String> {
+    let deadline = std::time::Instant::now() + SUPERVISOR_ACK_TIMEOUT;
+    loop {
+        if let Some(started_at) = read_acknowledged_started_at(job_dir) {
+            return Ok(started_at);
+        }
+
+        if let Ok(Some(status)) = supervisor.try_wait() {
+            // The process is gone; re-check once so an acknowledgement written
+            // just before exit is not misread as a failure.
+            if let Some(started_at) = read_acknowledged_started_at(job_dir) {
+                return Ok(started_at);
+            }
+            return commit_launch_failure(
+                job_dir,
+                format!(
+                    "supervisor executable exited with {status} before acknowledging startup; \
+                     the selected executable must call \
+                     agent_exec::embedded::delegate_supervisor_startup() before its own \
+                     argument parsing"
+                ),
+            );
+        }
+
+        if std::time::Instant::now() >= deadline {
+            return commit_launch_failure(
+                job_dir,
+                format!(
+                    "supervisor did not acknowledge startup within {}s",
+                    SUPERVISOR_ACK_TIMEOUT.as_secs()
+                ),
+            );
+        }
+
+        std::thread::sleep(SUPERVISOR_ACK_POLL_INTERVAL);
+    }
+}
+
 pub fn open_child_stdin(job_dir: &JobDir, stdin_file: Option<&str>) -> Result<std::process::Stdio> {
     if let Some(path) = resolve_stdin_path(job_dir, stdin_file) {
         let file = std::fs::File::open(&path)
@@ -445,20 +656,22 @@ pub fn reap_spawned_child(mut child: std::process::Child) {
 #[cfg(not(unix))]
 pub fn reap_spawned_child(_child: std::process::Child) {}
 
-/// Spawn the supervisor process and write the initial running state to `state.json`.
+/// Re-execute the selected supervisor executable and wait for it to acknowledge startup.
 ///
-/// Returns the supervisor PID and the actual `started_at` timestamp.
+/// The caller MUST have persisted the job's `created` state before calling this;
+/// the acknowledgement is detected as the supervisor's transition out of `created`.
+/// On success the job is `running` and supervision is detached from this process.
+/// On failure the job is left in terminal `failed` and no workload was launched.
+///
+/// Returns the supervisor PID and the acknowledged `started_at` timestamp.
 /// Also handles the Windows Job Object handshake before returning.
 pub fn spawn_supervisor_process(
     job_dir: &JobDir,
     params: SpawnSupervisorParams,
 ) -> Result<(u32, String)> {
-    let started_at = now_rfc3339();
-
-    let exe = std::env::current_exe().context("resolve current exe")?;
-    let mut supervisor_cmd = Command::new(&exe);
+    let mut supervisor_cmd = Command::new(&params.supervisor_exe);
     supervisor_cmd
-        .arg("_supervise")
+        .arg(crate::embedded::SUPERVISOR_MARKER)
         .arg("--job-id")
         .arg(&params.job_id)
         .arg("--supervise-root")
@@ -518,12 +731,39 @@ pub fn spawn_supervisor_process(
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
 
-    let supervisor = supervisor_cmd.spawn().context("spawn supervisor")?;
+    let mut supervisor = match supervisor_cmd.spawn() {
+        Ok(child) => child,
+        Err(err) => {
+            // An unusable supervisor executable is a launch failure, not an
+            // internal error: commit terminal `failed` and report it as such.
+            // No supervisor exists, so the launcher always wins the marker race.
+            let _ = claim_supervisor_ack(job_dir);
+            if let Err(state_err) = write_launch_failed_state(job_dir) {
+                warn!(
+                    job_id = %job_dir.job_id,
+                    error = %state_err,
+                    "failed to persist terminal failed state for an unspawnable supervisor"
+                );
+            }
+            return Err(anyhow::Error::new(SupervisorLaunchFailed(format!(
+                "spawn supervisor executable {}: {err}",
+                params.supervisor_exe.display()
+            ))));
+        }
+    };
     let supervisor_pid = supervisor.id();
     debug!(supervisor_pid, "supervisor spawned");
 
-    // Write initial running state.
-    job_dir.init_state(supervisor_pid, &started_at)?;
+    // The supervisor — not the launcher — publishes the initial `running` state,
+    // so `running` is never observable unless validated delegated supervision
+    // actually claimed this job.
+    let started_at = match await_supervisor_ack(job_dir, &mut supervisor) {
+        Ok(started_at) => started_at,
+        Err(err) => {
+            reap_spawned_child(supervisor);
+            return Err(err);
+        }
+    };
 
     // Windows Job Object handshake.
     #[cfg(windows)]
@@ -687,12 +927,24 @@ pub fn run_response(opts: RunOpts) -> Result<Response<RunData>> {
     // Pre-create empty log files so they exist before the supervisor starts.
     pre_create_log_files(&job_dir)?;
 
+    // Publish the pre-launch `created` state. `running` is written only by the
+    // delegated supervisor once it acknowledges startup, so the observable
+    // sequence is `created -> running` on success and `created -> failed` when
+    // the launch never produced validated supervision.
+    job_dir.init_state_created()?;
+
+    let supervisor_exe = match opts.supervisor_exe {
+        Some(exe) => exe,
+        None => default_supervisor_exe()?,
+    };
+
     // Spawn the supervisor using the shared helper.
     // Note: masking is handled by `run` (meta.json + JSON response). The supervisor
     // receives the real env var values so the child process can use them as intended.
     let (_supervisor_pid, _started_at) = spawn_supervisor_process(
         &job_dir,
         SpawnSupervisorParams {
+            supervisor_exe,
             job_id: job_id.clone(),
             root: root.clone(),
             full_log_path: full_log_path.clone(),
@@ -1196,17 +1448,76 @@ fn stream_to_logs<R, F>(
 /// the entire process tree can be terminated with a single `kill` call.
 /// The Job Object name is recorded in `state.json` as `windows_job_name`.
 pub fn supervise(opts: SuperviseOpts) -> Result<()> {
+    if opts.command.is_empty() {
+        anyhow::bail!("supervisor: no command");
+    }
+    if opts.shell_wrapper.is_empty() {
+        anyhow::bail!("supervisor: shell wrapper must not be empty");
+    }
+
+    // Resolve the pre-created job by its exact ID under the explicit root, then
+    // confirm its persisted identity. A delegated invocation always names an
+    // existing job created by the launcher, so anything else fails closed before
+    // a workload can be launched.
+    let job_dir = open_supervised_job(opts.root, opts.job_id)?;
+
+    let mut acknowledged = false;
+    let result = supervise_inner(opts, &job_dir, &mut acknowledged);
+    if result.is_err() && acknowledged {
+        // This process owns the job's launch attempt, so a failure after
+        // acknowledgement must not leave the job permanently `running`.
+        record_supervisor_failure(&job_dir);
+    }
+    result
+}
+
+/// Open a pre-created job directory for delegated supervision.
+///
+/// Prefix resolution is deliberately not used: generated supervisor invocations
+/// always carry the full job ID, and accepting a prefix would let a malformed
+/// invocation attach to the wrong job.
+fn open_supervised_job(root: &Path, job_id: &str) -> Result<JobDir> {
+    let job_dir = JobDir::open(root, job_id)?;
+    if job_dir.job_id != job_id {
+        anyhow::bail!(
+            "supervisor: job id {job_id} does not exactly identify a job under {}",
+            root.display()
+        );
+    }
+    let meta = job_dir.read_meta()?;
+    if meta.job_id() != job_id {
+        anyhow::bail!(
+            "supervisor: job {job_id} metadata identity mismatch: meta.json has {}",
+            meta.job_id()
+        );
+    }
+    Ok(job_dir)
+}
+
+/// Record terminal `failed` for a job whose supervision aborted after acknowledgement.
+///
+/// A state already written by the normal exit paths (including the Windows Job
+/// Object failure path) is never overwritten.
+fn record_supervisor_failure(job_dir: &JobDir) {
+    match job_dir.read_state() {
+        Ok(state) if !state.status().is_non_terminal() => {}
+        _ => {
+            if let Err(err) = write_launch_failed_state(job_dir) {
+                warn!(
+                    job_id = %job_dir.job_id,
+                    error = %err,
+                    "failed to persist terminal failed state after supervisor error"
+                );
+            }
+        }
+    }
+}
+
+fn supervise_inner(opts: SuperviseOpts, job_dir: &JobDir, acknowledged: &mut bool) -> Result<()> {
     use std::sync::{Arc, Mutex};
 
     let job_id = opts.job_id;
-    let root = opts.root;
     let command = opts.command;
-
-    if command.is_empty() {
-        anyhow::bail!("supervisor: no command");
-    }
-
-    let job_dir = JobDir::open(root, job_id)?;
 
     // Read meta.json for notification config and cwd (used in completion event).
     let meta = job_dir.read_meta()?;
@@ -1231,6 +1542,25 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
     let full_log_file = std::fs::File::create(&full_log_path).context("create full.log")?;
     let full_log = Arc::new(Mutex::new(full_log_file));
 
+    // Startup acknowledgement.
+    //
+    // Claiming the marker is the atomic hand-off with the launcher: exactly one
+    // side wins, so a supervisor that arrives after the launcher already
+    // committed terminal `failed` refuses to run the workload instead of
+    // resurrecting the job. Only after winning does this process publish the
+    // initial `running` state with its own PID, which is what the launcher polls
+    // for. On Windows the named Job Object can only be assigned once the child
+    // exists, so that MUST requirement stays enforced by the launcher's existing
+    // `state.json` handshake immediately after this acknowledgement.
+    if !claim_supervisor_ack(job_dir)? {
+        anyhow::bail!(
+            "supervisor: launch for job {job_id} was already committed as failed; \
+             refusing to start the workload"
+        );
+    }
+    *acknowledged = true;
+    job_dir.init_state(std::process::id(), &started_at)?;
+
     // Execute command through the shell wrapper.
     //
     // Two launch modes:
@@ -1246,9 +1576,6 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
     //
     // --notify-command delivery always uses the wrapper in string mode
     // (see dispatch_command_sink); this change only affects job argv launches.
-    if opts.shell_wrapper.is_empty() {
-        anyhow::bail!("supervisor: shell wrapper must not be empty");
-    }
     let mut child_cmd = Command::new(&opts.shell_wrapper[0]);
     if command.len() == 1 {
         // Shell-string mode: pass the command string to the wrapper as-is.
@@ -1335,7 +1662,7 @@ pub fn supervise(opts: SuperviseOpts) -> Result<()> {
     }
 
     // Spawn the child with piped stdout/stderr so we can tee to logs.
-    let child_stdin = open_child_stdin(&job_dir, opts.stdin_file.as_deref())?;
+    let child_stdin = open_child_stdin(job_dir, opts.stdin_file.as_deref())?;
     let mut child = child_cmd
         .stdin(child_stdin)
         .stdout(std::process::Stdio::piped())

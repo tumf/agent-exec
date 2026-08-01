@@ -8,6 +8,7 @@ pub mod compress;
 pub mod config;
 pub mod create;
 pub mod delete;
+pub mod embedded;
 pub mod gc;
 pub mod install_skills;
 pub mod jobstore;

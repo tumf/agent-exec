@@ -20,7 +20,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use crate::jobstore::{JobDir, JobNotFound, generate_job_id, resolve_root};
-use crate::schema::{JobMeta, JobMetaJob, Response, RunData, SCHEMA_VERSION, StatusData, TailData};
+use crate::schema::{JobMeta, JobMetaJob, Response, RunData, SCHEMA_VERSION};
 
 /// Options for the `serve` sub-command.
 pub struct ServeOpts {
@@ -214,6 +214,15 @@ fn map_err_to_response(e: anyhow::Error) -> AxumResponse {
         .is_some()
     {
         err_resp(StatusCode::BAD_REQUEST, "invalid_state", &format!("{e:#}"))
+    } else if e
+        .downcast_ref::<crate::run::SupervisorLaunchFailed>()
+        .is_some()
+    {
+        err_resp(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "launch_failed",
+            &format!("{e:#}"),
+        )
     } else {
         err_resp(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -386,10 +395,13 @@ fn run_exec_inner(p: ExecParams) -> Result<serde_json::Value> {
 
     let job_dir = JobDir::create(&resolved_root, &job_id, &meta)?;
     pre_create_log_files(&job_dir)?;
+    // `running` is published by the acknowledged supervisor, not by this launcher.
+    job_dir.init_state_created()?;
 
     spawn_supervisor_process(
         &job_dir,
         SpawnSupervisorParams {
+            supervisor_exe: crate::run::default_supervisor_exe()?,
             job_id: job_id.clone(),
             root: resolved_root.clone(),
             full_log_path: job_dir.full_log_path().display().to_string(),
@@ -452,21 +464,11 @@ async fn status_handler(
 ) -> AxumResponse {
     let root_opt = state.root.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let root = resolve_root(root_opt.as_deref());
-        let job_dir = JobDir::open(&root, &id)?;
-        let meta = job_dir.read_meta()?;
-        let st = job_dir.read_state()?;
-        let response = Response::new(
-            "status",
-            StatusData {
-                job_id: job_dir.job_id.clone(),
-                state: st.status().as_str().to_string(),
-                exit_code: st.exit_code(),
-                created_at: meta.created_at,
-                started_at: st.started_at().map(|s| s.to_string()),
-                finished_at: st.finished_at,
-            },
-        );
+        // Adapter only: the typed implementation does the work.
+        let response = crate::status::status_response(crate::status::StatusOpts {
+            job_id: &id,
+            root: root_opt.as_deref(),
+        })?;
         Ok::<_, anyhow::Error>(serde_json::to_value(&response)?)
     })
     .await;
@@ -487,28 +489,15 @@ async fn status_handler(
 async fn tail_handler(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> AxumResponse {
     let root_opt = state.root.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let root = resolve_root(root_opt.as_deref());
-        let job_dir = JobDir::open(&root, &id)?;
-        let stdout_log_path = job_dir.stdout_path();
-        let stderr_log_path = job_dir.stderr_path();
-        let stdout = job_dir.read_tail_metrics("stdout.log", 50, 65536);
-        let stderr = job_dir.read_tail_metrics("stderr.log", 50, 65536);
-        let response = Response::new(
-            "tail",
-            TailData {
-                job_id: job_dir.job_id.clone(),
-                stdout: stdout.tail,
-                stderr: stderr.tail,
-                encoding: "utf-8-lossy".to_string(),
-                stdout_log_path: stdout_log_path.display().to_string(),
-                stderr_log_path: stderr_log_path.display().to_string(),
-                stdout_range: stdout.range,
-                stderr_range: stderr.range,
-                stdout_total_bytes: stdout.observed_bytes,
-                stderr_total_bytes: stderr.observed_bytes,
-                compression: None,
-            },
-        );
+        // Adapter only: the typed implementation does the work. The HTTP tail
+        // contract has never included compression, so the mode stays `Off`.
+        let response = crate::tail::tail_response(crate::tail::TailOpts {
+            job_id: &id,
+            root: root_opt.as_deref(),
+            tail_lines: 50,
+            max_bytes: 65536,
+            compression_mode: crate::compress::CompressionMode::Off,
+        })?;
         Ok::<_, anyhow::Error>(serde_json::to_value(&response)?)
     })
     .await;

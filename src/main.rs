@@ -598,78 +598,6 @@ enum Command {
         #[arg(long)]
         allow_origin: Option<String>,
     },
-
-    /// [Internal] Supervise a child process — not for direct use.
-    #[command(name = "_supervise", hide = true)]
-    Supervise {
-        #[arg(long)]
-        job_id: String,
-
-        #[arg(long)]
-        supervise_root: String,
-
-        /// Override full.log path.
-        #[arg(long)]
-        full_log: Option<String>,
-
-        /// Timeout in seconds; 0 = no timeout.
-        #[arg(long, default_value = "0")]
-        timeout: u64,
-
-        /// Seconds after SIGTERM to send SIGKILL; 0 = immediate SIGKILL on timeout.
-        #[arg(long, default_value = "0")]
-        kill_after: u64,
-
-        /// Working directory for the child process.
-        #[arg(long)]
-        cwd: Option<String>,
-
-        /// Environment variable KEY=VALUE (may be repeated).
-        #[arg(long = "env", value_name = "KEY=VALUE")]
-        env_vars: Vec<String>,
-
-        /// Load environment variables from a file (may be repeated).
-        #[arg(long = "env-file", value_name = "FILE")]
-        env_files: Vec<String>,
-
-        /// Do not inherit the current process environment.
-        #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue, conflicts_with = "supervise_inherit_env")]
-        no_inherit_env: bool,
-
-        /// Inherit the current process environment (default; conflicts with --no-inherit-env).
-        #[arg(long = "inherit-env", default_value = "false", action = clap::ArgAction::SetTrue, conflicts_with = "no_inherit_env", id = "supervise_inherit_env")]
-        inherit_env: bool,
-
-        /// Interval in seconds for state.json updated_at refresh; 0 = disabled.
-        #[arg(long, default_value = "0")]
-        progress_every: u64,
-
-        /// Materialized stdin file path relative to the job directory (internal use).
-        #[arg(long, value_name = "PATH", hide = true)]
-        stdin_file: Option<String>,
-
-        /// Shell command string to run on job completion; executed via the configured shell
-        /// wrapper. Event JSON is sent to stdin.
-        /// Also sets AGENT_EXEC_EVENT_PATH, AGENT_EXEC_JOB_ID, and AGENT_EXEC_EVENT_TYPE.
-        #[arg(long, value_name = "COMMAND")]
-        notify_command: Option<String>,
-
-        /// File path that receives one NDJSON `job.finished` event per completed job.
-        #[arg(long, value_name = "PATH")]
-        notify_file: Option<String>,
-
-        /// Shell wrapper override as a string (for direct user invocation; not used by `run`).
-        #[arg(long, value_name = "PROGRAM AND FLAGS")]
-        shell_wrapper: Option<String>,
-
-        /// Pre-resolved shell wrapper argv as a JSON array (set by `run`, not by users).
-        /// Takes precedence over --shell-wrapper when present.
-        #[arg(long, value_name = "JSON", hide = true)]
-        shell_wrapper_resolved: Option<String>,
-
-        #[arg(required = true, trailing_var_arg = true)]
-        command: Vec<String>,
-    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -735,26 +663,35 @@ fn main() {
     // are returned without any JSON output or tracing initialisation.
     CompleteEnv::with_factory(Cli::command).complete();
 
+    // The reserved supervisor invocation is claimed by the same delegation
+    // entrypoint embedded consumers install, so detached supervision has exactly
+    // one implementation and one argument grammar. It runs before clap because
+    // the grammar is private and must never be re-exposed as a public CLI.
+    if agent_exec::embedded::is_supervisor_invocation() {
+        init_tracing("warn");
+        match agent_exec::embedded::delegate_supervisor_startup() {
+            Ok(agent_exec::embedded::SupervisorDelegation::Supervised) => return,
+            // Unreachable: `is_supervisor_invocation` already matched the marker.
+            Ok(agent_exec::embedded::SupervisorDelegation::NotSupervisor) => {}
+            Err(e) => {
+                ErrorResponse::new(e.kind().as_str(), e.to_string(), e.is_retryable()).print();
+                std::process::exit(1);
+            }
+        }
+    }
+
     let normalized_args = normalize_wait_flags(std::env::args_os());
     let cli = Cli::parse_from(normalized_args);
 
     // Set output format before any subcommand runs (including error paths).
     agent_exec::schema::set_yaml_output(cli.yaml);
 
-    let default_level = match cli.verbose {
+    init_tracing(match cli.verbose {
         0 => "warn",
         1 => "info",
         2 => "debug",
         _ => "trace",
-    };
-
-    // Logs always go to stderr so stdout remains JSON-only.
-    let filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level));
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_env_filter(filter)
-        .init();
+    });
 
     let result = run(cli);
     if let Err(e) = result {
@@ -792,6 +729,13 @@ fn main() {
             ErrorResponse::new("stdin_required", format!("{e:#}"), false).print();
         } else if e.downcast_ref::<agent_exec::run::StdinTooLarge>().is_some() {
             ErrorResponse::new("stdin_too_large", format!("{e:#}"), false).print();
+        } else if e
+            .downcast_ref::<agent_exec::run::SupervisorLaunchFailed>()
+            .is_some()
+        {
+            // Not retryable: the supervisor executable or its startup delegation
+            // has to change before the identical launch can succeed.
+            ErrorResponse::new("launch_failed", format!("{e:#}"), false).print();
         } else if format!("{e:#}").contains("parse config file") {
             ErrorResponse::new("config_error", format!("{e:#}"), false).print();
         } else {
@@ -799,6 +743,17 @@ fn main() {
         }
         std::process::exit(1);
     }
+}
+
+/// Install the global tracing subscriber. Logs always go to stderr so stdout
+/// stays JSON-only.
+fn init_tracing(default_level: &str) {
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level));
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_env_filter(filter)
+        .init();
 }
 
 fn normalize_wait_flags<I>(args: I) -> Vec<OsString>
@@ -1329,6 +1284,9 @@ fn run(cli: Cli) -> Result<()> {
                 output_command: definition.output_command,
                 output_file: definition.output_file,
                 shell_wrapper: definition.shell_wrapper,
+                // The CLI binary installs the supervisor startup delegation, so
+                // re-executing itself is always correct here.
+                supervisor_exe: None,
             })?;
         }
 
@@ -1529,53 +1487,6 @@ fn run(cli: Cli) -> Result<()> {
                 output_stream,
                 output_command,
                 output_file,
-            })?;
-        }
-
-        Command::Supervise {
-            job_id,
-            supervise_root,
-            full_log,
-            timeout,
-            kill_after,
-            cwd,
-            env_vars,
-            env_files,
-            no_inherit_env,
-            inherit_env: _inherit_env,
-            progress_every,
-            stdin_file,
-            notify_command,
-            notify_file,
-            shell_wrapper,
-            shell_wrapper_resolved,
-            command,
-        } => {
-            let should_inherit = !no_inherit_env;
-            // Use the pre-resolved JSON wrapper from `run` if present (no join/split round-trip).
-            // Fall back to resolving from the string override or defaults.
-            let resolved_wrapper = if let Some(json) = shell_wrapper_resolved {
-                serde_json::from_str::<Vec<String>>(&json)
-                    .context("parse --shell-wrapper-resolved JSON")?
-            } else {
-                agent_exec::config::resolve_shell_wrapper(shell_wrapper.as_deref(), None)?
-            };
-            agent_exec::run::supervise(agent_exec::run::SuperviseOpts {
-                job_id: &job_id,
-                root: std::path::Path::new(&supervise_root),
-                command: &command,
-                full_log: full_log.as_deref(),
-                timeout_ms: timeout.saturating_mul(1000),
-                kill_after_ms: kill_after.saturating_mul(1000),
-                cwd: cwd.as_deref(),
-                env_vars,
-                env_files,
-                inherit_env: should_inherit,
-                stdin_file,
-                progress_every_ms: progress_every,
-                notify_command,
-                notify_file,
-                shell_wrapper: resolved_wrapper,
             })?;
         }
     }

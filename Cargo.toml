@@ -28,6 +28,16 @@ include = [
 name = "agent-exec"
 path = "src/main.rs"
 
+# Fixture consumer for the embedded managed-job API. It is a *separate* binary
+# that links this crate and drives `agent_exec::embedded`, which is the only way
+# to prove the embedding contract end to end (a job launched by one process must
+# survive that process exiting). It is a bin rather than an example because
+# cargo builds bin targets — but not examples — for `cargo test --test <name>`.
+[[bin]]
+name = "agent-exec-embedded-consumer"
+path = "tests/fixtures/embedded_consumer.rs"
+doc = false
+
 [dependencies]
 anyhow = "1"
 axum = "0.8"
