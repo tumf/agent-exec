@@ -10,8 +10,6 @@
 
 - [ ] Apply and document the backward-compatible schema change. Completion condition: response types, checked-in JSON schema, schema command output, contract documentation, and version/changelog evidence agree on the optional notification field and minor schema version; existing fields retain their meanings. (verification-id: mcp-armed-notification) (verification: integration - `cargo test --test integration schema_command_matches_checked_in_schema`)
 
-- [ ] Update agent guidance. Completion condition: documentation states that `notification.state="armed"` means the sink is persisted but delivery remains best effort, and agents must stop repeated observation unless explicitly asked for progress or diagnosing abnormal behavior; `state="running"` alone is not sufficient. (verification-id: mcp-armed-notification) (verification: integration - `python3 -c "from pathlib import Path; text=Path('skills/agent-exec/SKILL.md').read_text(); assert 'polling_required' in text and 'notification.state' in text and 'state=running' in text"`)
-
 ## Future Work
 
 - Add optional host-specific adapters separately; they must translate their destination identity into generic MCP sink input without changing core response semantics.

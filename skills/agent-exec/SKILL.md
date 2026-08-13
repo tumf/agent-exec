@@ -45,18 +45,6 @@ OpenCode's current 60-second MCP request deadline can use `AGENT_EXEC_MCP_MAX_UN
 - Do not optimize around output volume yourself; inspect the returned log paths when you need the full output.
 - Treat the JSON response as the interface. Avoid wrapping it with extra stdout text.
 
-## MCP completion notification
-
-Any MCP client may supply a completion sink when starting a managed job. Read the `run` response rather than assuming behavior from the client or host.
-
-- Treat `notification.state="armed"` together with `notification.polling_required=false` as: completion dispatch is configured; stop repeated observation and wait for the configured sink.
-- Tell the user once that completion will be reported through the configured notification path.
-- Do not call `wait`, `status`, or `tail` repeatedly after an armed response.
-- `state="running"` alone does not prove notification is configured. If `notification` is absent, use the caller's normal observation strategy.
-- Use `status` or `tail` when the user explicitly asks for current progress, notification registration failed, or the job appears abnormal.
-- When the configured completion event arrives, inspect the terminal state and logs, then resume the original task.
-- The contract is client-independent. Hosts may provide different sinks without changing MCP response semantics.
-
 ## Exceptions
 
 - Use `--no-wait` only for fire-and-forget cases where immediate return matters more than seeing startup output.
