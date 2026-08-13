@@ -889,6 +889,16 @@ A separate worker can process the NDJSON file, retry delivery, and route events 
 
 Keep command sinks short, fast, and idempotent. Common failures include quoting errors, environment or `PATH` differences, nonzero downstream exits, and incorrect delivery targets. Use a checked-in helper or durable worker for substantial orchestration.
 
+## OpenCode Integration
+
+`examples/integrations/opencode-auto-resume/` is an opt-in reference integration that returns control to the OpenCode session that launched a managed job, as soon as that job finishes.
+
+An OpenCode plugin watches the `tool.execute.after` hook, recognizes a successful `agent-exec` MCP `run` result, and attaches a completion callback to that job with `notify set`. When the job reaches a terminal state, the callback reads the persisted completion event, ignores jobs shorter than a configurable threshold (60 seconds by default), and resumes the originating session with `opencode run --attach`.
+
+It uses only the existing notification and completion-event contracts: no runtime default changes, no MCP schema changes, and no installer subcommand. Delivery is best effort, restricted to loopback OpenCode servers, and delivered as an ordinary `role=user` message rather than a trusted internal event. Jobs started with the CLI directly, outside an OpenCode MCP tool call, are not covered.
+
+See [examples/integrations/opencode-auto-resume/README.md](examples/integrations/opencode-auto-resume/README.md) for installation, configuration, security boundaries, limitations, and uninstall steps.
+
 ## Output-Match Events
 
 When output-match notification metadata is active, the supervisor evaluates newly observed lines from `stdout`, `stderr`, or either stream and emits `job.output.matched` for every match.

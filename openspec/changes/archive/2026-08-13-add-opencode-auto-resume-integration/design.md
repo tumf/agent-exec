@@ -46,4 +46,6 @@ This provides single-host best-effort idempotency, not distributed exactly-once 
 
 ## Verification strategy
 
-Tests run the JavaScript plugin hook and shell helper against fake executables in temporary directories. They inspect argv, environment, markers, and produced prompts. No model call or real OpenCode server is needed.
+Tests run the plugin hook and the callback helper against fake executables in temporary directories. They inspect argv, environment, markers, and produced prompts. No model call or real OpenCode server is needed.
+
+The callback helper is a Node script rather than a POSIX shell script. The completion event embeds the job's own argv and cwd, so eligibility decisions need a real JSON parser instead of `grep`, and building the OpenCode invocation as an argv array keeps event content away from a shell entirely. Node is already required to load the OpenCode plugin, so this adds no dependency.
