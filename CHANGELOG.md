@@ -11,8 +11,9 @@ Removals, type changes, meaning changes, and newly required fields bump MAJOR.
   (`RunLikeResponse`). It is a client-independent completion-notification
   status carrying `state` (`"armed"`), `sinks` (`"command"` / `"file"`),
   `polling_required`, and an agent-readable `message`.
-- `notification` is present only when a completion sink was persisted before the
-  managed workload launched and the job is still non-terminal. `armed` records
+- `notification` is produced by MCP `run`, and only when a completion sink was
+  persisted before the managed workload launched and the job is still
+  non-terminal. CLI and HTTP responses omit it today. `armed` records
   that terminal dispatch metadata exists; it does not guarantee downstream
   delivery. Responses omit the object entirely when nothing is asserted.
 - MCP `run` gained the optional `notify_command` and `notify_file` inputs that

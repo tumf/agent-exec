@@ -2838,6 +2838,87 @@ fn schema_command_matches_checked_in_schema() {
     );
 }
 
+/// Collect every `"schema_version": "<value>"` JSON literal in `text`.
+///
+/// Only the JSON form counts: prose that mentions the field name in backticks or
+/// a `<code>` element carries no version and must not be treated as drift.
+fn documented_schema_versions(text: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut rest = text;
+    while let Some(at) = rest.find("\"schema_version\"") {
+        rest = &rest[at + "\"schema_version\"".len()..];
+        let value = rest.trim_start();
+        let Some(value) = value.strip_prefix(':') else {
+            continue;
+        };
+        let Some(value) = value.trim_start().strip_prefix('"') else {
+            continue;
+        };
+        let Some(end) = value.find('"') else {
+            continue;
+        };
+        found.push(value[..end].to_string());
+    }
+    found
+}
+
+/// Every published contract document must quote the current `SCHEMA_VERSION`.
+///
+/// The checked-in JSON schema and CHANGELOG are already guarded above, but the
+/// README, the embedded skill references, and the site pages each carry hand
+/// written response and completion-event examples. A schema bump that misses one
+/// of them ships an agent-facing document that contradicts the bytes the binary
+/// actually writes.
+#[test]
+fn documented_schema_version_examples_track_schema_version() {
+    fn collect(path: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        if path.is_dir() {
+            let mut entries: Vec<_> = std::fs::read_dir(path)
+                .expect("read documentation dir")
+                .map(|entry| entry.expect("dir entry").path())
+                .collect();
+            entries.sort();
+            for entry in entries {
+                collect(&entry, out);
+            }
+        } else if matches!(
+            path.extension().and_then(|e| e.to_str()),
+            Some("md") | Some("html")
+        ) {
+            out.push(path.to_path_buf());
+        }
+    }
+
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut documents = Vec::new();
+    for entry in ["README.md", "CHANGELOG.md", "docs", "skills", "site"] {
+        collect(&manifest.join(entry), &mut documents);
+    }
+    assert!(
+        documents.len() > 5,
+        "documentation scan found too few files: {documents:?}"
+    );
+
+    let mut checked = 0usize;
+    for document in &documents {
+        let text = std::fs::read_to_string(document).expect("read documentation file");
+        for version in documented_schema_versions(&text) {
+            checked += 1;
+            assert_eq!(
+                version,
+                agent_exec::schema::SCHEMA_VERSION,
+                "{} documents schema_version {version:?} but the binary emits {:?}",
+                document.display(),
+                agent_exec::schema::SCHEMA_VERSION
+            );
+        }
+    }
+    assert!(
+        checked > 0,
+        "expected documented schema_version examples to exist"
+    );
+}
+
 /// Task 3.2: `schema` response includes `generated_at` field.
 #[test]
 fn schema_response_has_generated_at() {
