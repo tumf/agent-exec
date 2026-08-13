@@ -2,9 +2,9 @@
 
 ## Decision
 
-Notification registration becomes part of MCP `run` admission rather than a post-response side effect.
+Notification registration becomes part of client-independent MCP `run` admission.
 
-The MCP client may supply a completion command sink. The server validates and persists it through the existing `RunOpts.notify_command` path before supervisor launch. Only a successful response for a still-running job with that persisted sink may report notification as armed.
+Any MCP client may supply a completion sink. The server validates and persists it through the existing canonical notification path before supervisor launch. Only a successful response for a still-running job with that persisted sink may report notification as armed.
 
 ## Response Shape
 
@@ -12,35 +12,38 @@ The MCP client may supply a completion command sink. The server validates and pe
 {
   "notification": {
     "state": "armed",
-    "delivery": "originating_session",
+    "sinks": ["command"],
     "polling_required": false,
-    "message": "Completion notification is armed. Do not poll wait/status/tail; this session will resume when the job finishes."
+    "message": "Completion notification is armed through the configured sink. Do not poll wait/status/tail."
   }
 }
 ```
 
-`notification` is optional. Absence means the MCP response does not assert any completion delivery. Callers must not infer armed state from plugin installation alone.
+`notification` is optional. Absence means the MCP response does not assert any completion delivery. Callers must not infer armed state from host configuration alone.
 
-## OpenCode Adapter
+The fields describe only generic job lifecycle state:
 
-The plugin moves callback construction to `tool.execute.before`:
+- `state="armed"`: terminal dispatch metadata was persisted before launch.
+- `sinks`: the generic configured sink classes, such as `command` and `file`; both may be present.
+- `polling_required=false`: normal completion observation should be delegated to that sink.
+- `message`: a concise agent-readable rendering of the same machine state.
 
-1. Validate the agent-exec MCP run tool name.
-2. Validate loopback OpenCode server URL and originating session ID.
-3. Add the completion command sink to the run arguments.
-4. Let MCP admission persist the sink and produce the truthful response hint.
-5. At terminal state, the existing helper reads the persisted event and resumes the same session.
+No field names a specific client, session, chat, or another host-specific destination.
 
-The adapter remains OpenCode-specific. Core MCP fields describe a generic command sink plus a generic machine-readable notification status; core code does not know OpenCode session semantics except for a caller-supplied delivery label/message if the chosen schema permits those values.
+## Client Adapters
+
+A host-specific adapter may construct a sink before calling MCP `run`. For example, an adapter can route a completion event to a session, webhook, local event file, or queue. That adapter owns destination identity and delivery semantics. Core MCP only validates/persists the supplied sink and reports whether it was armed.
+
+Adapters are optional. A raw MCP client can provide the sink directly. A client that provides no sink receives no armed claim and may use explicit observation commands.
 
 ## Trust and Failure Boundaries
 
 - Completion command input is server-local privileged configuration, equivalent to existing CLI `--notify-command`; document that MCP server access grants this capability.
-- The plugin only targets loopback OpenCode servers and validates identifiers before constructing shell-quoted argv.
 - Invalid sink input fails before workload launch.
 - Sink execution remains best effort and does not alter job outcome.
 - `armed` means the sink was persisted for terminal dispatch, not guaranteed downstream delivery.
-- Job output and completion-event content remain untrusted and are not interpolated into the continuation prompt.
+- Job output and completion-event content remain untrusted.
+- Host-specific credentials, destination IDs, and continuation behavior stay outside generic core logic.
 
 ## Compatibility
 
@@ -48,13 +51,17 @@ The new response object is an optional field. Under the repository's versioning 
 
 ## Rejected Alternatives
 
+### Client-specific response fields
+
+A destination-specific field would incorrectly assume a session-oriented host. Generic core cannot know what the sink means downstream.
+
 ### Post-response result mutation
 
-OpenCode does not reliably propagate `tool.execute.after` mutations to the content seen by the model. It also cannot make registration atomic with admission.
+A client plugin can attach a sink after `run`, but MCP cannot truthfully report it as armed and registration races with fast completion.
 
 ### Skill-only guidance
 
-A skill can discourage polling but cannot prove callback registration succeeded. It leaves correctness dependent on prompt adherence.
+A skill can discourage polling but cannot prove sink registration succeeded. It leaves correctness dependent on prompt adherence.
 
 ### Always return a generic hint
 
