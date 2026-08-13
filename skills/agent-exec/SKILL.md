@@ -9,6 +9,8 @@ Use `agent-exec` as the default harness-friendly way to run shell work whose dur
 
 For MCP-capable clients, configure `agent-exec mcp` as a stdio server and call its `run` tool first. It starts the same detached managed jobs without routing lifecycle through the client terminal. Retain each returned `job_id`; observe with `status`, `tail`, or bounded `wait`. Call `kill` only after an explicit user cancellation request.
 
+When an MCP `run` result contains `notification.state="armed"` with `polling_required=false`, completion is already routed to the configured sink: stop observing that job and move on. Use `wait`, `status`, or `tail` afterwards only for an explicit progress request or diagnosis. A response without that object asserts nothing about completion delivery, so keep observing as usual.
+
 When MCP is unavailable, start with plain `agent-exec run -- <command>`. In normal use, do not try to outsmart it with extra flags. The defaults are the point: they are chosen so the harness gets control back predictably, sees common startup failures early, and avoids flooding context with command output.
 
 Use a normal inline shell command only when the task is clearly short, blocking, and safe to finish within one response.

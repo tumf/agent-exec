@@ -1,8 +1,8 @@
-//! Shared output schema types for agent-exec v0.1.
+//! Shared output schema types for agent-exec.
 //!
 //! Stdout output is JSON by default; YAML when --yaml is set.
 //! Tracing logs go to stderr.
-//! Schema version is fixed at "0.1".
+//! Schema version is fixed at "0.2".
 
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,7 +15,7 @@ pub fn set_yaml_output(yaml: bool) {
     YAML_OUTPUT.store(yaml, Ordering::Relaxed);
 }
 
-pub const SCHEMA_VERSION: &str = "0.1";
+pub const SCHEMA_VERSION: &str = "0.2";
 
 /// Serialize `value` and print to stdout in the selected format (JSON default, YAML with --yaml).
 ///
@@ -143,6 +143,62 @@ pub struct CompressionData {
     pub strategy: Vec<String>,
 }
 
+/// Lifecycle state reported when completion dispatch metadata is persisted.
+pub const NOTIFICATION_STATE_ARMED: &str = "armed";
+/// Generic classification of the completion command sink.
+pub const NOTIFICATION_SINK_COMMAND: &str = "command";
+/// Generic classification of the completion NDJSON file sink.
+pub const NOTIFICATION_SINK_FILE: &str = "file";
+/// Agent-readable rendering of an armed completion notification.
+pub const NOTIFICATION_ARMED_MESSAGE: &str =
+    "Completion notification is armed through the configured sink. Do not poll wait/status/tail.";
+
+/// Completion-notification status reported alongside a non-terminal `run` response.
+///
+/// Deliberately client-independent: every field describes generic job lifecycle
+/// state, never a session, chat, or originating-client identity. `armed` means
+/// terminal dispatch metadata was persisted before the workload launched; it is
+/// not a promise of downstream delivery.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotificationStatus {
+    /// Completion dispatch lifecycle state; `"armed"` is the only asserted state.
+    pub state: String,
+    /// Generic configured sink classes (`"command"`, `"file"`).
+    pub sinks: Vec<String>,
+    /// False when normal completion observation is delegated to the sinks.
+    pub polling_required: bool,
+    /// Agent-readable rendering of the same machine state.
+    pub message: String,
+}
+
+impl NotificationStatus {
+    /// Derive the armed status from persisted completion-sink metadata.
+    ///
+    /// Returns `None` unless the persisted configuration carries at least one
+    /// completion sink, so a response can never claim `armed` from request input
+    /// alone. `on_output_match` is an output-match sink rather than a completion
+    /// sink and therefore never arms completion notification.
+    pub fn from_persisted(config: Option<&NotificationConfig>) -> Option<Self> {
+        let config = config?;
+        let mut sinks = Vec::new();
+        if config.notify_command.is_some() {
+            sinks.push(NOTIFICATION_SINK_COMMAND.to_string());
+        }
+        if config.notify_file.is_some() {
+            sinks.push(NOTIFICATION_SINK_FILE.to_string());
+        }
+        if sinks.is_empty() {
+            return None;
+        }
+        Some(NotificationStatus {
+            state: NOTIFICATION_STATE_ARMED.to_string(),
+            sinks,
+            polling_required: false,
+            message: NOTIFICATION_ARMED_MESSAGE.to_string(),
+        })
+    }
+}
+
 /// Response for `run` command.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RunData {
@@ -191,6 +247,10 @@ pub struct RunData {
     pub duration_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compression: Option<CompressionData>,
+    /// Completion-notification status; omitted when the response asserts nothing
+    /// about completion delivery (schema 0.2, optional and backward compatible).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notification: Option<NotificationStatus>,
 }
 
 /// Response for `status` command.
@@ -824,6 +884,7 @@ mod tests {
             signal: signal.map(|s| s.to_string()),
             duration_ms,
             compression: None,
+            notification: None,
         }
     }
 
@@ -997,6 +1058,96 @@ mod tests {
             json["error"].get("details").is_none(),
             "details should be omitted when None: {json}"
         );
+    }
+
+    fn notification_config(
+        notify_command: Option<&str>,
+        notify_file: Option<&str>,
+        on_output_match: Option<OutputMatchConfig>,
+    ) -> NotificationConfig {
+        NotificationConfig {
+            notify_command: notify_command.map(str::to_string),
+            notify_file: notify_file.map(str::to_string),
+            on_output_match,
+        }
+    }
+
+    #[test]
+    fn notification_status_arms_only_on_persisted_completion_sinks() {
+        assert_eq!(NotificationStatus::from_persisted(None), None);
+
+        let command = NotificationStatus::from_persisted(Some(&notification_config(
+            Some("notify.sh"),
+            None,
+            None,
+        )))
+        .expect("command sink arms notification");
+        assert_eq!(command.state, NOTIFICATION_STATE_ARMED);
+        assert_eq!(command.sinks, [NOTIFICATION_SINK_COMMAND]);
+        assert!(!command.polling_required);
+        assert_eq!(command.message, NOTIFICATION_ARMED_MESSAGE);
+
+        let file = NotificationStatus::from_persisted(Some(&notification_config(
+            None,
+            Some("e.ndjson"),
+            None,
+        )))
+        .expect("file sink arms notification");
+        // Every generic sink class yields the same lifecycle semantics.
+        assert_eq!(file.sinks, [NOTIFICATION_SINK_FILE]);
+        assert_eq!(file.state, command.state);
+        assert_eq!(file.polling_required, command.polling_required);
+        assert_eq!(file.message, command.message);
+
+        let both = NotificationStatus::from_persisted(Some(&notification_config(
+            Some("notify.sh"),
+            Some("e.ndjson"),
+            None,
+        )))
+        .expect("both sinks arm notification");
+        assert_eq!(
+            both.sinks,
+            [NOTIFICATION_SINK_COMMAND, NOTIFICATION_SINK_FILE]
+        );
+    }
+
+    #[test]
+    fn notification_status_ignores_output_match_only_configuration() {
+        // Output-match sinks fire mid-run; they never arm *completion* dispatch.
+        let output_match = OutputMatchConfig {
+            pattern: "ready".to_string(),
+            match_type: OutputMatchType::Contains,
+            stream: OutputMatchStream::Either,
+            command: Some("echo matched".to_string()),
+            file: Some("matches.ndjson".to_string()),
+        };
+        assert_eq!(
+            NotificationStatus::from_persisted(Some(&notification_config(
+                None,
+                None,
+                Some(output_match)
+            ))),
+            None
+        );
+    }
+
+    #[test]
+    fn run_data_omits_notification_when_absent() {
+        let json = serde_json::to_value(sample_run_data(Some(0), None, None, None)).unwrap();
+        assert!(
+            json.get("notification").is_none(),
+            "absent notification must stay omitted: {json}"
+        );
+
+        let mut data = sample_run_data(None, None, None, None);
+        data.notification = NotificationStatus::from_persisted(Some(&notification_config(
+            Some("n.sh"),
+            None,
+            None,
+        )));
+        let json = serde_json::to_value(data).unwrap();
+        assert_eq!(json["notification"]["state"], NOTIFICATION_STATE_ARMED);
+        assert_eq!(json["notification"]["polling_required"], false);
     }
 
     #[test]

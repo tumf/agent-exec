@@ -450,6 +450,7 @@ fn run_exec_inner(p: ExecParams) -> Result<serde_json::Value> {
             signal: observation.signal,
             duration_ms: observation.duration_ms,
             compression: None,
+            notification: None,
         },
     );
 

@@ -17,6 +17,7 @@
       <p>The same managed-job lifecycle is available over stdio MCP and a local HTTP server. A disconnected client does not stop the job; reconnect with its <code>job_id</code>.</p>
       <h2>MCP stdio</h2>
       <p><code>agent-exec mcp</code> exposes <code>run</code>, <code>status</code>, <code>tail</code>, <code>wait</code>, and <code>kill</code>.</p>
+      <p>MCP <code>run</code> also accepts the optional completion sinks <code>notify_command</code> and <code>notify_file</code>, persisted before the workload launches. When a sink was persisted and the job is still running, the response adds an optional <code>notification</code> object with <code>state</code> set to <code>armed</code>, the generic <code>sinks</code> classes, and <code>polling_required</code> set to <code>false</code>: completion reaches the configured sink, so repeated <code>wait</code>, <code>status</code>, or <code>tail</code> polling is unnecessary. The object is omitted whenever no sink was persisted, and <code>armed</code> does not guarantee downstream delivery.</p>
       <pre><code>AGENT_EXEC="$(command -v agent-exec)"
 "$AGENT_EXEC" mcp</code></pre>
       <h2>HTTP server</h2>

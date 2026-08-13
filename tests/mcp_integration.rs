@@ -790,3 +790,307 @@ fn mcp_preserves_missing_job_domain_errors() {
     assert_envelope(&status, "error", false);
     assert_eq!(status["error"]["code"], "job_not_found");
 }
+
+/// Read the checked-in public schema so MCP responses can be validated against
+/// the same artifact the `schema` command publishes.
+fn checked_in_schema() -> Value {
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("schema/agent-exec.schema.json");
+    serde_json::from_str(&std::fs::read_to_string(path).expect("read checked-in schema"))
+        .expect("checked-in schema is valid JSON")
+}
+
+/// Start a job that outlives inline observation, so the response is returned
+/// while the workload is still running: the only state where a completion hint
+/// is meaningful.
+fn run_detached(mcp: &mut McpProcess, id: u64, mut arguments: Value) -> Value {
+    arguments["command"] = json!(["sh", "-c", "sleep 30"]);
+    arguments["until"] = json!(0);
+    let run = mcp.call(id, "run", arguments);
+    assert_envelope(&run, "run", true);
+    assert!(
+        matches!(run["state"].as_str(), Some("created" | "running")),
+        "job must still be observable for a completion hint: {run}"
+    );
+    run
+}
+
+/// The completion sink must reach canonical notification persistence before the
+/// managed workload starts, and unusable sink input must be rejected before any
+/// job exists at all.
+#[test]
+fn mcp_run_persists_completion_sink_before_launch() {
+    let harness = TestHarness::new();
+    let sinks = tempfile::tempdir().expect("sink dir");
+    let events = sinks.path().join("events.ndjson");
+    let events = events.to_str().expect("utf-8 path").to_string();
+
+    let mut mcp = McpProcess::start(harness.root());
+    mcp.initialize();
+
+    // Unusable sink input fails admission: no job directory, no workload.
+    for (id, arguments) in [
+        json!({ "command": ["true"], "notify_command": "" }),
+        json!({ "command": ["true"], "notify_command": "   " }),
+        json!({ "command": ["true"], "notify_file": "" }),
+        json!({ "command": ["true"], "notify_command": "notify\u{0}.sh" }),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let result = mcp.call(3 + id as u64, "run", arguments);
+        assert_eq!(result["isError"], true, "case {id}");
+        assert!(
+            result["message"]
+                .as_str()
+                .is_some_and(|message| message.starts_with("notify_")),
+            "rejection must name the offending sink field: {result}"
+        );
+        assert!(
+            std::fs::read_dir(harness.root())
+                .expect("root")
+                .next()
+                .is_none(),
+            "a rejected completion sink must not create a job"
+        );
+    }
+    // An unknown notification-shaped field stays rejected by the tool schema.
+    let unknown = mcp.request(
+        7,
+        "tools/call",
+        json!({ "name": "run", "arguments": { "command": ["true"], "notify": "notify.sh" } }),
+    );
+    assert!(unknown.get("error").is_some(), "{unknown}");
+    assert!(
+        std::fs::read_dir(harness.root())
+            .expect("root")
+            .next()
+            .is_none()
+    );
+
+    // The workload itself reads the only job's meta.json: what it printed is
+    // proof that the sink was persisted before the child was launched.
+    let run = mcp.call(
+        8,
+        "run",
+        json!({
+            "command": ["sh", "-c", format!("cat {}/*/meta.json", harness.root())],
+            "notify_command": "true",
+            "notify_file": events,
+        }),
+    );
+    assert_envelope(&run, "run", true);
+    let job_id = run["job_id"].as_str().expect("job id").to_string();
+    let waited = mcp.call(9, "wait", json!({ "job_id": job_id, "until": 5 }));
+    assert_envelope(&waited, "wait", true);
+    assert_eq!(waited["state"], "exited");
+    let tailed = mcp.call(10, "tail", json!({ "job_id": job_id }));
+    assert_envelope(&tailed, "tail", true);
+    let observed: Value = serde_json::from_str(tailed["stdout"].as_str().expect("stdout"))
+        .expect("meta.json seen by the job");
+    assert_eq!(observed["notification"]["notify_command"], "true");
+    assert_eq!(observed["notification"]["notify_file"], events);
+
+    // The same sink is the canonical persisted metadata for that job.
+    let meta = job_meta(harness.root(), &job_id);
+    assert_eq!(meta["notification"]["notify_command"], "true");
+    assert_eq!(meta["notification"]["notify_file"], events);
+
+    // A terminal response already delivered the outcome, so it claims nothing.
+    let terminal = mcp.call(
+        11,
+        "run",
+        json!({ "command": ["sh", "-c", "exit 0"], "notify_command": "true" }),
+    );
+    assert_envelope(&terminal, "run", true);
+    assert_eq!(terminal["state"], "exited");
+    assert!(
+        terminal.get("notification").is_none(),
+        "terminal responses must not claim an armed notification: {terminal}"
+    );
+}
+
+/// `notification.state="armed"` is derived from persisted sink metadata, never
+/// from request input or host configuration.
+#[test]
+fn mcp_run_reports_only_persisted_notification_as_armed() {
+    let harness = TestHarness::new();
+    let mut mcp = McpProcess::start(harness.root());
+    mcp.initialize();
+
+    let armed = run_detached(&mut mcp, 3, json!({ "notify_command": "true" }));
+    let armed_id = armed["job_id"].as_str().expect("job id").to_string();
+    assert_eq!(armed["notification"]["state"], "armed");
+    assert_eq!(armed["notification"]["sinks"], json!(["command"]));
+    assert_eq!(armed["notification"]["polling_required"], false);
+    // The claim matches what the canonical lifecycle actually persisted.
+    assert_eq!(
+        job_meta(harness.root(), &armed_id)["notification"]["notify_command"],
+        "true"
+    );
+
+    // The armed payload is exactly what the published schema documents.
+    let mut schema = checked_in_schema();
+    schema["$ref"] = json!("#/definitions/NotificationStatus");
+    let validator = jsonschema::validator_for(&schema).expect("compile schema");
+    assert!(
+        validator.validate(&armed["notification"]).is_ok(),
+        "armed notification must satisfy the public schema: {}",
+        armed["notification"]
+    );
+
+    // No sink supplied: no armed claim, and nothing persisted to back one.
+    let unarmed = run_detached(&mut mcp, 4, json!({}));
+    let unarmed_id = unarmed["job_id"].as_str().expect("job id").to_string();
+    assert!(
+        unarmed.get("notification").is_none(),
+        "a run without a completion sink must not claim notification: {unarmed}"
+    );
+    assert_eq!(
+        job_meta(harness.root(), &unarmed_id)["notification"],
+        Value::Null
+    );
+
+    for job_id in [armed_id, unarmed_id] {
+        assert_envelope(
+            &mcp.call(5, "kill", json!({ "job_id": job_id })),
+            "kill",
+            true,
+        );
+    }
+}
+
+/// The notification contract carries generic job lifecycle state only: any MCP
+/// client supplies the same input and gets the same semantics back.
+#[test]
+fn mcp_notification_hint_is_client_independent() {
+    let harness = TestHarness::new();
+    let sinks = tempfile::tempdir().expect("sink dir");
+    let events = sinks.path().join("events.ndjson");
+    let events = events.to_str().expect("utf-8 path").to_string();
+
+    let mut mcp = McpProcess::start(harness.root());
+    mcp.initialize();
+
+    let command_sink = run_detached(&mut mcp, 3, json!({ "notify_command": "true" }));
+    let file_sink = run_detached(&mut mcp, 4, json!({ "notify_file": events }));
+    let both_sinks = run_detached(
+        &mut mcp,
+        5,
+        json!({ "notify_command": "true", "notify_file": events }),
+    );
+
+    // Only the sink classification differs; the lifecycle semantics do not.
+    assert_eq!(command_sink["notification"]["sinks"], json!(["command"]));
+    assert_eq!(file_sink["notification"]["sinks"], json!(["file"]));
+    assert_eq!(
+        both_sinks["notification"]["sinks"],
+        json!(["command", "file"])
+    );
+    for other in [&file_sink, &both_sinks] {
+        for field in ["state", "polling_required", "message"] {
+            assert_eq!(
+                other["notification"][field], command_sink["notification"][field],
+                "every sink class must share {field}"
+            );
+        }
+    }
+
+    // No client, session, chat, or originating-host concept enters the contract.
+    let listed = mcp.request(6, "tools/list", json!({}));
+    let run_schema = listed["result"]["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .find(|tool| tool["name"] == "run")
+        .expect("run tool")["inputSchema"]
+        .clone();
+    for surface in [
+        run_schema.to_string().to_lowercase(),
+        command_sink["notification"].to_string().to_lowercase(),
+        file_sink["notification"].to_string().to_lowercase(),
+        both_sinks["notification"].to_string().to_lowercase(),
+    ] {
+        for term in ["session", "chat", "originating"] {
+            assert!(
+                !surface.contains(term),
+                "MCP notification contract must stay client-independent, found {term:?} in {surface}"
+            );
+        }
+    }
+
+    for run in [command_sink, file_sink, both_sinks] {
+        let job_id = run["job_id"].as_str().expect("job id");
+        assert_envelope(
+            &mcp.call(7, "kill", json!({ "job_id": job_id })),
+            "kill",
+            true,
+        );
+    }
+}
+
+/// An agent can decide to stop observing from the response contract alone.
+#[test]
+fn mcp_armed_response_explains_next_action() {
+    let harness = TestHarness::new();
+    let mut mcp = McpProcess::start(harness.root());
+    mcp.initialize();
+
+    let armed = run_detached(&mut mcp, 3, json!({ "notify_command": "true" }));
+    assert_eq!(armed["notification"]["polling_required"], false);
+    let message = armed["notification"]["message"]
+        .as_str()
+        .expect("notification message");
+    let lowercase = message.to_lowercase();
+    assert!(
+        lowercase.contains("completion") && lowercase.contains("sink"),
+        "the message must say completion is delivered through the sink: {message}"
+    );
+    for command in ["wait", "status", "tail"] {
+        assert!(
+            lowercase.contains(command),
+            "the message must name {command} as unnecessary polling: {message}"
+        );
+    }
+    assert!(
+        lowercase.contains("do not poll"),
+        "the message must tell the agent not to poll: {message}"
+    );
+
+    // An unarmed job makes no such claim, and explicit observation stays available.
+    let unarmed = run_detached(&mut mcp, 4, json!({}));
+    let unarmed_id = unarmed["job_id"].as_str().expect("job id").to_string();
+    assert!(unarmed.get("notification").is_none(), "{unarmed}");
+    assert_envelope(
+        &mcp.call(5, "status", json!({ "job_id": unarmed_id })),
+        "status",
+        true,
+    );
+    assert_envelope(
+        &mcp.call(6, "tail", json!({ "job_id": unarmed_id })),
+        "tail",
+        true,
+    );
+    assert_envelope(
+        &mcp.call(7, "wait", json!({ "job_id": unarmed_id, "until": 0 })),
+        "wait",
+        true,
+    );
+
+    // Explicit observation also remains available for the armed job: the hint
+    // discourages polling, it does not remove the diagnosis path.
+    let armed_id = armed["job_id"].as_str().expect("job id").to_string();
+    assert_envelope(
+        &mcp.call(8, "status", json!({ "job_id": armed_id })),
+        "status",
+        true,
+    );
+
+    for job_id in [armed_id, unarmed_id] {
+        assert_envelope(
+            &mcp.call(9, "kill", json!({ "job_id": job_id })),
+            "kill",
+            true,
+        );
+    }
+}

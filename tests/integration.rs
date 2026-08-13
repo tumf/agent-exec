@@ -1121,9 +1121,9 @@ fn state_json_required_fields_present_with_null_for_options() {
 // ── schema_version sanity ──────────────────────────────────────────────────────
 
 #[test]
-fn all_commands_use_schema_version_0_1() {
+fn all_commands_use_schema_version_0_2() {
     // Already verified individually above; this test documents the invariant.
-    assert_eq!(agent_exec::schema::SCHEMA_VERSION, "0.1");
+    assert_eq!(agent_exec::schema::SCHEMA_VERSION, "0.2");
 }
 
 // ── contract v0.1: retryable field ─────────────────────────────────────────────
@@ -2746,6 +2746,96 @@ fn schema_wait_response_matches_wait_output_contract() {
     assert_eq!(properties["stdout_total_bytes"]["minimum"], 0);
     assert_eq!(properties["stderr_total_bytes"]["minimum"], 0);
     assert_eq!(properties["updated_at"]["type"], "string");
+}
+
+/// The published contract artifacts must agree with the compiled response types:
+/// the `schema` command serves the checked-in file verbatim, that file declares the
+/// current envelope version, and the schema 0.2 `notification` addition is optional
+/// with every pre-existing `run` field unchanged.
+#[test]
+fn schema_command_matches_checked_in_schema() {
+    let checked_in_path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("schema/agent-exec.schema.json");
+    let checked_in: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&checked_in_path).expect("read checked-in schema"),
+    )
+    .expect("checked-in schema is valid JSON");
+
+    let served = run_cmd_with_root(&["schema"], None);
+    assert_envelope(&served, "schema", true);
+    assert_eq!(
+        served["schema"], checked_in,
+        "schema command output must match the checked-in schema artifact"
+    );
+    assert_eq!(
+        served["schema_version"].as_str(),
+        Some(agent_exec::schema::SCHEMA_VERSION)
+    );
+    assert_eq!(
+        checked_in["definitions"]["Envelope"]["properties"]["schema_version"]["const"].as_str(),
+        Some(agent_exec::schema::SCHEMA_VERSION),
+        "the published envelope version must track SCHEMA_VERSION"
+    );
+
+    let run_like = &checked_in["definitions"]["RunLikeResponse"]["allOf"][1];
+    let required = run_like["required"]
+        .as_array()
+        .expect("RunLikeResponse.required");
+    assert_eq!(
+        run_like["properties"]["notification"],
+        serde_json::json!({ "$ref": "#/definitions/NotificationStatus" }),
+        "run responses must publish the optional notification object"
+    );
+    assert!(
+        !required.contains(&serde_json::json!("notification")),
+        "notification must stay optional: {required:?}"
+    );
+    // Existing field names and meanings are untouched by the minor bump.
+    for field in [
+        "job_id",
+        "state",
+        "stdout_log_path",
+        "stderr_log_path",
+        "waited_ms",
+        "elapsed_ms",
+        "stdout",
+        "stderr",
+        "stdout_range",
+        "stderr_range",
+        "stdout_total_bytes",
+        "stderr_total_bytes",
+        "encoding",
+    ] {
+        assert!(
+            required.contains(&serde_json::json!(field)),
+            "{field} must stay required: {required:?}"
+        );
+    }
+
+    let notification = &checked_in["definitions"]["NotificationStatus"];
+    assert_eq!(
+        notification["properties"]["state"]["enum"],
+        serde_json::json!(["armed"])
+    );
+    assert_eq!(
+        notification["properties"]["sinks"]["items"]["enum"],
+        serde_json::json!(["command", "file"])
+    );
+    assert_eq!(
+        notification["required"],
+        serde_json::json!(["state", "sinks", "polling_required", "message"])
+    );
+
+    // The versioning policy requires a matching changelog section for the bump.
+    let changelog = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("CHANGELOG.md"),
+    )
+    .expect("read CHANGELOG.md");
+    assert!(
+        changelog.contains(&format!("## schema {}", agent_exec::schema::SCHEMA_VERSION)),
+        "CHANGELOG.md must document schema {}",
+        agent_exec::schema::SCHEMA_VERSION
+    );
 }
 
 /// Task 3.2: `schema` response includes `generated_at` field.

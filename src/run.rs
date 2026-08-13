@@ -1023,6 +1023,9 @@ pub fn run_response(opts: RunOpts) -> Result<Response<RunData>> {
             signal: observation.signal,
             duration_ms: observation.duration_ms,
             compression,
+            // Populated by adapters that own the completion contract (MCP `run`);
+            // the canonical response asserts nothing about delivery by itself.
+            notification: None,
         },
     );
     Ok(response)

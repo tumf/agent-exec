@@ -171,6 +171,7 @@ pub fn execute(opts: RestartOpts) -> Result<()> {
             signal: observation.signal,
             duration_ms: observation.duration_ms,
             compression,
+            notification: None,
         },
     )
     .print();
