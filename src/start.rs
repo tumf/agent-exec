@@ -165,6 +165,7 @@ pub fn execute(opts: StartOpts) -> Result<()> {
             signal: observation.signal,
             duration_ms: observation.duration_ms,
             compression,
+            notification: None,
         },
     )
     .print();

@@ -10,7 +10,11 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::{kill, run, schema::ErrorResponse, status, tail, wait};
+use crate::{
+    kill, run,
+    schema::{ErrorResponse, NotificationStatus},
+    status, tail, wait,
+};
 
 #[derive(Debug)]
 pub struct McpStartupConfigError(&'static str);
@@ -81,6 +85,16 @@ struct RunParams {
     /// client-local). Its bytes are snapshotted into the job directory before the
     /// child launches. Mutually exclusive with `stdin`.
     stdin_file: Option<String>,
+    /// Shell command string executed once, on job completion, by the MCP server
+    /// process (server-local privileged configuration, equivalent to CLI
+    /// `--notify-command`). Persisted as canonical run notification metadata
+    /// before the workload launches; a persisted sink is what lets the response
+    /// report `notification.state="armed"`.
+    notify_command: Option<String>,
+    /// Path writable by the MCP server process (server-local, not client-local)
+    /// that receives one NDJSON `job.finished` event per completed job. Persisted
+    /// with `notify_command` before the workload launches.
+    notify_file: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -203,6 +217,43 @@ fn stdin_source(
     }
 }
 
+/// Validate one launch-time completion sink field.
+///
+/// Both sinks are server-local privileged configuration granting the same
+/// capability as CLI `--notify-command` / `--notify-file`. Validation happens
+/// here, before any job directory exists, so an invalid sink can never produce a
+/// launched workload or a misleading armed response.
+fn completion_sink(value: Option<String>, name: &str) -> Result<Option<String>, String> {
+    match value {
+        None => Ok(None),
+        Some(value) if value.trim().is_empty() => Err(format!("{name} must be a non-empty string")),
+        Some(value) if value.contains('\0') => Err(format!("{name} cannot contain NUL")),
+        Some(value) => Ok(Some(value)),
+    }
+}
+
+/// True while the job is still observable, i.e. completion has not been reached.
+///
+/// A terminal response has already delivered the outcome inline, so it never
+/// needs to tell the caller to stop observing.
+fn is_non_terminal(state: &str) -> bool {
+    matches!(state, "created" | "running")
+}
+
+/// Read the completion-notification status back out of persisted job metadata.
+///
+/// Reading `meta.json` rather than the request input is what keeps the response
+/// truthful: `armed` is claimed only when the supplied sink actually reached
+/// canonical notification persistence before launch.
+fn persisted_notification(root: Option<&str>, job_id: &str) -> Option<NotificationStatus> {
+    let root = crate::jobstore::resolve_root(root);
+    let meta = crate::jobstore::JobDir::open(&root, job_id)
+        .ok()?
+        .read_meta()
+        .ok()?;
+    NotificationStatus::from_persisted(meta.notification.as_ref())
+}
+
 fn envelope(result: Result<impl serde::Serialize>) -> Json<Value> {
     match result {
         Ok(value) => Json(serde_json::to_value(value).expect("response serialization")),
@@ -268,17 +319,36 @@ impl Mcp {
             Ok(value) => value,
             Err(message) => return tool_error(message),
         };
-        envelope(run::run_response(run::RunOpts {
-            command: params.command,
-            root: self.root.as_deref(),
-            cwd: params.cwd.as_deref(),
-            env_vars,
-            timeout_ms: timeout.saturating_mul(1000),
-            until_seconds: until,
-            stdin,
-            stdin_max_bytes: run::DEFAULT_STDIN_MAX_BYTES,
-            ..Default::default()
-        }))
+        let notify_command = match completion_sink(params.notify_command, "notify_command") {
+            Ok(value) => value,
+            Err(message) => return tool_error(message),
+        };
+        let notify_file = match completion_sink(params.notify_file, "notify_file") {
+            Ok(value) => value,
+            Err(message) => return tool_error(message),
+        };
+        envelope(
+            run::run_response(run::RunOpts {
+                command: params.command,
+                root: self.root.as_deref(),
+                cwd: params.cwd.as_deref(),
+                env_vars,
+                timeout_ms: timeout.saturating_mul(1000),
+                until_seconds: until,
+                stdin,
+                stdin_max_bytes: run::DEFAULT_STDIN_MAX_BYTES,
+                notify_command,
+                notify_file,
+                ..Default::default()
+            })
+            .map(|mut response| {
+                if is_non_terminal(&response.data.state) {
+                    response.data.notification =
+                        persisted_notification(self.root.as_deref(), &response.data.job_id);
+                }
+                response
+            }),
+        )
     }
 
     #[tool(description = "Get managed job status", output_schema = rmcp::handler::server::tool::cached_schema_for_type::<McpResponseObject>())]
@@ -346,8 +416,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::{
-        DEFAULT_UNTIL_ENV, MAX_UNTIL_ENV, RunParams, env_vars, parse_until_seconds_value, seconds,
-        stdin_source, until_seconds,
+        DEFAULT_UNTIL_ENV, MAX_UNTIL_ENV, RunParams, completion_sink, env_vars, is_non_terminal,
+        parse_until_seconds_value, seconds, stdin_source, until_seconds,
     };
     use crate::run::StdinSource;
 
@@ -401,6 +471,54 @@ mod tests {
             stdin_source(Some("-".to_string()), Some("/tmp/input.txt".to_string())).unwrap_err(),
             "stdin and stdin_file cannot be used together"
         );
+    }
+
+    #[test]
+    fn run_params_accept_optional_completion_sinks() {
+        let params = serde_json::from_value::<RunParams>(serde_json::json!({
+            "command": ["true"],
+            "notify_command": "notify.sh done",
+            "notify_file": "/tmp/events.ndjson"
+        }))
+        .expect("completion sink params");
+        assert_eq!(params.notify_command.as_deref(), Some("notify.sh done"));
+        assert_eq!(params.notify_file.as_deref(), Some("/tmp/events.ndjson"));
+
+        let params = serde_json::from_value::<RunParams>(serde_json::json!({
+            "command": ["true"]
+        }))
+        .expect("params without sinks");
+        assert_eq!(params.notify_command, None);
+        assert_eq!(params.notify_file, None);
+    }
+
+    #[test]
+    fn completion_sink_rejects_unusable_values() {
+        assert_eq!(completion_sink(None, "notify_command").unwrap(), None);
+        assert_eq!(
+            completion_sink(Some("notify.sh".to_string()), "notify_command").unwrap(),
+            Some("notify.sh".to_string())
+        );
+        for value in ["", "   ", "\n"] {
+            assert_eq!(
+                completion_sink(Some(value.to_string()), "notify_command").unwrap_err(),
+                "notify_command must be a non-empty string",
+                "{value:?}"
+            );
+        }
+        assert_eq!(
+            completion_sink(Some("notify\0.sh".to_string()), "notify_file").unwrap_err(),
+            "notify_file cannot contain NUL"
+        );
+    }
+
+    #[test]
+    fn only_still_observable_states_can_report_armed_notification() {
+        assert!(is_non_terminal("created"));
+        assert!(is_non_terminal("running"));
+        for state in ["exited", "killed", "failed", "unknown"] {
+            assert!(!is_non_terminal(state), "{state}");
+        }
     }
 
     #[test]

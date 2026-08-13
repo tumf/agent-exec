@@ -72,7 +72,7 @@ Then 終了コードは `1` である
 
 後方互換のあるフィールド追加（optional field の追加、enum variant の追加）は MINOR bump で行わなければならない（MUST）。既存フィールドの削除、型変更、意味変更、required 化は MAJOR bump を要する（MUST）。
 
-`schema_version` が bump されるとき、リポジトリ直下の `CHANGELOG.md` に対応する `## schema <version>` セクションを追加しなければならない（MUST）。
+`schema_version` が bump されるとき、repository tracked changelog artifact に対応する `## schema <version>` セクションを追加しなければならない（MUST）。
 
 クライアント／エージェントは MAJOR が一致する JSON を解釈できなければならない（MUST）。未知の optional field を受け取った場合はそれを無視できなければならない（forward compatibility、MUST）。MAJOR 不一致の場合はエラー扱いとしてよい（MAY）。
 
@@ -80,13 +80,22 @@ Then 終了コードは `1` である
 
 **Given**: canonical `schema_version = "0.1"`
 **When**: a new optional field is added to `RunData`
-**Then**: the next `schema_version` is `"0.2"` with a `## schema 0.2` entry in CHANGELOG.md
+**Then**: the next `schema_version` is `"0.2"` with a `## schema 0.2` entry in the repository changelog
 
 #### Scenario: removing a field bumps MAJOR
 
 **Given**: canonical `schema_version = "0.9"`
 **When**: an existing field is removed from `RunData`
-**Then**: the next `schema_version` is `"1.0"` with a `## schema 1.0` entry in CHANGELOG.md
+**Then**: the next `schema_version` is `"1.0"` with a `## schema 1.0` entry in the repository changelog
+
+#### Scenario: MCP run adds optional notification object
+
+**Given**: canonical `schema_version = "0.1"`
+**When**: MCP `RunData` gains an optional structured `notification` field
+**Then**: the response schema advances to `"0.2"`
+**And**: the repository contains a `## schema 0.2` changelog entry describing the optional field
+**And**: existing field names, types, and meanings remain unchanged
+**And**: clients that ignore unknown optional fields remain compatible
 
 ### Requirement: エラーレスポンスの構造化 details
 

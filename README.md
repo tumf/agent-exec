@@ -188,7 +188,7 @@ The following is an illustrative complete response for a successful terminal job
 
 ```json
 {
-  "schema_version": "0.1",
+  "schema_version": "0.2",
   "ok": true,
   "type": "run",
   "job_id": "7f3a9c1e4b2d8a605e7c9f0134ab6d82",
@@ -729,7 +729,7 @@ When MCP is unavailable, use `agent-exec run -- <command>` with CLI observation 
 
 | Tool | Parameters | Behavior |
 |------|------------|----------|
-| `run` | `command: string[]`, `cwd?: string`, `env?: object`, `timeout?: integer`, `until?: integer`, `stdin?: string`, `stdin_file?: string` | Starts a detached job. `timeout` and `until` are seconds; the legacy omitted `until` is 10 seconds unless configured. |
+| `run` | `command: string[]`, `cwd?: string`, `env?: object`, `timeout?: integer`, `until?: integer`, `stdin?: string`, `stdin_file?: string`, `notify_command?: string`, `notify_file?: string` | Starts a detached job. `timeout` and `until` are seconds; the legacy omitted `until` is 10 seconds unless configured. |
 | `status` | `job_id: string` | Returns canonical job status. |
 | `tail` | `job_id: string`, `lines?: integer`, `max_bytes?: integer` | Reads bounded tails; defaults are 50 lines and 65,536 bytes. |
 | `wait` | `job_id: string`, `until?: integer` | Observes for a bounded duration and returns bounded stdout/stderr output metadata; the legacy omitted `until` is 30 seconds unless configured. Indefinite MCP waits are not supported. |
@@ -739,9 +739,30 @@ Retain the job ID returned by `run`. Closing the MCP transport, reaching an obse
 
 MCP `run` accepts job stdin through the same materialization as the CLI. Supply `stdin` for inline UTF-8 bytes or `stdin_file` for a path readable by the MCP server process; the two are mutually exclusive and a conflicting call fails without creating a job. `stdin_file` is snapshotted into the job directory before launch, so later edits to the source file do not change a running job's input. Unlike CLI `--stdin`, `stdin: "-"` is one literal dash byte: the MCP stdio transport carries protocol frames and is never read as job stdin. When both are omitted the child receives null stdin. Input above the 64 MiB limit, or an unreadable `stdin_file`, fails before the child launches.
 
-The MCP `run` tool intentionally omits CLI-only masking, notification, tag, compression, and shell-wrapper controls.
-
 For an MCP host with a 60-second request deadline, a maximum of 55 seconds leaves time for the response to return. The default can remain shorter, such as 10 seconds.
+
+### MCP completion notification
+
+MCP `run` accepts the same completion sinks as the CLI. `notify_command` is a shell command string run once on completion, and `notify_file` is a path that receives one NDJSON `job.finished` event per completed job. Both are persisted as canonical run notification metadata before the workload launches, and both are server-local privileged configuration: they run with the MCP server process's authority, so granting a client access to this server grants that capability. Unusable input (empty or NUL-bearing) fails before any job directory exists.
+
+When a sink was persisted and the job is still running, the `run` response adds an optional `notification` object:
+
+```json
+{
+  "notification": {
+    "state": "armed",
+    "sinks": ["command"],
+    "polling_required": false,
+    "message": "Completion notification is armed through the configured sink. Do not poll wait/status/tail."
+  }
+}
+```
+
+An agent that receives `state="armed"` can stop observing immediately and rely on the configured sink. The object is client-independent: `sinks` names only the generic sink classes (`command`, `file`), never a session, chat, or originating client. `armed` means terminal dispatch metadata was persisted, not that downstream delivery is guaranteed.
+
+The object is omitted whenever the response asserts nothing: no sink supplied, admission failed, or the job already reached a terminal state. `wait`, `status`, and `tail` stay available for explicit progress requests and diagnosis in every case. A host-specific adapter may build a sink before calling `run`; it owns the destination identity, while the server only validates, persists, and reports it.
+
+The MCP `run` tool intentionally omits CLI-only masking, tag, compression, and shell-wrapper controls.
 
 ## Configuration
 
@@ -820,7 +841,7 @@ Example payload:
 
 ```json
 {
-  "schema_version": "0.1",
+  "schema_version": "0.2",
   "event_type": "job.finished",
   "job_id": "7f3a9c1e4b2d8a605e7c9f0134ab6d82",
   "state": "exited",
@@ -911,7 +932,7 @@ When output-match notification metadata is active, the supervisor evaluates newl
 
 ```json
 {
-  "schema_version": "0.1",
+  "schema_version": "0.2",
   "event_type": "job.output.matched",
   "job_id": "7f3a9c1e4b2d8a605e7c9f0134ab6d82",
   "pattern": "ERROR",

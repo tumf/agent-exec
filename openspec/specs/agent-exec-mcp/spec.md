@@ -26,13 +26,13 @@
 
 ### Requirement: MCP run uses the canonical managed-job lifecycle
 
-MCP `run` tool は必須の non-empty `command` string array と任意の `cwd`、string-to-string `env`、seconds-based `timeout`、seconds-based bounded `until`、inline UTF-8 `stdin` string、server-local `stdin_file` path を受け付けなければならない（MUST）。`stdin` と `stdin_file` は同時指定を許可してはならず（MUST NOT）、競合時は job を作成する前に protocol-safe error を返さなければならない（MUST）。MCP stdio transport は protocol 専用であり、managed command の stdin として読み取ってはならない（MUST NOT）。そのため MCP の `stdin` string は値が `"-"` でも caller-stdin marker と解釈せず、literal UTF-8 bytes として扱わなければならない（MUST）。
+MCP `run` tool は必須の non-empty `command` string array と任意の `cwd`、string-to-string `env`、seconds-based `timeout`、seconds-based bounded `until`、inline UTF-8 `stdin` string、server-local `stdin_file` path、および launch-time completion command sink を受け付けなければならない（MUST）。Completion sink が指定された場合、MCP server は canonical run notification metadata として workload launch 前に永続化しなければならない（MUST）。Invalid sink input は workload launch 前に protocol-safe error として拒否しなければならない（MUST）。`stdin` と `stdin_file` は同時指定を許可してはならず（MUST NOT）、競合時は job を作成する前に protocol-safe error を返さなければならない（MUST）。MCP stdio transport は protocol 専用であり、managed command の stdin として読み取ってはならない（MUST NOT）。そのため MCP の `stdin` string は値が `"-"` でも caller-stdin marker と解釈せず、literal UTF-8 bytes として扱わなければならない（MUST）。
 
 MCP `run` の inline および file-backed stdin は CLI `run` と同じ bounded job-local materialization、`meta.json.stdin_file` persistence、detached supervisor handoff を使わなければならない（MUST）。`stdin_file` は MCP server process から読める path として扱い、child launch 前に job directory へ snapshot しなければならない（MUST）。両フィールドが省略された場合は managed child の stdin を null のまま維持し、MCP transport から暗黙 capture してはならない（MUST NOT）。入力が既存の stdin byte limit を超える場合、または file が読み取れない場合、child launch 前に canonical error result で失敗しなければならない（MUST）。
 
-実効 `until` は明示 tool value、`AGENT_EXEC_MCP_DEFAULT_UNTIL_SECONDS`、既存の 10 seconds default の順で最初に利用可能な値を選択し、その後 `AGENT_EXEC_MCP_MAX_UNTIL_SECONDS` が設定されている場合は `min(selected, maximum)` に丸めなければならない（MUST）。最大値を超える有効な明示値を error として拒否してはならない（MUST NOT）。有効な call は CLI `run` と同じ persisted job definition、detached supervisor launch、inline observation 契約を使わなければならない（MUST）。MCP surface は command/cwd/env/timeout/until/stdin/stdin_file 以外の definition-time controls を受け付けてはならない（MUST NOT）。
+実効 `until` は明示 tool value、`AGENT_EXEC_MCP_DEFAULT_UNTIL_SECONDS`、既存の 10 seconds default の順で最初に利用可能な値を選択し、その後 `AGENT_EXEC_MCP_MAX_UNTIL_SECONDS` が設定されている場合は `min(selected, maximum)` に丸めなければならない（MUST）。最大値を超える有効な明示値を error として拒否してはならない（MUST NOT）。有効な call は CLI `run` と同じ persisted job definition、detached supervisor launch、inline observation 契約を使わなければならない（MUST）。MCP surface は command/cwd/env/timeout/until/stdin/stdin_file/completion sink 以外の definition-time controls を受け付けてはならない（MUST NOT）。
 
-MCP `run` の成功結果は CLI `run` と同じ `type="run"` response envelope を含み、`job_id`, `state`, `stdout`, `stderr`, `stdout_range`, `stderr_range`, `stdout_total_bytes`, `stderr_total_bytes`, `stdout_log_path`, `stderr_log_path` を返さなければならない（MUST）。
+MCP `run` の成功結果は CLI `run` と同じ `type="run"` response envelope を含み、`job_id`, `state`, `stdout`, `stderr`, `stdout_range`, `stderr_range`, `stdout_total_bytes`, `stderr_total_bytes`, `stdout_log_path`, `stderr_log_path` を返さなければならない（MUST）。Completion sink を永続化した job が non-terminal state で返る場合、結果は optional structured `notification` object を含み、`state="armed"`、generic sink classifications、`polling_required=false`、および completion 時に configured sink へ通知されるため repeated `wait`/`status`/`tail` polling が不要であることを示す message を返さなければならない（MUST）。Notification object は session、chat、originating client など特定 client/host の概念を含んではならない（MUST NOT）。Sink が永続化されていない場合、または admission が失敗した場合、結果は notification が armed であると示してはならない（MUST NOT）。`armed` は terminal dispatch 用 sink が永続化されたことを意味し、downstream delivery 成功を保証してはならない（MUST NOT）。
 
 #### Scenario: configured run default is used when until is omitted
 
@@ -104,6 +104,30 @@ MCP `run` の成功結果は CLI `run` と同じ `type="run"` response envelope 
 **When**: canonical stdin materialization is attempted
 **Then**: the call returns an error result before launching the child
 **And**: no managed workload process is started
+
+#### Scenario: MCP run reports persisted completion notification as armed
+
+**Given**: an MCP client supplies a valid launch-time completion command sink
+**When**: `run` admits the job, persists notification metadata, launches the workload, and returns while it is still running
+**Then**: the response includes `notification.state="armed"`
+**And**: `notification.polling_required` is `false`
+**And**: the response tells the agent that completion will notify it and repeated `wait`, `status`, or `tail` polling is unnecessary
+**And**: `meta.json` already contains the same completion sink before the response is returned
+
+#### Scenario: MCP run without a sink does not claim notification is armed
+
+**Given**: an MCP client calls `run` without a completion sink
+**When**: the job remains running beyond inline observation
+**Then**: the response does not contain `notification.state="armed"`
+**And**: the client may choose its own later observation or notification strategy
+
+#### Scenario: invalid launch-time sink fails before workload launch
+
+**Given**: an MCP client supplies invalid completion notification input
+**When**: MCP `run` validates admission
+**Then**: the call returns a protocol-safe error
+**And**: no workload process is launched
+**And**: no response claims notification is armed
 
 ### Requirement: MCP observation tools preserve canonical response semantics
 

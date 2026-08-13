@@ -6,7 +6,7 @@ When notification sinks are configured, expect a `job.finished` payload after th
 
 ```json
 {
-  "schema_version": "0.1",
+  "schema_version": "0.2",
   "event_type": "job.finished",
   "job_id": "01J...",
   "state": "exited",

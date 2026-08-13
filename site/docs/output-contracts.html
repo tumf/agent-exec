@@ -17,7 +17,7 @@
       <p>Response-producing CLI commands write exactly one JSON object to stdout by default. Pass <code>--yaml</code> for YAML. Diagnostic logs go to stderr and are controlled by <code>RUST_LOG</code>, <code>-v</code>, and <code>-vv</code>.</p>
       <h2>Response envelope</h2>
       <p>CLI and documented HTTP handler success and error responses use <code>schema_version</code>, <code>ok</code>, and <code>type</code>, plus command-specific fields. Output excerpts include <code>encoding</code>, byte ranges, and total byte counts; log paths identify complete retained logs.</p>
-      <pre><code>{"schema_version":"0.1","ok":true,"type":"wait","job_id":"&lt;id&gt;","state":"exited","exit_code":0,"stdout":"done\n","stderr":"","encoding":"utf-8-lossy","stdout_range":[0,5],"stderr_range":[0,0],"stdout_total_bytes":5,"stderr_total_bytes":0,"updated_at":"2026-07-20T00:00:00Z"}</code></pre>
+      <pre><code>{"schema_version":"0.2","ok":true,"type":"wait","job_id":"&lt;id&gt;","state":"exited","exit_code":0,"stdout":"done\n","stderr":"","encoding":"utf-8-lossy","stdout_range":[0,5],"stderr_range":[0,0],"stdout_total_bytes":5,"stderr_total_bytes":0,"updated_at":"2026-07-20T00:00:00Z"}</code></pre>
       <h2>Boundaries</h2>
       <p>Generated completions, MCP stdio protocol, and Clap help/version output are not response envelopes. Router-level unmatched HTTP paths and methods are also outside this contract.</p>
       <p>The <code>serve</code> command emits a JSON error envelope for startup configuration failures such as an unsafe bind, a missing token for a non-loopback bind, or a wildcard CORS origin. MCP startup errors are outside the response-envelope contract.</p>

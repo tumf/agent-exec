@@ -6,7 +6,7 @@ Expect one JSON object on stdout for every successful command:
 
 ```json
 {
-  "schema_version": "0.1",
+  "schema_version": "0.2",
   "ok": true,
   "type": "<command>",
   "...": "command-specific fields"
@@ -29,7 +29,7 @@ Expect this envelope for expected failures:
 
 ```json
 {
-  "schema_version": "0.1",
+  "schema_version": "0.2",
   "ok": false,
   "type": "error",
   "error": {
