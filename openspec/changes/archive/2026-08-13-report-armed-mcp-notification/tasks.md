@@ -45,15 +45,3 @@ Secondary precision fix in the same schema-contract documentation: the `## schem
 entry described `notification` presence conditions without saying which surface emits it. Only
 MCP `run` populates the field; `src/run.rs:1028`, `src/start.rs:168`, `src/restart.rs:174`, and
 `src/serve.rs:385`/`:453` all emit `None`. The entry now says so.
-
-## Current Acceptance Follow-up
-- attempt: 1
-- [x] Investigate acceptance failure and apply the required fix
-  evidence: root cause = the schema 0.1->0.2 bump missed skills/agent-exec/references/completion-events.md:9, shipping a job.finished example that contradicts the binary's actual `"schema_version":"0.2"` output from src/run.rs:2067
-  evidence: reproduced against the built binary - `agent-exec run --notify-file <path> -- sh -c 'echo hi'` wrote `{"schema_version":"0.2","event_type":"job.finished",...}` while the shipped doc said "0.1"
-  evidence: skills/agent-exec/references/completion-events.md:9 now documents `"schema_version": "0.2"`, agreeing with SCHEMA_VERSION, schema/agent-exec.schema.json, README.md, and the site/docs pages
-  evidence: tests/integration.rs `documented_schema_version_examples_track_schema_version` scans README.md, CHANGELOG.md, docs/, skills/, and site/ for `"schema_version": "<v>"` JSON literals and fails on any value != SCHEMA_VERSION
-  evidence: guard proven to catch the defect - reverting the doc to "0.1" fails with `...completion-events.md documents schema_version "0.1" but the binary emits "0.2"`, and it passes on the fixed doc
-  evidence: CHANGELOG.md `## schema 0.2` now states `notification` is produced by MCP `run` and omitted by CLI/HTTP responses (src/run.rs:1028, src/start.rs:168, src/restart.rs:174, src/serve.rs:385)
-  evidence: `prek run -a` passed after the repair (trailing-whitespace, end-of-file-fixer, check-toml, check-yaml, cargo fmt --check, cargo clippy -D warnings, cargo test --all)
-  evidence: `cflx openspec validate report-armed-mcp-notification --strict` and `--archive-gate` both passed after the repair
