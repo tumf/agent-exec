@@ -6,9 +6,8 @@ references:
   - src/mcp.rs
   - src/schema.rs
   - tests/mcp_integration.rs
-  - tests/opencode_integration.rs
-  - examples/integrations/opencode-auto-resume/agent-exec-auto-resume.js
-  - openspec/changes/archive/2026-08-13-add-opencode-auto-resume-integration
+  - openspec/specs/agent-exec-mcp/spec.md
+  - openspec/specs/agent-exec-run/spec.md
 verifications:
   - id: mcp-armed-notification
     requirement: MCP run persists a supplied completion sink before launch and truthfully tells the calling agent when completion notification is armed and polling is unnecessary
