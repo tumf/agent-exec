@@ -56,7 +56,7 @@ OpenCode's current 60-second MCP request deadline can use `AGENT_EXEC_MCP_MAX_UN
 - Read `references/cli-contract.md` for the response schema, exit codes, and default `run` behavior.
 - Read `references/completion-events.md` for `stdout_log_path`, `stderr_log_path`, and notification sink behavior.
 - Read `references/openclaw.md` when job completion should re-enter an OpenClaw workflow.
-- Read `references/hermes.md` when job completion should notify a Hermes Agent session.
+- Read `references/hermes.md` when Hermes launches a detached job. Hermes does not automatically subscribe to the inner job; without a real armed sink, attach exactly one background `agent-exec wait --forever <job_id>` watcher with `notify_on_complete=true`, and do not repeat bounded waits.
 
 ## Minimal examples
 
