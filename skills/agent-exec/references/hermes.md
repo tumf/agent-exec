@@ -1,115 +1,72 @@
 # Hermes Agent Integration
 
-Use this reference when `agent-exec` jobs must report completion back into a Hermes Agent session via `hermes notify`.
+Use this reference when Hermes launches a detached `agent-exec` job and must receive one completion event without repeated bounded waits.
 
-## How it works
+## Current contract
 
-1. `agent-exec run` starts a background job.
-2. On completion, `--notify-command` invokes `hermes notify`.
-3. `hermes notify` spins up a one-shot Hermes Agent that reads the notification payload, interprets it (may inspect files, logs, etc.), and delivers a human-readable response to the origin chat.
+Hermes does not automatically subscribe to the inner detached job created by `agent-exec run`.
 
-This is different from posting a raw message to Telegram — the agent processes the result before responding.
+`terminal(background=true, notify_on_complete=true)` watches the exact process started by the terminal tool. If that process is `agent-exec run`, it ends after returning the managed `job_id`; the workload continues under the detached supervisor. The terminal completion event therefore means only that the launcher returned, not that the managed workload finished.
 
-## Prerequisites
+The current Hermes CLI has no `hermes notify` command. Do not use historical examples that invoke it. Verify available commands with `hermes --help` before documenting a Hermes callback.
 
-- `hermes notify` is available at `~/.hermes/hermes-agent/venv/bin/hermes notify` (or on PATH).
-- A valid LLM provider must be reachable. Pass `--provider` explicitly to avoid credential resolution hangs in non-interactive environments.
-- The Telegram bot token (or other platform credentials) must be configured in `~/.hermes/.env`.
+## One-watcher pattern
 
-## Pass session context via environment variables
+After recovering the inner `job_id`, start exactly one Hermes-managed watcher:
 
-`hermes notify` resolves its delivery target from `HERMES_SESSION_*` environment variables. Inject them with `--env` at job creation time:
-
-```bash
-agent-exec run \
-  --env HERMES_SESSION_PLATFORM=telegram \
-  --env HERMES_SESSION_CHAT_ID=<chat_id> \
-  --env HERMES_SESSION_THREAD_ID=<thread_id> \
-  --notify-command 'hermes notify --provider <provider> -m "job $AGENT_EXEC_JOB_ID completed"' \
-  -- <command>
+```text
+terminal(
+  command="agent-exec wait --forever <job_id>",
+  background=true,
+  notify_on_complete=true,
+)
 ```
 
-The `--env` variables are inherited by the notify-command process, so `hermes notify` picks them up automatically without needing `--platform`/`--chat-id`/`--thread-id` flags.
+This gives Hermes one process whose lifetime matches the managed job:
 
-## Recommended notify-command shape
+1. `agent-exec wait --forever` stays alive while the job is non-terminal.
+2. It does not stop or own the workload.
+3. It exits with the canonical terminal response when the job finishes.
+4. Hermes emits one background-process completion event for that watcher.
+5. On that event, inspect the returned terminal state and logs, then continue the original task.
 
-Keep the one-liner minimal. The agent will inspect logs and files on its own.
+Do not repeat `wait --until`, `status`, or `tail` merely to detect completion after this watcher is armed. Use `status` or `tail` only for an explicit progress request or abnormal-job diagnosis.
 
-```bash
---notify-command 'hermes notify --provider <provider> -m "job_id=$AGENT_EXEC_JOB_ID event_path=$AGENT_EXEC_EVENT_PATH"'
+## Correct launch sequence
+
+When shell work may outlive the terminal call:
+
+1. Start `agent-exec run` using the Hermes terminal tool as documented for this environment.
+2. Read the returned JSON and retain the inner `job_id`.
+3. If `state` is already terminal, verify the result directly; do not create a watcher.
+4. If `state` is non-terminal and no real completion sink is armed, start one background `wait --forever` watcher with `notify_on_complete=true`.
+5. Record the Hermes background `session_id` so the watcher is not duplicated.
+6. When notified, verify the job output and requested artifact. Do not equate watcher exit with successful workload completion; check `state` and `exit_code`.
+
+## Avoid double-background confusion
+
+Do not assume this launch is sufficient:
+
+```text
+terminal(
+  command="agent-exec run -- <command>",
+  background=true,
+  notify_on_complete=true,
+)
 ```
 
-For richer context, include the command description:
+Its completion notification normally reports only that `agent-exec run` returned its JSON envelope. Parse the inner `job_id`, then attach the single watcher above.
 
-```bash
---notify-command 'hermes notify --provider <provider> -m "Build finished: job_id=$AGENT_EXEC_JOB_ID event_path=$AGENT_EXEC_EVENT_PATH"'
-```
+## Existing notification sinks
 
-## Example: full launcher
+If the `agent-exec run` response truthfully reports that a completion sink is armed, use that sink and do not add a duplicate watcher. A configured sink must be evidenced by the response or persisted job metadata; client type or skill text is not evidence.
 
-```bash
-HERMES=~/.hermes/hermes-agent/venv/bin/hermes
+The watcher is the fallback for current Hermes operation when no real sink is armed. It is tied to the Hermes runtime managing the background process; it is not a durable cross-restart delivery service.
 
-agent-exec run \
-  --env HERMES_SESSION_PLATFORM=telegram \
-  --env HERMES_SESSION_CHAT_ID=971980613 \
-  --env HERMES_SESSION_THREAD_ID=27136 \
-  --notify-command "$HERMES notify --provider cliproxy -m 'Build done: job_id=\$AGENT_EXEC_JOB_ID event_path=\$AGENT_EXEC_EVENT_PATH'" \
-  -- make build
-```
+## Verification checklist
 
-## Example: attach notification after launch
-
-```bash
-JOB=$(agent-exec run -- make test | jq -r .job_id)
-
-agent-exec notify set "$JOB" \
-  --command 'hermes notify --provider cliproxy -m "Tests finished: job_id=$AGENT_EXEC_JOB_ID event_path=$AGENT_EXEC_EVENT_PATH"'
-```
-
-Use this when session context is only available after the job starts.
-
-## Helper script
-
-For repeated use, create a wrapper script instead of inlining the full command:
-
-```bash
-#!/usr/bin/env bash
-# ~/.local/bin/hermes-notify-hook
-# Usage: agent-exec run --notify-command hermes-notify-hook -- <command>
-set -euo pipefail
-
-HERMES="${HERMES_BIN:-$HOME/.hermes/hermes-agent/venv/bin/hermes}"
-PROVIDER="${HERMES_NOTIFY_PROVIDER:-cliproxy}"
-
-exec "$HERMES" notify \
-  --provider "$PROVIDER" \
-  -m "job_id=$AGENT_EXEC_JOB_ID event_path=$AGENT_EXEC_EVENT_PATH"
-```
-
-Then launch jobs simply:
-
-```bash
-agent-exec run \
-  --env HERMES_SESSION_PLATFORM=telegram \
-  --env HERMES_SESSION_CHAT_ID=<chat_id> \
-  --env HERMES_SESSION_THREAD_ID=<thread_id> \
-  --notify-command hermes-notify-hook \
-  -- <command>
-```
-
-## Good patterns
-
-- Always pass `--provider` explicitly to avoid interactive credential prompts in headless contexts.
-- Use `--env` to inject `HERMES_SESSION_*` variables so notify-command inherits them automatically.
-- Include `job_id` and `event_path` in the message so the agent can inspect the completion event and job logs.
-- Keep the one-liner idempotent — duplicate delivery attempts should not cause side effects.
-- Use absolute paths for the `hermes` binary when PATH may differ inside the sink process.
-
-## Common mistakes
-
-- Omitting `--provider`, causing `hermes notify` to hang on interactive credential resolution.
-- Hardcoding `--thread-id` in `--notify-command` instead of using `HERMES_SESSION_THREAD_ID` via `--env`.
-- Sending the full event JSON as the message payload. The agent can read files — just pass `event_path`.
-- Using a model/provider that is slow or unreliable for one-shot callbacks. Prefer fast, cheap models.
-- Forgetting that `hermes notify` starts a full agent turn — it is not a simple HTTP POST. Budget ~10-30s for completion.
+- `hermes --help` confirms the commands used by the procedure.
+- `agent-exec wait --help` confirms `--forever` semantics.
+- The launcher's JSON provides the authoritative inner `job_id`.
+- Exactly one watcher exists for that job.
+- Completion handling checks terminal `state`, `exit_code`, and persisted logs/artifacts.
