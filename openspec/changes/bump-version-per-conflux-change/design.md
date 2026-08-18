@@ -14,7 +14,9 @@ The automatic target therefore needs all three independent safeguards:
 --no-publish --no-tag --no-push
 ```
 
-`cargo release` retains its version and commit steps. This produces a normal version commit after each merged Change without creating a release tag or writing to a remote.
+`cargo release` retains its version and commit steps. This produces a normal version commit after each merged Change without creating a release tag or writing to a remote. Disabling push also disables cargo-release's behind-remote fetch check, so the automatic path performs no network access at all.
+
+cargo-release refuses to run in a dirty working tree, counting staged, unstaged, and untracked files. `.leann` and `.tldr` are gitignored, so `make index` artifacts do not dirty the tree, but any stray untracked file in the root repository fails the bump. That failure is acceptable and intentionally loud: it is exactly the spec's "automatic version bump fails" scenario, and it must not be papered over with `allow-dirty`.
 
 ## Hook ordering
 
@@ -23,7 +25,9 @@ The hook runs:
 1. version-only patch bump
 2. local index refresh
 
-Shell `&&` semantics stop index refresh if versioning fails. Conflux must surface that hook failure rather than silently treating an unversioned Change as successfully post-processed.
+Shell `&&` semantics stop index refresh if versioning fails. Conflux surfaces `on_merged` failures as a typed hook failure and marks the Change failed rather than silently treating an unversioned Change as successfully post-processed; the hook only needs to exit non-zero.
+
+Each version commit lands on the base branch mid-session. Conflux pre-syncs the base into remaining workspaces before their merges, so `Cargo.toml`/`Cargo.lock` version hunks from earlier Changes are reconciled during workspace sync, not at merge time.
 
 ## Verification boundary
 
@@ -36,6 +40,8 @@ The regression test must not execute a real version bump in the main worktree. I
 - no direct `git tag`, `git push`, `cargo publish`, or `gh release` command in the automatic path
 
 A real dry-run may inspect command expansion only when it cannot mutate repository state.
+
+Real execution is still required, but it belongs in a disposable clone, not the main worktree: clone the repository into a temporary directory, remove the `origin` remote so a push is impossible by construction, and run the tracked `on_merged` string twice. Two runs prove the per-Change contract directly — two sequential patch-version commits, no tag on either, clean tree afterwards — which a single run cannot.
 
 ## Owner reload
 

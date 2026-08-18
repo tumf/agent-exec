@@ -58,6 +58,7 @@ Replace the regression test that forbids all version changes with a focused cont
 - A focused integration test reads the tracked `.cflx.jsonc` and Makefile and fails if the hook omits the bump, invokes it more than once, omits index refresh, or allows tag, push, or publication.
 - The canonical distribution specification distinguishes automatic per-Change version commits from explicit release actions.
 - `cargo test --test integration conflux_on_merged_hook_bumps_patch_without_release` passes.
+- A recorded real execution of the tracked `on_merged` command in a disposable clone with no `origin` remote shows two consecutive runs producing two sequential patch-version commits, no tag on either new commit, and a clean working tree afterwards.
 
 ## Out of Scope
 
@@ -70,4 +71,4 @@ Replace the regression test that forbids all version changes with a focused cont
 
 ## Rollout Note
 
-A running Conflux owner may retain the hook command loaded at startup. After this Change is merged, future Conflux work must use a newly started owner before relying on the new per-Change hook behavior.
+A running Conflux owner may retain the hook command loaded at startup (Conflux constructs its hook runner from the configuration read when the owner starts). After this Change is merged, future Conflux work must use a newly started owner before relying on the new per-Change hook behavior. The merge of this Change itself therefore still runs the old `make index`-only hook; the first end-to-end per-Change bump is observed on the next Change merged by a fresh owner.
