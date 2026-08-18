@@ -8618,3 +8618,187 @@ fn supervisor_reaping_neither_blocks_the_launcher_nor_signals_the_child() {
         .expect("kill child");
     assert!(killed.success(), "failed to clean up child {pid}");
 }
+
+// ── hermes completion hook ─────────────────────────────────────────────────────
+//
+// These tests execute the tracked `skills/agent-exec/scripts/hermes-notify-hook`
+// helper against a fake `hermes` executable. No network, credential, LLM, or real
+// Hermes installation is involved: the fake binary only records its argv.
+
+/// Absolute path to the tracked Hermes completion helper.
+fn hermes_hook_path() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("skills/agent-exec/scripts/hermes-notify-hook")
+}
+
+/// Absolute path to the Hermes integration reference shipped with the skill.
+fn hermes_reference_path() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/agent-exec/references/hermes.md")
+}
+
+/// Write an executable fake `hermes` that appends one line per argument to
+/// `argv_file`, and return its path.
+fn write_fake_hermes(dir: &std::path::Path, argv_file: &std::path::Path) -> std::path::PathBuf {
+    let fake = dir.join("hermes");
+    std::fs::write(
+        &fake,
+        format!(
+            "#!/bin/sh\n: > '{argv}'\nfor a in \"$@\"; do printf '%s\\n' \"$a\" >> '{argv}'; done\n",
+            argv = argv_file.display()
+        ),
+    )
+    .expect("write fake hermes");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod fake hermes");
+    }
+    fake
+}
+
+/// Resolve the system `bash` used by the helper's shebang.
+fn system_bash() -> std::path::PathBuf {
+    let out = Command::new("/bin/sh")
+        .args(["-c", "command -v bash"])
+        .output()
+        .expect("locate bash");
+    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if path.is_empty() {
+        std::path::PathBuf::from("/bin/bash")
+    } else {
+        std::path::PathBuf::from(path)
+    }
+}
+
+/// Success path: the helper calls the current `hermes send` interface with the
+/// exact request-scoped target and a message carrying only job id and event path.
+#[cfg(unix)]
+#[test]
+fn hermes_notify_hook_sends_via_hermes_send_with_exact_argv() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let argv_file = tmp.path().join("argv.txt");
+    let fake = write_fake_hermes(tmp.path(), &argv_file);
+
+    let target = "slack:C0123:171234.0001";
+    let job_id = "0123456789abcdef0123456789abcdef";
+    let event_path = tmp.path().join("completion_event.json");
+
+    let status = Command::new(hermes_hook_path())
+        .env("HERMES_BIN", &fake)
+        .env("HERMES_NOTIFY_TARGET", target)
+        .env("AGENT_EXEC_JOB_ID", job_id)
+        .env("AGENT_EXEC_EVENT_PATH", &event_path)
+        .env("AGENT_EXEC_EVENT_TYPE", "job.finished")
+        .status()
+        .expect("run hermes-notify-hook");
+    assert!(status.success(), "hook must succeed; status={status}");
+
+    let recorded = std::fs::read_to_string(&argv_file).expect("fake hermes must record argv");
+    let argv: Vec<&str> = recorded.lines().collect();
+    assert_eq!(
+        argv,
+        vec![
+            "send",
+            "--quiet",
+            "--to",
+            target,
+            &format!("job_id={job_id} event_path={}", event_path.display()),
+        ],
+        "unexpected hermes argv: {argv:?}"
+    );
+    for forbidden in ["notify", "--provider", "--model", "-m"] {
+        assert!(
+            !argv.contains(&forbidden),
+            "argv must not contain {forbidden:?}: {argv:?}"
+        );
+    }
+}
+
+/// Fail-closed: without an explicit request-scoped target the helper never runs
+/// hermes at all, so no destination can be guessed or reused.
+#[cfg(unix)]
+#[test]
+fn hermes_notify_hook_requires_explicit_target() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let argv_file = tmp.path().join("argv.txt");
+    let fake = write_fake_hermes(tmp.path(), &argv_file);
+
+    let status = Command::new(hermes_hook_path())
+        .env_remove("HERMES_NOTIFY_TARGET")
+        .env("HERMES_BIN", &fake)
+        .env("AGENT_EXEC_JOB_ID", "0123456789abcdef0123456789abcdef")
+        .env("AGENT_EXEC_EVENT_PATH", tmp.path().join("event.json"))
+        .env("AGENT_EXEC_EVENT_TYPE", "job.finished")
+        .status()
+        .expect("run hermes-notify-hook");
+    assert!(
+        !status.success(),
+        "hook must fail closed without HERMES_NOTIFY_TARGET; status={status}"
+    );
+    assert!(
+        !argv_file.exists(),
+        "hermes must not be invoked when the target is absent"
+    );
+}
+
+/// Fail-closed: with `HERMES_BIN` unset and both `PATH` and `HOME` isolated, the
+/// helper cannot resolve any hermes installation and exits non-zero.
+#[cfg(unix)]
+#[test]
+fn hermes_notify_hook_fails_closed_without_hermes_binary() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    // An isolated PATH that holds bash (needed by the shebang) and no hermes.
+    let bin_dir = tmp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).expect("create isolated bin dir");
+    std::os::unix::fs::symlink(system_bash(), bin_dir.join("bash")).expect("link bash");
+    // An empty HOME so the helper's $HOME/.hermes fallback cannot resolve a real
+    // installation on the test machine.
+    let home = tmp.path().join("home");
+    std::fs::create_dir_all(&home).expect("create isolated home");
+
+    let status = Command::new(hermes_hook_path())
+        .env_remove("HERMES_BIN")
+        .env("PATH", &bin_dir)
+        .env("HOME", &home)
+        .env("HERMES_NOTIFY_TARGET", "telegram:12345")
+        .env("AGENT_EXEC_JOB_ID", "0123456789abcdef0123456789abcdef")
+        .env("AGENT_EXEC_EVENT_PATH", tmp.path().join("event.json"))
+        .env("AGENT_EXEC_EVENT_TYPE", "job.finished")
+        .status()
+        .expect("run hermes-notify-hook");
+    assert!(
+        !status.success(),
+        "hook must fail closed when no hermes binary is resolvable; status={status}"
+    );
+    assert!(
+        !bin_dir.join("hermes").exists(),
+        "the isolated PATH directory must contain no hermes"
+    );
+}
+
+/// The Hermes reference must not teach the obsolete `hermes notify` command in
+/// any runnable example. Prose that prohibits it stays allowed.
+#[test]
+fn hermes_notify_hook_reference_has_no_hermes_notify_code_block() {
+    let text = std::fs::read_to_string(hermes_reference_path()).expect("read hermes.md");
+    let mut in_block = false;
+    for (index, line) in text.lines().enumerate() {
+        if line.trim_start().starts_with("```") {
+            in_block = !in_block;
+            continue;
+        }
+        if in_block {
+            assert!(
+                !line.contains("hermes notify"),
+                "hermes.md line {} runs the obsolete command: {line}",
+                index + 1
+            );
+        }
+    }
+    assert!(!in_block, "hermes.md has an unterminated fenced code block");
+    assert!(
+        text.contains("HERMES_NOTIFY_TARGET"),
+        "hermes.md must document the request-scoped target assignment"
+    );
+}

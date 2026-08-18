@@ -10,7 +10,46 @@ Hermes does not automatically subscribe to the inner detached job created by `ag
 
 The current Hermes CLI has no `hermes notify` command. Do not use historical examples that invoke it. Verify available commands with `hermes --help` before documenting a Hermes callback.
 
-## One-watcher pattern
+## Preferred: arm a completion sink at launch
+
+Prefer a launch-time completion sink over any watcher. `run` persists the sink before the workload starts, and the terminal dispatcher runs it once when the job finishes.
+
+The destination is **request-scoped**. Completion sinks do not inherit the managed child's environment, so `--env` / `env` routing never reaches the hook. Embed the target assignment in the sink command itself; the sink runs under the configured shell wrapper, so a leading assignment is valid:
+
+```text
+run(
+  command=["./long-task.sh", "--verbose"],
+  notify_command="HERMES_NOTIFY_TARGET='slack:C0123:171234.0001' /absolute/path/skills/agent-exec/scripts/hermes-notify-hook",
+)
+```
+
+CLI equivalent:
+
+```bash
+agent-exec run \
+  --notify-command "HERMES_NOTIFY_TARGET='telegram:12345:678' /absolute/path/skills/agent-exec/scripts/hermes-notify-hook" \
+  -- ./long-task.sh --verbose
+```
+
+`HERMES_NOTIFY_TARGET` is `platform:chat_id[:thread_id]` and must be the destination of the request being served. The hook never discovers, caches, or reuses a route: an absent or malformed target makes it exit non-zero instead of delivering somewhere else.
+
+On completion the hook sends exactly one short message through the current Hermes CLI:
+
+```bash
+hermes send --quiet --to "$HERMES_NOTIFY_TARGET" "job_id=$AGENT_EXEC_JOB_ID event_path=$AGENT_EXEC_EVENT_PATH"
+```
+
+No LLM turn is started, and no command output or credential is included. Read `completion_event.json` at `AGENT_EXEC_EVENT_PATH`, or call `status`/`tail`, for the terminal `state`, `exit_code`, and logs.
+
+### `armed` means persisted, not delivered
+
+When `run` returns while the job is still running, the response may include `notification.state="armed"` with `polling_required=false`. That proves only that the sink is persisted in job metadata and will be dispatched at terminal time. It is not evidence that Slack, Telegram, or any downstream destination received the message; downstream delivery results are recorded separately in the completion event. Do not add a duplicate watcher for an armed sink, and do not treat `armed` as delivery confirmation.
+
+If the hook exits non-zero, the delivery failure is recorded in the completion event and the workload's terminal state is unchanged.
+
+## Fallback: one-watcher pattern
+
+Use this only when no completion sink is persisted for the job.
 
 After recovering the inner `job_id`, start exactly one Hermes-managed watcher:
 
@@ -36,12 +75,12 @@ Do not repeat `wait --until`, `status`, or `tail` merely to detect completion af
 
 When shell work may outlive the terminal call:
 
-1. Start `agent-exec run` using the Hermes terminal tool as documented for this environment.
+1. Start `agent-exec run` using the Hermes terminal tool as documented for this environment, arming the completion sink above whenever a delivery destination is known.
 2. Read the returned JSON and retain the inner `job_id`.
 3. If `state` is already terminal, verify the result directly; do not create a watcher.
 4. If `state` is non-terminal and no real completion sink is armed, start one background `wait --forever` watcher with `notify_on_complete=true`.
 5. Record the Hermes background `session_id` so the watcher is not duplicated.
-6. When notified, verify the job output and requested artifact. Do not equate watcher exit with successful workload completion; check `state` and `exit_code`.
+6. When notified, verify the job output and requested artifact. Do not equate watcher exit or sink dispatch with successful workload completion; check `state` and `exit_code`.
 
 ## Avoid double-background confusion
 
@@ -55,7 +94,7 @@ terminal(
 )
 ```
 
-Its completion notification normally reports only that `agent-exec run` returned its JSON envelope. Parse the inner `job_id`, then attach the single watcher above.
+Its completion notification normally reports only that `agent-exec run` returned its JSON envelope. Parse the inner `job_id`, then arm a sink or attach the single watcher above.
 
 ## Existing notification sinks
 
@@ -65,8 +104,9 @@ The watcher is the fallback for current Hermes operation when no real sink is ar
 
 ## Verification checklist
 
-- `hermes --help` confirms the commands used by the procedure.
+- `hermes --help` confirms the commands used by the procedure, including `hermes send`.
 - `agent-exec wait --help` confirms `--forever` semantics.
 - The launcher's JSON provides the authoritative inner `job_id`.
-- Exactly one watcher exists for that job.
+- The persisted `notify_command` carries this request's `HERMES_NOTIFY_TARGET`.
+- Exactly one completion mechanism exists for that job: an armed sink or one watcher, never both.
 - Completion handling checks terminal `state`, `exit_code`, and persisted logs/artifacts.

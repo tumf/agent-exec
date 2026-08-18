@@ -1,49 +1,76 @@
 #!/usr/bin/env bash
 # hermes-notify-hook — agent-exec completion callback for Hermes Agent
 #
-# Usage:
+# Delivers exactly one short completion message through the current Hermes CLI
+# (`hermes send`). It starts no LLM turn and carries no command output.
+#
+# The delivery destination is request-scoped: completion command sinks do NOT
+# inherit the managed child's environment, so `--env` routing never reaches this
+# helper. Embed the target assignment in the persisted sink command itself; the
+# sink runs under a shell wrapper, so a leading assignment is valid.
+#
+# MCP `run`:
+#
+#   run(
+#     command=["<command>", "<arg>"],
+#     notify_command="HERMES_NOTIFY_TARGET='slack:C0123:171234.0001' /absolute/path/hermes-notify-hook",
+#   )
+#
+# CLI equivalent:
+#
 #   agent-exec run \
-#     --env HERMES_SESSION_PLATFORM=telegram \
-#     --env HERMES_SESSION_CHAT_ID=<chat_id> \
-#     --env HERMES_SESSION_THREAD_ID=<thread_id> \
-#     --notify-command hermes-notify-hook \
+#     --notify-command "HERMES_NOTIFY_TARGET='telegram:12345:678' /absolute/path/hermes-notify-hook" \
 #     -- <command>
 #
-# Environment variables (set by agent-exec):
+# Required (supplied by the caller inside notify_command):
+#   HERMES_NOTIFY_TARGET  — destination as platform:chat_id[:thread_id]
+#
+# Provided by agent-exec when the sink runs:
 #   AGENT_EXEC_JOB_ID       — completed job id
 #   AGENT_EXEC_EVENT_PATH   — path to completion_event.json
 #   AGENT_EXEC_EVENT_TYPE   — always "job.finished"
 #
-# Environment variables (set by caller via --env):
-#   HERMES_SESSION_PLATFORM  — delivery platform (telegram, discord, slack, ...)
-#   HERMES_SESSION_CHAT_ID   — target chat id
-#   HERMES_SESSION_THREAD_ID — target thread/topic id (optional)
+# Optional override:
+#   HERMES_BIN              — path to the hermes binary (default: auto-detect)
 #
-# Optional overrides:
-#   HERMES_BIN              — path to hermes binary (default: auto-detect)
-#   HERMES_NOTIFY_PROVIDER  — LLM provider for the callback agent (default: cliproxy)
-#   HERMES_NOTIFY_MODEL     — model override (optional)
+# Fail-closed: a missing target, missing job context, or unavailable hermes
+# binary exits non-zero. agent-exec records that delivery failure in the
+# completion event and never changes the managed job's terminal state.
 set -euo pipefail
+
+TARGET="${HERMES_NOTIFY_TARGET:-}"
+if [[ -z "$TARGET" ]]; then
+  echo "hermes-notify-hook: HERMES_NOTIFY_TARGET is required (platform:chat_id[:thread_id])" >&2
+  echo "hermes-notify-hook: set it inside notify_command; managed-child --env does not reach this hook" >&2
+  exit 2
+fi
+
+# Reject anything that is not an explicit platform-prefixed destination. The
+# hook never guesses, caches, or discovers a route.
+if [[ ! "$TARGET" =~ ^[A-Za-z0-9_-]+:[^[:space:]]+$ ]]; then
+  echo "hermes-notify-hook: invalid HERMES_NOTIFY_TARGET '$TARGET' (expected platform:chat_id[:thread_id])" >&2
+  exit 2
+fi
+
+JOB_ID="${AGENT_EXEC_JOB_ID:-}"
+EVENT_PATH="${AGENT_EXEC_EVENT_PATH:-}"
+if [[ -z "$JOB_ID" || -z "$EVENT_PATH" ]]; then
+  echo "hermes-notify-hook: AGENT_EXEC_JOB_ID and AGENT_EXEC_EVENT_PATH are required" >&2
+  exit 2
+fi
 
 # Resolve hermes binary
 if [[ -n "${HERMES_BIN:-}" ]]; then
   HERMES="$HERMES_BIN"
-elif command -v hermes &>/dev/null; then
+elif command -v hermes >/dev/null 2>&1; then
   HERMES="hermes"
-elif [[ -x "$HOME/.hermes/hermes-agent/venv/bin/hermes" ]]; then
+elif [[ -x "${HOME:-}/.hermes/hermes-agent/venv/bin/hermes" ]]; then
   HERMES="$HOME/.hermes/hermes-agent/venv/bin/hermes"
 else
   echo "hermes-notify-hook: hermes binary not found" >&2
   exit 1
 fi
 
-PROVIDER="${HERMES_NOTIFY_PROVIDER:-cliproxy}"
-MODEL_FLAG=""
-if [[ -n "${HERMES_NOTIFY_MODEL:-}" ]]; then
-  MODEL_FLAG="--model $HERMES_NOTIFY_MODEL"
-fi
-
-exec "$HERMES" notify \
-  --provider "$PROVIDER" \
-  $MODEL_FLAG \
-  -m "job_id=$AGENT_EXEC_JOB_ID event_path=$AGENT_EXEC_EVENT_PATH"
+# One short message: canonical job id and completion event path only. Command
+# output and credentials are never included; read the event file for details.
+exec "$HERMES" send --quiet --to "$TARGET" "job_id=$JOB_ID event_path=$EVENT_PATH"
