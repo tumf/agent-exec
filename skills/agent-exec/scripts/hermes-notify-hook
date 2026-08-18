@@ -73,5 +73,5 @@ fi
 
 # One short notification: canonical job id and completion event path only.
 # Command output and credentials are never included; read the event file for details.
-MESSAGE="$(printf '✅ agent-exec job completed\n• Job: `%s`\n• Details: `%s`' "$JOB_ID" "$EVENT_PATH")"
+MESSAGE="$(printf '[AUTO: agent-exec completion event]\nexecution: %s\nevent: completed\n\n完了イベント `%s` を確認し、元の作業を再開してください。' "$JOB_ID" "$EVENT_PATH")"
 exec "$HERMES" send --quiet --to "$TARGET" "$MESSAGE"

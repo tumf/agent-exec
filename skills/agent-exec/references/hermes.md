@@ -38,10 +38,14 @@ agent-exec run \
 On completion the hook sends exactly one short notification through the current Hermes CLI:
 
 ```text
-✅ agent-exec job completed
-• Job: `<job_id>`
-• Details: `<completion_event.json path>`
+[AUTO: agent-exec completion event]
+execution: <job_id>
+event: completed
+
+完了イベント `<completion_event.json path>` を確認し、元の作業を再開してください。
 ```
+
+The `[AUTO: ...]` prefix and explicit follow-up instruction let a Hermes continuation classifier recognize this assistant-history message as resumable work. This is a prompt-level convention, not a fixed parser contract.
 
 No LLM turn is started, and no command output or credential is included. Read `completion_event.json` at `AGENT_EXEC_EVENT_PATH`, or call `status`/`tail`, for the terminal `state`, `exit_code`, and logs.
 

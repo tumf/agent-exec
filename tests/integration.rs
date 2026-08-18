@@ -8842,7 +8842,7 @@ fn hermes_notify_hook_sends_via_hermes_send_with_exact_argv() {
     assert_eq!(
         argv[4..].join("\n"),
         format!(
-            "✅ agent-exec job completed\n• Job: `{job_id}`\n• Details: `{}`",
+            "[AUTO: agent-exec completion event]\nexecution: {job_id}\nevent: completed\n\n完了イベント `{}` を確認し、元の作業を再開してください。",
             event_path.display()
         ),
         "unexpected notification body: {argv:?}"
