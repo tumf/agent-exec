@@ -8835,15 +8835,17 @@ fn hermes_notify_hook_sends_via_hermes_send_with_exact_argv() {
     let recorded = std::fs::read_to_string(&argv_file).expect("fake hermes must record argv");
     let argv: Vec<&str> = recorded.lines().collect();
     assert_eq!(
-        argv,
-        vec![
-            "send",
-            "--quiet",
-            "--to",
-            target,
-            &format!("job_id={job_id} event_path={}", event_path.display()),
-        ],
-        "unexpected hermes argv: {argv:?}"
+        &argv[..4],
+        &["send", "--quiet", "--to", target],
+        "unexpected hermes argv prefix: {argv:?}"
+    );
+    assert_eq!(
+        argv[4..].join("\n"),
+        format!(
+            "✅ agent-exec job completed\n• Job: `{job_id}`\n• Details: `{}`",
+            event_path.display()
+        ),
+        "unexpected notification body: {argv:?}"
     );
     for forbidden in ["notify", "--provider", "--model", "-m"] {
         assert!(

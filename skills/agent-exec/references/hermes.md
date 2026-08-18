@@ -19,9 +19,11 @@ The destination is **request-scoped**. Completion sinks do not inherit the manag
 ```text
 run(
   command=["./long-task.sh", "--verbose"],
-  notify_command="HERMES_NOTIFY_TARGET='slack:C0123:171234.0001' /absolute/path/skills/agent-exec/scripts/hermes-notify-hook",
+  notify_command="HERMES_HOME=/absolute/profile/home HERMES_BIN=/absolute/path/hermes HERMES_NOTIFY_TARGET=slack:C0123:171234.0001 /absolute/path/skills/agent-exec/scripts/hermes-notify-hook",
 )
 ```
+
+For managed Hermes profiles, set `HERMES_HOME` explicitly to that agent's runtime home. Completion sinks do not reliably inherit the launching Hermes process environment. Set `HERMES_BIN` explicitly when `hermes` may be absent from the sink's `PATH`. Keep the assignments and paths in the persisted `notify_command`; do not pass them through the managed child's `env`.
 
 CLI equivalent:
 
@@ -33,10 +35,12 @@ agent-exec run \
 
 `HERMES_NOTIFY_TARGET` is `platform:chat_id[:thread_id]` and must be the destination of the request being served. The hook never discovers, caches, or reuses a route: an absent or malformed target makes it exit non-zero instead of delivering somewhere else.
 
-On completion the hook sends exactly one short message through the current Hermes CLI:
+On completion the hook sends exactly one short notification through the current Hermes CLI:
 
-```bash
-hermes send --quiet --to "$HERMES_NOTIFY_TARGET" "job_id=$AGENT_EXEC_JOB_ID event_path=$AGENT_EXEC_EVENT_PATH"
+```text
+✅ agent-exec job completed
+• Job: `<job_id>`
+• Details: `<completion_event.json path>`
 ```
 
 No LLM turn is started, and no command output or credential is included. Read `completion_event.json` at `AGENT_EXEC_EVENT_PATH`, or call `status`/`tail`, for the terminal `state`, `exit_code`, and logs.

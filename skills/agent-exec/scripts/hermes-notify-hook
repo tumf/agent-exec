@@ -71,6 +71,7 @@ else
   exit 1
 fi
 
-# One short message: canonical job id and completion event path only. Command
-# output and credentials are never included; read the event file for details.
-exec "$HERMES" send --quiet --to "$TARGET" "job_id=$JOB_ID event_path=$EVENT_PATH"
+# One short notification: canonical job id and completion event path only.
+# Command output and credentials are never included; read the event file for details.
+MESSAGE="$(printf '✅ agent-exec job completed\n• Job: `%s`\n• Details: `%s`' "$JOB_ID" "$EVENT_PATH")"
+exec "$HERMES" send --quiet --to "$TARGET" "$MESSAGE"
