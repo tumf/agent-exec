@@ -2919,6 +2919,89 @@ fn documented_schema_version_examples_track_schema_version() {
     );
 }
 
+/// Extract the `hooks.on_merged` command string from the tracked `.cflx.jsonc`.
+///
+/// The file is JSONC (comments and trailing commas), so a strict JSON parser
+/// cannot read it. The value is a single quoted scalar, which makes a textual
+/// extraction both sufficient and free of a new parser dependency.
+fn cflx_on_merged_hook(config: &str) -> String {
+    let at = config
+        .find("\"on_merged\"")
+        .expect(".cflx.jsonc must declare hooks.on_merged");
+    let rest = config[at + "\"on_merged\"".len()..]
+        .trim_start()
+        .strip_prefix(':')
+        .expect("on_merged must be followed by ':'")
+        .trim_start()
+        .strip_prefix('"')
+        .expect("on_merged value must be a JSON string");
+    let end = rest.find('"').expect("unterminated on_merged value");
+    rest[..end].to_string()
+}
+
+/// Ordinary Conflux completion must never release.
+///
+/// `hooks.on_merged` runs unattended after every accepted change, so a
+/// release-capable command there turns an ordinary merge into a version bump, a
+/// Git tag, and a push against whatever the remote currently holds. This guard
+/// pins the hook to the local index refresh, checks the retained target's own
+/// recipe through a `make -n` dry run (which prints the recipe without running
+/// it), and confirms the explicit release targets still exist as separate
+/// operator actions.
+#[test]
+fn conflux_on_merged_hook_has_no_release_side_effects() {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+
+    let config = std::fs::read_to_string(manifest.join(".cflx.jsonc")).expect("read .cflx.jsonc");
+    let on_merged = cflx_on_merged_hook(&config);
+    assert_eq!(
+        on_merged, "make index",
+        "hooks.on_merged must stay the local index refresh only"
+    );
+    for token in [
+        "bump", "release", "tag", "publish", "upload", "push", "cargo", "git",
+    ] {
+        assert!(
+            !on_merged.contains(token),
+            "hooks.on_merged must not reference {token:?}: {on_merged:?}"
+        );
+    }
+
+    // Dry run only: `make -n` prints the recipe and executes none of it.
+    let dry_run = Command::new("make")
+        .args(["-n", "index"])
+        .current_dir(manifest)
+        .output()
+        .expect("run make -n index");
+    assert!(
+        dry_run.status.success(),
+        "make -n index failed: {}",
+        String::from_utf8_lossy(&dry_run.stderr)
+    );
+    let recipe = String::from_utf8_lossy(&dry_run.stdout);
+    for command in [
+        "cargo release",
+        "cargo publish",
+        "git tag",
+        "git push",
+        "gh release",
+    ] {
+        assert!(
+            !recipe.contains(command),
+            "the retained on_merged target must not run {command:?}: {recipe}"
+        );
+    }
+
+    // Releasing stays possible, but only as an explicit operator command.
+    let makefile = std::fs::read_to_string(manifest.join("Makefile")).expect("read Makefile");
+    for target in ["bump-patch", "bump-minor", "bump-major", "publish"] {
+        assert!(
+            makefile.contains(&format!("\n{target}:")),
+            "Makefile must keep the explicit {target} release target"
+        );
+    }
+}
+
 /// Task 3.2: `schema` response includes `generated_at` field.
 #[test]
 fn schema_response_has_generated_at() {
