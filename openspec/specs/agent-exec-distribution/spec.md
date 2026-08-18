@@ -48,15 +48,32 @@ The repository SHALL produce a crates.io-compatible package that can be installe
 
 ### Requirement: Explicit registry publication
 
-Version bump commits, release Git tags, pushes of release history, GitHub Release uploads, and publishing to crates.io SHALL require an explicit release action and SHALL NOT occur as a side effect of an ordinary Conflux merge, ordinary push, or pull request.
+Every successfully merged Conflux Change SHALL create exactly one automatic patch-version commit. When multiple Changes are merged in one Conflux session, each Change SHALL receive its own sequential patch-version increment. Automatic versioning SHALL NOT create a release Git tag, push commits or tags, upload a GitHub Release, or publish to crates.io. Release Git tags, pushes of release history, GitHub Release uploads, and publishing to crates.io SHALL require a separate explicit release action and SHALL NOT occur as a side effect of an ordinary Conflux merge, ordinary push, or pull request.
 
-#### Scenario: Ordinary Conflux merge cannot release
+#### Scenario: Conflux merges one Change
 
-**Given**: Conflux accepts and merges an implementation change
-**When**: the repository `on_merged` hook runs
-**Then**: it does not change the package version
-**And**: it does not create a commit or Git tag
-**And**: it does not push, publish, or upload release artifacts
+**Given**: Conflux accepts and merges one implementation Change
+**When**: the repository `on_merged` hook runs for that Change
+**Then**: the package patch version is incremented exactly once
+**And**: the version update is committed
+**And**: no Git tag is created
+**And**: no commit or tag is pushed
+**And**: no registry or GitHub Release publication is attempted
+
+#### Scenario: Conflux merges multiple Changes
+
+**Given**: one Conflux session processes two accepted Changes
+**When**: each Change reaches its own merge completion callback
+**Then**: the first callback creates one patch-version commit
+**And**: the second callback creates a second sequential patch-version commit
+**And**: the increments are not batched or deduplicated into one version
+
+#### Scenario: Automatic version bump fails
+
+**Given**: a merged Change whose version-only bump command cannot complete
+**When**: the `on_merged` hook runs
+**Then**: the hook reports failure
+**And**: it does not create a tag, push, or publish a partial release
 
 #### Scenario: Ordinary CI cannot publish
 

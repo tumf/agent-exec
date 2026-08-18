@@ -2,7 +2,8 @@
 
     // Lifecycle hooks
     "hooks": {
-        // Rebuild indexes after merge completion
-        "on_merged": "make index",
+        // One local patch-version commit per merged Change, then rebuild indexes.
+        // The bump target creates no tag, performs no push, and publishes nothing.
+        "on_merged": "make version-bump-patch && make index",
     },
 }
