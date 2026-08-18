@@ -21,7 +21,7 @@ job_id='paste-job-id-here'
 agent-exec wait "$job_id" --until 5</code></pre>
       <p>The commands use only <code>agent-exec</code> and a POSIX shell; no JSON parser is required. The first observation deadline does not stop the command.</p>
       <h2>Read the result</h2>
-      <pre><code>{"schema_version":"0.2","ok":true,"type":"wait","job_id":"&lt;same id&gt;","state":"exited","exit_code":0,"stdout":"started\nfinished\n","stderr":"","encoding":"utf-8-lossy","stdout_range":[0,17],"stderr_range":[0,0],"stdout_total_bytes":17,"stderr_total_bytes":0,"updated_at":"2026-07-20T00:00:00Z"}</code></pre>
+      <pre><code>{"schema_version":"0.3","ok":true,"type":"wait","job_id":"&lt;same id&gt;","state":"exited","exit_code":0,"stdout":"started\nfinished\n","stderr":"","encoding":"utf-8-lossy","stdout_range":[0,17],"stderr_range":[0,0],"stdout_total_bytes":17,"stderr_total_bytes":0,"updated_at":"2026-07-20T00:00:00Z"}</code></pre>
       <p>A successful wait returns a terminal <code>state</code>, <code>exit_code: 0</code>, and bounded <code>stdout</code> and <code>stderr</code>. Run <code>agent-exec tail &lt;job_id&gt;</code> for later or repeated log retrieval.</p>
       <p><a class="text-link" href="lifecycle.html">Choose the next lifecycle command</a></p>
     </article>

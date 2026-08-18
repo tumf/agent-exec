@@ -12,43 +12,16 @@ use anyhow::{Result, anyhow};
 use tracing::debug;
 
 use crate::jobstore::{InvalidJobState, JobDir, resolve_root};
+use crate::process::pid_liveness;
 use crate::run::resolve_effective_cwd;
 use crate::schema::{DeleteData, DeleteJobResult, JobStatus, Response};
 
-#[cfg(unix)]
+/// Whether a persisted PID still looks alive.
+///
+/// `delete` is destructive, so an unavailable probe (`None`) must not block
+/// removal of an otherwise terminal job.
 fn pid_is_alive(pid: u32) -> bool {
-    let ret = unsafe { libc::kill(pid as libc::pid_t, 0) };
-    if ret == 0 {
-        return true;
-    }
-
-    let err = std::io::Error::last_os_error();
-    matches!(err.raw_os_error(), Some(libc::EPERM))
-}
-
-#[cfg(windows)]
-fn pid_is_alive(pid: u32) -> bool {
-    use windows::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
-    use windows::Win32::System::Threading::{
-        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-    };
-
-    let handle = match unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) } {
-        Ok(handle) => handle,
-        Err(_) => return false,
-    };
-
-    let mut exit_code = 0u32;
-    let ok = unsafe { GetExitCodeProcess(handle, &mut exit_code) }.is_ok();
-    unsafe {
-        let _ = CloseHandle(handle);
-    }
-    ok && exit_code == STILL_ACTIVE.0
-}
-
-#[cfg(not(any(unix, windows)))]
-fn pid_is_alive(_pid: u32) -> bool {
-    false
+    pid_liveness(pid).unwrap_or(false)
 }
 
 /// Options for the `delete` sub-command.

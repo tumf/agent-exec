@@ -1123,7 +1123,7 @@ fn state_json_required_fields_present_with_null_for_options() {
 #[test]
 fn all_commands_use_schema_version_0_2() {
     // Already verified individually above; this test documents the invariant.
-    assert_eq!(agent_exec::schema::SCHEMA_VERSION, "0.2");
+    assert_eq!(agent_exec::schema::SCHEMA_VERSION, "0.3");
 }
 
 // ── contract v0.1: retryable field ─────────────────────────────────────────────
@@ -8940,5 +8940,623 @@ fn hermes_notify_hook_reference_has_no_hermes_notify_code_block() {
     assert!(
         text.contains("HERMES_NOTIFY_TARGET"),
         "hermes.md must document the request-scoped target assignment"
+    );
+}
+
+// ── status diagnostics (schema 0.3) ───────────────────────────────────────────
+
+/// Build a job directory by hand so a test can pin state that a real run cannot
+/// hold still: a dead PID recorded as `running`, absent logs, or an oversized log.
+///
+/// Returns the job directory path.
+fn write_status_fixture_job(
+    root: &str,
+    job_id: &str,
+    meta_overrides: serde_json::Value,
+    state_overrides: serde_json::Value,
+) -> std::path::PathBuf {
+    let job_dir = std::path::Path::new(root).join(job_id);
+    std::fs::create_dir_all(&job_dir).expect("create fixture job dir");
+
+    let mut meta = serde_json::json!({
+        "job": { "id": job_id },
+        "schema_version": "0.1",
+        "command": ["sleep", "999"],
+        "created_at": "2026-01-01T00:00:00Z",
+        "root": root,
+        "env_keys": [],
+        "tags": [],
+        "inherit_env": true,
+    });
+    let mut state = serde_json::json!({
+        "job": {
+            "id": job_id,
+            "status": "running",
+            "started_at": "2026-01-01T00:00:01Z"
+        },
+        "result": { "exit_code": null, "signal": null, "duration_ms": null },
+        "updated_at": "2026-01-01T00:00:02Z"
+    });
+    for (target, overrides) in [(&mut meta, meta_overrides), (&mut state, state_overrides)] {
+        for (key, value) in overrides.as_object().expect("overrides must be an object") {
+            target[key] = value.clone();
+        }
+    }
+
+    std::fs::write(job_dir.join("meta.json"), meta.to_string()).expect("write fixture meta.json");
+    std::fs::write(job_dir.join("state.json"), state.to_string())
+        .expect("write fixture state.json");
+    job_dir
+}
+
+/// Spawn and reap a short-lived child so its PID is known to be dead.
+fn reaped_child_pid() -> u32 {
+    let mut child = Command::new(if cfg!(windows) { "cmd" } else { "sh" });
+    if cfg!(windows) {
+        child.args(["/C", "exit", "0"]);
+    } else {
+        child.args(["-c", "exit 0"]);
+    }
+    let mut child = child.spawn().expect("spawn short-lived child");
+    let pid = child.id();
+    let status = child.wait().expect("wait short-lived child");
+    assert!(status.success(), "short-lived child should exit cleanly");
+    pid
+}
+
+/// A running job exposes execution context plus a live PID observation, and the
+/// live `elapsed_ms` rather than a terminal `duration_ms`.
+#[test]
+fn status_reports_process_alive_for_live_pid() {
+    let h = TestHarness::new();
+    let dir = tempfile::tempdir().expect("job cwd");
+    let (run_v, _) = run_cmd_with_root_and_cwd(
+        &["run", "--no-wait", "--tag", "diag", "--", "sleep", "60"],
+        Some(h.root()),
+        Some(dir.path()),
+    );
+    let job_id = run_v["job_id"].as_str().expect("job_id").to_string();
+
+    let v = h.run(&["status", &job_id]);
+    assert_envelope(&v, "status", true);
+    assert_eq!(v["state"], "running", "job must still be running: {v}");
+    assert_eq!(
+        v["process_alive"], true,
+        "a live supervisor PID must be observed as alive: {v}"
+    );
+    assert!(
+        v["pid"].as_u64().is_some_and(|pid| pid > 0),
+        "pid must be reported for a running job: {v}"
+    );
+    assert_eq!(
+        v["command"],
+        serde_json::json!(["sleep", "60"]),
+        "command must be the persisted argv: {v}"
+    );
+    assert_eq!(
+        v["tags"],
+        serde_json::json!(["diag"]),
+        "tags must come from metadata: {v}"
+    );
+    assert!(
+        v["cwd"].as_str().is_some_and(|cwd| !cwd.is_empty()),
+        "cwd must be reported when persisted: {v}"
+    );
+    assert!(
+        v["updated_at"].as_str().is_some_and(|t| !t.is_empty()),
+        "updated_at must always be present: {v}"
+    );
+    assert!(
+        v["elapsed_ms"].as_u64().is_some(),
+        "a started non-terminal job must report live elapsed_ms: {v}"
+    );
+    assert!(
+        v.get("duration_ms").is_none(),
+        "duration_ms must be absent while running: {v}"
+    );
+
+    h.run(&["kill", "--signal", "KILL", &job_id]);
+}
+
+/// A persisted `running` record whose PID is gone keeps `state="running"` and is
+/// distinguished only by `process_alive=false`; `list` presents it as `unknown`.
+#[test]
+fn status_reports_process_alive_false_for_dead_pid_fixture() {
+    let h = TestHarness::new();
+    let dead_pid = reaped_child_pid();
+    write_status_fixture_job(
+        h.root(),
+        "status-dead-pid",
+        serde_json::json!({}),
+        serde_json::json!({ "pid": dead_pid }),
+    );
+
+    let v = h.run(&["status", "status-dead-pid"]);
+    assert_envelope(&v, "status", true);
+    assert_eq!(
+        v["state"], "running",
+        "status must report persisted lifecycle state: {v}"
+    );
+    assert_eq!(
+        v["process_alive"], false,
+        "a reaped PID must be observed as not alive: {v}"
+    );
+
+    let list_v = h.run(&["list", "--all"]);
+    let stale = list_v["jobs"]
+        .as_array()
+        .expect("list jobs")
+        .iter()
+        .find(|j| j["job_id"].as_str() == Some("status-dead-pid"))
+        .unwrap_or_else(|| panic!("list --all must include the stale job: {list_v}"));
+    assert_eq!(
+        stale["state"], "unknown",
+        "list must present the same record as unknown: {list_v}"
+    );
+}
+
+/// A `running` record without a PID cannot have a live observed process.
+#[test]
+fn status_reports_process_alive_false_for_absent_pid() {
+    let h = TestHarness::new();
+    write_status_fixture_job(
+        h.root(),
+        "status-no-pid",
+        serde_json::json!({}),
+        serde_json::json!({}),
+    );
+
+    let v = h.run(&["status", "status-no-pid"]);
+    assert_envelope(&v, "status", true);
+    assert_eq!(v["state"], "running", "{v}");
+    assert_eq!(
+        v["process_alive"], false,
+        "a running record with no pid must not claim a live process: {v}"
+    );
+    assert!(
+        v.get("pid").is_none(),
+        "pid must be omitted when not persisted: {v}"
+    );
+}
+
+/// A recorded PID may have been reused once the job is terminal, so the probe
+/// must not run and `process_alive` must be omitted.
+#[test]
+fn status_omits_process_alive_for_terminal_job() {
+    let h = TestHarness::new();
+    let run_v = h.run(&["run", "--", "echo", "terminal-probe"]);
+    let job_id = run_v["job_id"].as_str().expect("job_id").to_string();
+    h.run(&["wait", "--until", "10", &job_id]);
+
+    let v = h.run(&["status", &job_id]);
+    assert_envelope(&v, "status", true);
+    assert_eq!(v["state"], "exited", "job must be terminal: {v}");
+    assert!(
+        v.get("process_alive").is_none(),
+        "process_alive must be omitted for terminal state: {v}"
+    );
+    assert!(
+        v.get("elapsed_ms").is_none(),
+        "elapsed_ms must be omitted for terminal state: {v}"
+    );
+
+    // A created job is non-terminal but never started, so neither field applies.
+    let created = h.run(&["create", "--", "echo", "never-started"]);
+    let created_id = created["job_id"].as_str().expect("job_id").to_string();
+    let created_v = h.run(&["status", &created_id]);
+    assert_eq!(created_v["state"], "created", "{created_v}");
+    assert!(
+        created_v.get("process_alive").is_none(),
+        "process_alive must be omitted for created state: {created_v}"
+    );
+    assert!(
+        created_v.get("elapsed_ms").is_none(),
+        "elapsed_ms needs started_at: {created_v}"
+    );
+    assert!(
+        created_v.get("started_at").is_none(),
+        "started_at must stay absent for created state: {created_v}"
+    );
+}
+
+/// Terminal jobs report the persisted duration, and a null persisted duration is
+/// never recomputed at read time.
+#[test]
+fn status_terminal_reports_persisted_duration_ms() {
+    let h = TestHarness::new();
+    let run_v = h.run(&["run", "--", "echo", "persisted-duration"]);
+    let job_id = run_v["job_id"].as_str().expect("job_id").to_string();
+    h.run(&["wait", "--until", "10", &job_id]);
+
+    let job_dir = std::path::Path::new(h.root()).join(&job_id);
+    let state: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(job_dir.join("state.json")).expect("read state.json"),
+    )
+    .expect("state.json is valid JSON");
+    let persisted = state["result"]["duration_ms"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("run must persist duration_ms: {state}"));
+
+    let v = h.run(&["status", &job_id]);
+    assert_eq!(
+        v["duration_ms"].as_u64(),
+        Some(persisted),
+        "duration_ms must be the persisted value: {v}"
+    );
+
+    // A terminal record with a null persisted duration reports nothing.
+    write_status_fixture_job(
+        h.root(),
+        "status-null-duration",
+        serde_json::json!({}),
+        serde_json::json!({
+            "job": { "id": "status-null-duration", "status": "exited", "started_at": "2026-01-01T00:00:01Z" },
+            "result": { "exit_code": 0, "signal": null, "duration_ms": null },
+            "finished_at": "2026-01-01T00:01:01Z"
+        }),
+    );
+    let null_duration = h.run(&["status", "status-null-duration"]);
+    assert!(
+        null_duration.get("duration_ms").is_none(),
+        "a null persisted duration must not be computed at read time: {null_duration}"
+    );
+    assert!(
+        null_duration.get("elapsed_ms").is_none(),
+        "elapsed_ms must stay terminal-free: {null_duration}"
+    );
+}
+
+/// Signal and log-drain state come from the persisted result.
+#[test]
+fn status_reports_signal_and_logs_drained() {
+    let h = TestHarness::new();
+    let run_v = h.run(&["run", "--no-wait", "--", "sleep", "60"]);
+    let job_id = run_v["job_id"].as_str().expect("job_id").to_string();
+    h.run(&["kill", "--signal", "TERM", &job_id]);
+    let wait_v = h.run(&["wait", "--until", "10", &job_id]);
+    assert_eq!(
+        wait_v["state"], "killed",
+        "kill must terminate the job: {wait_v}"
+    );
+
+    let v = h.run(&["status", &job_id]);
+    assert_envelope(&v, "status", true);
+    assert!(
+        v["signal"].as_str().is_some_and(|s| !s.is_empty()),
+        "a signalled job must report the persisted signal: {v}"
+    );
+    assert_eq!(
+        v["logs_drained"], true,
+        "logs must be drained once wait observed the terminal state: {v}"
+    );
+
+    // `logs_drained` is always present, including while the job is not drained.
+    write_status_fixture_job(
+        h.root(),
+        "status-undrained",
+        serde_json::json!({}),
+        serde_json::json!({
+            "job": { "id": "status-undrained", "status": "exited", "started_at": "2026-01-01T00:00:01Z" },
+            "result": { "exit_code": 0, "signal": "SIGTERM", "duration_ms": 12 },
+            "logs_drained": false
+        }),
+    );
+    let undrained = h.run(&["status", "status-undrained"]);
+    assert_eq!(
+        undrained["logs_drained"], false,
+        "logs_drained must report the persisted value: {undrained}"
+    );
+    assert_eq!(
+        undrained["signal"], "SIGTERM",
+        "signal must report the persisted value: {undrained}"
+    );
+}
+
+/// Log paths are the canonical job files and byte totals match their sizes.
+#[test]
+fn status_reports_log_paths_and_byte_totals() {
+    let h = TestHarness::new();
+    let run_v = h.run(&["run", "--", "sh", "-c", "echo out; echo err >&2"]);
+    let job_id = run_v["job_id"].as_str().expect("job_id").to_string();
+    h.run(&["wait", "--until", "10", &job_id]);
+
+    let job_dir = std::path::Path::new(h.root()).join(&job_id);
+    let stdout_path = job_dir.join("stdout.log");
+    let stderr_path = job_dir.join("stderr.log");
+
+    let v = h.run(&["status", &job_id]);
+    assert_envelope(&v, "status", true);
+    assert_eq!(
+        v["stdout_log_path"].as_str(),
+        Some(stdout_path.display().to_string().as_str()),
+        "stdout_log_path must be the canonical job file: {v}"
+    );
+    assert_eq!(
+        v["stderr_log_path"].as_str(),
+        Some(stderr_path.display().to_string().as_str()),
+        "stderr_log_path must be the canonical job file: {v}"
+    );
+    assert_eq!(
+        v["stdout_total_bytes"].as_u64(),
+        Some(
+            std::fs::metadata(&stdout_path)
+                .expect("stdout.log metadata")
+                .len()
+        ),
+        "stdout_total_bytes must equal the file size: {v}"
+    );
+    assert_eq!(
+        v["stderr_total_bytes"].as_u64(),
+        Some(
+            std::fs::metadata(&stderr_path)
+                .expect("stderr.log metadata")
+                .len()
+        ),
+        "stderr_total_bytes must equal the file size: {v}"
+    );
+    assert!(
+        v["stdout_total_bytes"].as_u64().is_some_and(|n| n > 0),
+        "the job wrote stdout, so the total must be non-zero: {v}"
+    );
+    assert!(
+        v.get("stdout").is_none() && v.get("stderr").is_none(),
+        "status must not embed log content: {v}"
+    );
+}
+
+/// Absent log files are reported as zero bytes and do not fail the query.
+#[test]
+fn status_missing_logs_report_zero_bytes() {
+    let h = TestHarness::new();
+    write_status_fixture_job(
+        h.root(),
+        "status-no-logs",
+        serde_json::json!({}),
+        serde_json::json!({
+            "job": { "id": "status-no-logs", "status": "exited", "started_at": "2026-01-01T00:00:01Z" },
+            "result": { "exit_code": 0, "signal": null, "duration_ms": 5 }
+        }),
+    );
+    let job_dir = std::path::Path::new(h.root()).join("status-no-logs");
+    assert!(
+        !job_dir.join("stdout.log").exists() && !job_dir.join("stderr.log").exists(),
+        "the fixture must have no log files"
+    );
+
+    let v = h.run(&["status", "status-no-logs"]);
+    assert_envelope(&v, "status", true);
+    assert_eq!(v["stdout_total_bytes"], 0, "missing stdout.log is 0: {v}");
+    assert_eq!(v["stderr_total_bytes"], 0, "missing stderr.log is 0: {v}");
+    assert!(
+        v["stdout_log_path"]
+            .as_str()
+            .is_some_and(|p| p.ends_with("stdout.log")),
+        "the canonical path is reported even when the file is absent: {v}"
+    );
+}
+
+/// Byte totals are bounded file-size observations, so an 8 MiB log neither slows
+/// the query nor leaks into the response.
+#[test]
+fn status_large_logs_use_bounded_size_observation() {
+    const LOG_BYTES: usize = 8 * 1024 * 1024;
+
+    let h = TestHarness::new();
+    write_status_fixture_job(
+        h.root(),
+        "status-large-logs",
+        serde_json::json!({}),
+        serde_json::json!({
+            "job": { "id": "status-large-logs", "status": "exited", "started_at": "2026-01-01T00:00:01Z" },
+            "result": { "exit_code": 0, "signal": null, "duration_ms": 5 }
+        }),
+    );
+    let job_dir = std::path::Path::new(h.root()).join("status-large-logs");
+    let filler = vec![b'x'; LOG_BYTES];
+    std::fs::write(job_dir.join("stdout.log"), &filler).expect("write large stdout.log");
+    std::fs::write(job_dir.join("stderr.log"), &filler).expect("write large stderr.log");
+
+    let raw = run_raw_with_root_and_stdin(&["status", "status-large-logs"], Some(h.root()), None);
+    let stdout = String::from_utf8_lossy(&raw.stdout);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("status stdout is JSON");
+    assert_envelope(&v, "status", true);
+    assert_eq!(
+        v["stdout_total_bytes"].as_u64(),
+        Some(LOG_BYTES as u64),
+        "the total must equal the file metadata size: {v}"
+    );
+    assert_eq!(v["stderr_total_bytes"].as_u64(), Some(LOG_BYTES as u64));
+    assert!(
+        raw.stdout.len() < 8192,
+        "status must not read log contents: response was {} bytes",
+        raw.stdout.len()
+    );
+    assert!(
+        !stdout.contains("xxxxxxxxxx"),
+        "log content must never appear in the status response"
+    );
+}
+
+/// Status exposes execution context but never sensitive job inputs.
+#[test]
+fn status_omits_env_values_and_stdin_content() {
+    let h = TestHarness::new();
+    let notify_file = tempfile::NamedTempFile::new().expect("notify file");
+    let v = run_cmd_with_root_and_stdin(
+        &[
+            "run",
+            "--no-wait",
+            "--env",
+            "PLAIN_TOKEN=plain-secret-value",
+            "--env",
+            "MASKED_TOKEN=masked-secret-value",
+            "--mask",
+            "MASKED_TOKEN",
+            "--stdin",
+            "-",
+            "--notify-file",
+            notify_file.path().to_str().expect("notify path"),
+            "--",
+            "cat",
+        ],
+        Some(h.root()),
+        b"stdin-secret-payload",
+    );
+    let job_id = v["job_id"].as_str().expect("job_id").to_string();
+    h.run(&["wait", "--until", "10", &job_id]);
+
+    let status_v = h.run(&["status", &job_id]);
+    assert_envelope(&status_v, "status", true);
+    let serialized = status_v.to_string();
+    for secret in [
+        "plain-secret-value",
+        "masked-secret-value",
+        "stdin-secret-payload",
+        notify_file.path().to_str().expect("notify path"),
+    ] {
+        assert!(
+            !serialized.contains(secret),
+            "status must not disclose {secret:?}: {serialized}"
+        );
+    }
+    for absent in ["env_vars", "env_keys", "mask", "notification", "stdin_file"] {
+        assert!(
+            status_v.get(absent).is_none(),
+            "status must not expose {absent}: {serialized}"
+        );
+    }
+    assert_eq!(
+        status_v["command"],
+        serde_json::json!(["cat"]),
+        "command must stay the persisted argv array: {status_v}"
+    );
+}
+
+/// Status is a read-only query: probing a stale running record must not repair it.
+#[test]
+fn status_does_not_rewrite_state_json() {
+    let h = TestHarness::new();
+    let dead_pid = reaped_child_pid();
+    let job_dir = write_status_fixture_job(
+        h.root(),
+        "status-read-only",
+        serde_json::json!({}),
+        serde_json::json!({ "pid": dead_pid }),
+    );
+    let state_path = job_dir.join("state.json");
+    let before = std::fs::read(&state_path).expect("read state.json before");
+
+    let v = h.run(&["status", "status-read-only"]);
+    assert_eq!(v["state"], "running", "{v}");
+    assert_eq!(v["process_alive"], false, "{v}");
+    // `list` reconciles presentation only; it must not rewrite state either.
+    h.run(&["list", "--all"]);
+
+    let after = std::fs::read(&state_path).expect("read state.json after");
+    assert_eq!(
+        before, after,
+        "neither status nor list may rewrite state.json"
+    );
+}
+
+/// Every reachable status shape validates against the checked-in JSON Schema.
+#[test]
+fn status_response_validates_against_checked_in_schema() {
+    let h = TestHarness::new();
+
+    let created = h.run(&["create", "--", "echo", "schema-created-status"]);
+    let created_status = h.run(&["status", created["job_id"].as_str().expect("job_id")]);
+    assert_eq!(created_status["state"], "created");
+    assert!(
+        created_status.get("started_at").is_none(),
+        "created jobs have no started_at: {created_status}"
+    );
+
+    let running = h.run(&["run", "--no-wait", "--", "sleep", "60"]);
+    let running_id = running["job_id"].as_str().expect("job_id").to_string();
+    let running_status = h.run(&["status", &running_id]);
+
+    let terminal = h.run(&["run", "--", "echo", "schema-terminal-status"]);
+    let terminal_id = terminal["job_id"].as_str().expect("job_id").to_string();
+    h.run(&["wait", "--until", "10", &terminal_id]);
+    let terminal_status = h.run(&["status", &terminal_id]);
+
+    let dead_pid = reaped_child_pid();
+    write_status_fixture_job(
+        h.root(),
+        "status-schema-stale",
+        serde_json::json!({}),
+        serde_json::json!({ "pid": dead_pid }),
+    );
+    let stale_status = h.run(&["status", "status-schema-stale"]);
+
+    h.run(&["kill", "--signal", "KILL", &running_id]);
+
+    let checked_in_path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("schema/agent-exec.schema.json");
+    let mut schema: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&checked_in_path).expect("read checked-in schema"),
+    )
+    .expect("checked-in schema is valid JSON");
+    schema["$ref"] = serde_json::json!("#/definitions/StatusResponse");
+    let validator = jsonschema::validator_for(&schema).expect("compile schema");
+
+    for status in [
+        created_status,
+        running_status,
+        terminal_status,
+        stale_status,
+    ] {
+        assert!(
+            validator.validate(&status).is_ok(),
+            "status response must satisfy the checked-in schema: {status}"
+        );
+    }
+
+    // The diagnostic additions stay optional at the published boundary.
+    let status_def = &schema["definitions"]["StatusResponse"]["allOf"][1];
+    let required = status_def["required"]
+        .as_array()
+        .expect("StatusResponse.required");
+    assert_eq!(
+        required,
+        &vec![
+            serde_json::json!("job_id"),
+            serde_json::json!("state"),
+            serde_json::json!("created_at"),
+        ],
+        "StatusResponse must require exactly the pre-existing always-present fields: {required:?}"
+    );
+    for field in [
+        "command",
+        "cwd",
+        "tags",
+        "pid",
+        "process_alive",
+        "updated_at",
+        "elapsed_ms",
+        "duration_ms",
+        "signal",
+        "logs_drained",
+        "stdout_log_path",
+        "stderr_log_path",
+        "stdout_total_bytes",
+        "stderr_total_bytes",
+    ] {
+        assert!(
+            status_def["properties"].get(field).is_some(),
+            "StatusResponse must publish {field}"
+        );
+        assert!(
+            !required.contains(&serde_json::json!(field)),
+            "{field} must stay optional"
+        );
+    }
+    assert!(
+        status_def["properties"]["state"]["enum"]
+            .as_array()
+            .expect("state enum")
+            .contains(&serde_json::json!("created")),
+        "StatusResponse must allow state=created"
     );
 }

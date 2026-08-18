@@ -2329,6 +2329,89 @@ fn format_rfc3339(secs: u64) -> String {
     )
 }
 
+/// Parse an RFC 3339 UTC timestamp produced by [`format_rfc3339`] back into
+/// seconds since the Unix epoch.
+///
+/// Accepts the second-resolution `YYYY-MM-DDTHH:MM:SSZ` shape this crate
+/// persists, tolerating a lower-case `t`/`z` separator, a fractional-second
+/// suffix, and an explicit `+00:00` offset.  Returns `None` for anything that is
+/// not a well-formed UTC timestamp, so callers can simply omit derived values.
+pub fn parse_rfc3339_secs(s: &str) -> Option<u64> {
+    let bytes = s.as_bytes();
+    if bytes.len() < 19 {
+        return None;
+    }
+    let num = |range: std::ops::Range<usize>| -> Option<u64> { s.get(range)?.parse::<u64>().ok() };
+
+    let year = num(0..4)?;
+    if bytes[4] != b'-' || bytes[7] != b'-' {
+        return None;
+    }
+    let month = num(5..7)?;
+    let day = num(8..10)?;
+    if !matches!(bytes[10], b'T' | b't' | b' ') {
+        return None;
+    }
+    if bytes[13] != b':' || bytes[16] != b':' {
+        return None;
+    }
+    let hours = num(11..13)?;
+    let minutes = num(14..16)?;
+    let seconds = num(17..19)?;
+
+    // Only UTC timestamps are produced by this crate; reject anything else
+    // rather than silently reporting a skewed duration.  A fractional-second
+    // suffix is tolerated and ignored because this crate persists whole seconds.
+    let rest = &s[19..];
+    let offset_at = rest.find(['+', '-', 'Z', 'z'])?;
+    let fraction = &rest[..offset_at];
+    let fraction_ok = match fraction.strip_prefix(['.', ',']) {
+        Some(digits) => !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()),
+        None => fraction.is_empty(),
+    };
+    if !fraction_ok {
+        return None;
+    }
+    if !matches!(
+        &rest[offset_at..],
+        "Z" | "z" | "+00:00" | "-00:00" | "+0000" | "-0000"
+    ) {
+        return None;
+    }
+
+    if year < 1970 || !(1..=12).contains(&month) || day < 1 || hours > 23 || minutes > 59 {
+        return None;
+    }
+
+    let leap = is_leap(year);
+    let month_days: [u64; 12] = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    if day > month_days[(month - 1) as usize] {
+        return None;
+    }
+
+    let mut days: u64 = 0;
+    for y in 1970..year {
+        days += if is_leap(y) { 366 } else { 365 };
+    }
+    days += month_days.iter().take((month - 1) as usize).sum::<u64>();
+    days += day - 1;
+
+    Some(((days * 24 + hours) * 60 + minutes) * 60 + seconds)
+}
+
 fn is_leap(year: u64) -> bool {
     (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
 }
@@ -2412,6 +2495,46 @@ mod tests {
     fn rfc3339_known_date() {
         // 2024-01-01T00:00:00Z = 1704067200
         assert_eq!(format_rfc3339(1704067200), "2024-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn rfc3339_round_trips_through_the_parser() {
+        for secs in [0u64, 1, 1704067200, 1709164800, 2_000_000_000] {
+            assert_eq!(
+                parse_rfc3339_secs(&format_rfc3339(secs)),
+                Some(secs),
+                "round trip failed for {secs}"
+            );
+        }
+    }
+
+    #[test]
+    fn rfc3339_parser_accepts_tolerated_utc_spellings() {
+        assert_eq!(
+            parse_rfc3339_secs("2024-01-01T00:00:00.123Z"),
+            Some(1704067200)
+        );
+        assert_eq!(parse_rfc3339_secs("2024-01-01t00:00:00z"), Some(1704067200));
+        assert_eq!(
+            parse_rfc3339_secs("2024-01-01T00:00:00+00:00"),
+            Some(1704067200)
+        );
+    }
+
+    #[test]
+    fn rfc3339_parser_rejects_malformed_or_non_utc_input() {
+        for bad in [
+            "",
+            "2024-01-01",
+            "2024-01-01T00:00:00",
+            "2024-13-01T00:00:00Z",
+            "2023-02-29T00:00:00Z",
+            "2024-01-01T24:00:00Z",
+            "2024-01-01T00:00:00+09:00",
+            "not-a-timestamp-at-all",
+        ] {
+            assert_eq!(parse_rfc3339_secs(bad), None, "expected None for {bad:?}");
+        }
     }
 
     #[test]

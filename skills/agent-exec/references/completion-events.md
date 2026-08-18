@@ -6,7 +6,7 @@ When notification sinks are configured, expect a `job.finished` payload after th
 
 ```json
 {
-  "schema_version": "0.2",
+  "schema_version": "0.3",
   "event_type": "job.finished",
   "job_id": "01J...",
   "state": "exited",
@@ -29,6 +29,8 @@ Possible fields:
 - artifacts: `stdout_log_path`, `stderr_log_path`
 
 If the job is killed by a signal, expect `state` to become `killed`; `signal` may be present and `exit_code` may be absent.
+
+`schema_version` is the global stdout contract version, so event envelopes track it. Schema `0.3` added optional `status` fields only: the completion and output-match event field shapes are unchanged, and only the reported `schema_version` moved from `"0.2"` to `"0.3"`.
 
 ## Sinks
 

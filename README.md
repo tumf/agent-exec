@@ -188,7 +188,7 @@ The following is an illustrative complete response for a successful terminal job
 
 ```json
 {
-  "schema_version": "0.2",
+  "schema_version": "0.3",
   "ok": true,
   "type": "run",
   "job_id": "7f3a9c1e4b2d8a605e7c9f0134ab6d82",
@@ -422,6 +422,45 @@ agent-exec status <JOB_ID>
 ```
 
 The response can report `created`, `running`, `exited`, `killed`, or `failed`. It always includes `job_id`, `state`, and `created_at`; it includes `started_at`, `finished_at`, and `exit_code` when available.
+
+Schema `0.3` adds execution context and observability derived from data the job already persists:
+
+- execution context: `command` (persisted argv, never shell-expanded), `cwd` when recorded, and `tags`
+- process observation: `pid` when recorded, and `process_alive`
+- timing: `updated_at`, live `elapsed_ms`, persisted terminal `duration_ms`, and `signal`
+- output: `logs_drained`, `stdout_log_path`, `stderr_log_path`, `stdout_total_bytes`, and `stderr_total_bytes`
+
+`state` is the persisted lifecycle state and `status` never rewrites it. `process_alive` is a separate best-effort, same-user-scoped probe that runs only for persisted `running` state; it is omitted otherwise, and omission means no live observation was made. A stale running job therefore appears as `state="running"` with `process_alive=false` here, and as `unknown` in `list`. The probe is not an authoritative liveness guarantee and does not defend against PID reuse.
+
+`elapsed_ms` is live (response time minus `started_at`) and appears only for non-terminal jobs that have started. `duration_ms` is the persisted terminal wall-clock duration and is never computed at read time.
+
+Byte totals come from file-size metadata only, so `status` cost does not grow with log size and log contents are never read; missing or unreadable logs report `0`. Use `tail` for content.
+
+The response never includes environment-variable values, stdin content, notification secrets, or shell-expanded command strings.
+
+```json
+{
+  "schema_version": "0.3",
+  "ok": true,
+  "type": "status",
+  "job_id": "7f3a9c1e4b2d8a605e7c9f0134ab6d82",
+  "state": "running",
+  "created_at": "2026-07-19T12:00:00Z",
+  "started_at": "2026-07-19T12:00:00Z",
+  "command": ["./scripts/run-heavy-task.sh"],
+  "cwd": "/path/to/current-working-directory",
+  "tags": [],
+  "pid": 41234,
+  "process_alive": true,
+  "updated_at": "2026-07-19T12:00:03Z",
+  "elapsed_ms": 3000,
+  "logs_drained": false,
+  "stdout_log_path": "/home/user/.local/share/agent-exec/jobs/7f3a9c1e4b2d8a605e7c9f0134ab6d82/stdout.log",
+  "stderr_log_path": "/home/user/.local/share/agent-exec/jobs/7f3a9c1e4b2d8a605e7c9f0134ab6d82/stderr.log",
+  "stdout_total_bytes": 128,
+  "stderr_total_bytes": 0
+}
+```
 
 ### `tail`: read bounded output tails
 
@@ -841,7 +880,7 @@ Example payload:
 
 ```json
 {
-  "schema_version": "0.2",
+  "schema_version": "0.3",
   "event_type": "job.finished",
   "job_id": "7f3a9c1e4b2d8a605e7c9f0134ab6d82",
   "state": "exited",
@@ -932,7 +971,7 @@ When output-match notification metadata is active, the supervisor evaluates newl
 
 ```json
 {
-  "schema_version": "0.2",
+  "schema_version": "0.3",
   "event_type": "job.output.matched",
   "job_id": "7f3a9c1e4b2d8a605e7c9f0134ab6d82",
   "pattern": "ERROR",
