@@ -14,7 +14,7 @@ verifications:
     trigger: pull-request-validation
     automation: prek.toml
     evidence: focused shell helper test output plus syntax and documentation checks
-    rerun: cargo test --test integration hermes_notify_hook notify_failure_does_not_change_job_state && cargo test --test mcp_integration mcp_run_reports_only_persisted_notification_as_armed && bash -n skills/agent-exec/scripts/hermes-notify-hook
+    rerun: cargo test --test integration -- hermes_notify_hook notify_failure_does_not_change_job_state && cargo test --test mcp_integration mcp_run_reports_only_persisted_notification_as_armed && bash -n skills/agent-exec/scripts/hermes-notify-hook
     prerequisites: []
     execution_class: repository-local
     completion_role: change-blocking
