@@ -32,7 +32,7 @@ MCP `run` の inline および file-backed stdin は CLI `run` と同じ bounded
 
 実効 `until` は明示 tool value、`AGENT_EXEC_MCP_DEFAULT_UNTIL_SECONDS`、既存の 10 seconds default の順で最初に利用可能な値を選択し、その後 `AGENT_EXEC_MCP_MAX_UNTIL_SECONDS` が設定されている場合は `min(selected, maximum)` に丸めなければならない（MUST）。最大値を超える有効な明示値を error として拒否してはならない（MUST NOT）。有効な call は CLI `run` と同じ persisted job definition、detached supervisor launch、inline observation 契約を使わなければならない（MUST）。MCP surface は command/cwd/env/timeout/until/stdin/stdin_file/completion sink 以外の definition-time controls を受け付けてはならない（MUST NOT）。
 
-MCP `run` の成功結果は CLI `run` と同じ `type="run"` response envelope を含み、`job_id`, `state`, `stdout`, `stderr`, `stdout_range`, `stderr_range`, `stdout_total_bytes`, `stderr_total_bytes`, `stdout_log_path`, `stderr_log_path` を返さなければならない（MUST）。Completion sink を永続化した job が non-terminal state で返る場合、結果は optional structured `notification` object を含み、`state="armed"`、generic sink classifications、`polling_required=false`、および completion 時に configured sink へ通知されるため repeated `wait`/`status`/`tail` polling が不要であることを示す message を返さなければならない（MUST）。Notification object は session、chat、originating client など特定 client/host の概念を含んではならない（MUST NOT）。Sink が永続化されていない場合、または admission が失敗した場合、結果は notification が armed であると示してはならない（MUST NOT）。`armed` は terminal dispatch 用 sink が永続化されたことを意味し、downstream delivery 成功を保証してはならない（MUST NOT）。
+MCP `run` の成功結果は CLI `run` と同じ `type="run"` response envelope を含み、`job_id`, `state`, `stdout`, `stderr`, `stdout_range`, `stderr_range`, `stdout_total_bytes`, `stderr_total_bytes`, `stdout_log_path`, `stderr_log_path` を返さなければならない（MUST）。Completion sink を永続化した job が non-terminal state で返る場合、結果は optional structured `notification` object を含み、`state="armed"`、generic sink classifications、`polling_required=false`、および completion 時に configured sink へ通知されるため repeated `wait`/`status`/`tail` polling が不要であることを示す message を返さなければならない（MUST）。Notification object は session、chat、originating client など特定 client/host の概念を含んではならない（MUST NOT）。Sink が永続化されていない場合、または admission が失敗した場合、結果は notification が armed であると示してはならない（MUST NOT）。`armed` は terminal dispatch 用 sink が永続化されたことを意味し、downstream delivery 成功を保証してはならない（MUST NOT）。Client adapter が宛先付き message delivery を提供する場合、宛先は各 run の persisted command sink に明示しなければならず（MUST）、managed-child `env`、server-global cache、または以前の request から推測してはならない（MUST NOT）。
 
 #### Scenario: configured run default is used when until is omitted
 
@@ -128,6 +128,22 @@ MCP `run` の成功結果は CLI `run` と同じ `type="run"` response envelope 
 **Then**: the call returns a protocol-safe error
 **And**: no workload process is launched
 **And**: no response claims notification is armed
+
+#### Scenario: explicit client delivery target remains request-scoped
+
+**Given**: an MCP client configures a command sink adapter that requires a message destination
+**When**: it calls `run` for a detached workload
+**Then**: the destination is embedded explicitly in that job's persisted command sink
+**And**: managed-child environment values are not treated as completion-sink environment
+**And**: an absent destination makes the adapter fail closed rather than reusing or guessing a route
+
+#### Scenario: completion adapter failure does not alter terminal state
+
+**Given**: an admitted MCP job has a persisted completion command sink
+**And**: the downstream client adapter exits non-zero
+**When**: the workload reaches a successful terminal state
+**Then**: the workload remains successfully terminal
+**And**: canonical delivery results record the adapter failure separately
 
 ### Requirement: MCP observation tools preserve canonical response semantics
 
