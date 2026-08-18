@@ -14,7 +14,7 @@ verifications:
     trigger: pull-request-validation
     automation: prek.toml
     evidence: focused shell helper test output plus syntax and documentation checks
-    rerun: cargo test --test mcp_integration mcp_run_reports_armed_completion_sink && bash -n skills/agent-exec/scripts/hermes-notify-hook
+    rerun: cargo test --test integration hermes_notify_hook notify_failure_does_not_change_job_state && cargo test --test mcp_integration mcp_run_reports_only_persisted_notification_as_armed && bash -n skills/agent-exec/scripts/hermes-notify-hook
     prerequisites: []
     execution_class: repository-local
     completion_role: change-blocking
@@ -50,14 +50,15 @@ No Hermes-specific routing logic enters the Rust crate.
 - A fake Hermes executable observes exact `send --quiet --to <target> <message>` arguments.
 - The message includes `AGENT_EXEC_JOB_ID` and `AGENT_EXEC_EVENT_PATH` and excludes command output and credentials.
 - Missing target or binary returns non-zero so canonical delivery results record failure without changing the managed job terminal state.
+- The missing-binary test isolates both `PATH` and `HOME` (and clears `HERMES_BIN`) so the helper's home-directory fallback cannot resolve a real Hermes installation on the test machine.
 - Documentation shows MCP `run` with request-scoped target assignment inside `notify_command` and explains that `notification.state="armed"` proves persistence, not downstream delivery.
 
 ## Explicit Completion Conditions
 
-- `skills/agent-exec/scripts/hermes-notify-hook` uses the current `hermes send` interface and validates required inputs.
-- A focused repository-local test executes the helper against a fake `hermes` binary and proves success and fail-closed paths.
-- `skills/agent-exec/references/hermes.md` contains no executable `hermes notify` guidance and documents the exact MCP invocation shape.
-- Existing MCP armed-notification and notification-failure tests remain green.
+- `skills/agent-exec/scripts/hermes-notify-hook` uses the current `hermes send` interface, validates required inputs, and its usage header documents the request-scoped `HERMES_NOTIFY_TARGET` assignment instead of managed-child `--env` routing or LLM provider/model options.
+- Focused repository-local tests named with the `hermes_notify_hook` prefix in `tests/integration.rs` execute the tracked helper against a fake `hermes` binary and prove success and fail-closed paths.
+- `skills/agent-exec/references/hermes.md` contains no fenced code block invoking `hermes notify` (prose that prohibits the obsolete command may remain) and documents the exact MCP invocation shape.
+- Existing MCP armed-notification (`mcp_run_reports_only_persisted_notification_as_armed`) and notification-failure (`notify_failure_does_not_change_job_state`) tests remain green and are part of the rerun command.
 
 ## Out of Scope
 

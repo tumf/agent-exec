@@ -10,6 +10,101 @@ MCP `run` の inline および file-backed stdin は CLI `run` と同じ bounded
 
 MCP `run` の成功結果は CLI `run` と同じ `type="run"` response envelope を含み、`job_id`, `state`, `stdout`, `stderr`, `stdout_range`, `stderr_range`, `stdout_total_bytes`, `stderr_total_bytes`, `stdout_log_path`, `stderr_log_path` を返さなければならない（MUST）。Completion sink を永続化した job が non-terminal state で返る場合、結果は optional structured `notification` object を含み、`state="armed"`、generic sink classifications、`polling_required=false`、および completion 時に configured sink へ通知されるため repeated `wait`/`status`/`tail` polling が不要であることを示す message を返さなければならない（MUST）。Notification object は session、chat、originating client など特定 client/host の概念を含んではならない（MUST NOT）。Sink が永続化されていない場合、または admission が失敗した場合、結果は notification が armed であると示してはならない（MUST NOT）。`armed` は terminal dispatch 用 sink が永続化されたことを意味し、downstream delivery 成功を保証してはならない（MUST NOT）。Client adapter が宛先付き message delivery を提供する場合、宛先は各 run の persisted command sink に明示しなければならず（MUST）、managed-child `env`、server-global cache、または以前の request から推測してはならない（MUST NOT）。
 
+#### Scenario: configured run default is used when until is omitted
+
+**Given**: the MCP server has `AGENT_EXEC_MCP_DEFAULT_UNTIL_SECONDS=20` and no maximum
+**When**: the client calls `run` without `until`
+**Then**: inline observation is bounded to 20 seconds
+
+#### Scenario: over-maximum run is rounded down
+
+**Given**: the MCP server has `AGENT_EXEC_MCP_MAX_UNTIL_SECONDS=55`
+**When**: the client calls `run` with `until=100`
+**Then**: the tool proceeds using an effective `until` of 55 seconds
+**And**: it returns a successful canonical run envelope instead of an over-maximum error
+**And**: the managed job remains detached if the effective observation deadline expires
+
+#### Scenario: maximum caps the legacy run default
+
+**Given**: no default environment variable and `AGENT_EXEC_MCP_MAX_UNTIL_SECONDS=5`
+**When**: the client calls `run` without `until`
+**Then**: the legacy 10-second default is rounded down to 5 seconds
+
+#### Scenario: MCP run rejects an empty command without creating a job
+
+**Given**: an MCP client is connected to an isolated jobs root
+**When**: it calls `run` with an empty command array
+**Then**: the call returns a protocol-safe error result
+**And**: no new job directory is created
+
+#### Scenario: MCP run passes inline stdin through the canonical lifecycle
+
+**Given**: an MCP client calls `run` for a command that echoes stdin with `stdin="alpha\nbeta\n"`
+**When**: the managed job finishes
+**Then**: child stdout contains the exact supplied UTF-8 bytes
+**And**: the job directory contains the same bytes in canonical stdin materialization
+**And**: `meta.json.stdin_file` identifies that job-local input
+
+#### Scenario: MCP run snapshots a server-local stdin file
+
+**Given**: a readable server-local file contains known bytes
+**When**: an MCP client calls `run` with `stdin_file` set to that path
+**Then**: the file is copied into the job directory before child launch
+**And**: the child receives the copied bytes
+**And**: later modification of the source file does not change the job-local input
+
+#### Scenario: MCP run rejects conflicting stdin definitions
+
+**Given**: an MCP client is connected to an isolated jobs root
+**When**: it calls `run` with both `stdin` and `stdin_file`
+**Then**: the call returns a protocol-safe error result
+**And**: no new job directory is created
+
+#### Scenario: MCP run does not consume protocol transport as job stdin
+
+**Given**: an MCP client calls `run` without `stdin` or `stdin_file`
+**When**: the managed command reads stdin
+**Then**: the child observes EOF from null stdin
+**And**: subsequent MCP JSON-RPC messages remain available to the MCP server
+
+#### Scenario: dash is literal MCP inline input
+
+**Given**: an MCP client calls `run` with `stdin="-"`
+**When**: the managed command reads stdin
+**Then**: the child receives one literal dash byte
+**And**: the MCP server does not wait for a second caller-stdin stream
+
+#### Scenario: invalid MCP stdin fails before child launch
+
+**Given**: MCP `run` receives oversized inline input or a missing, unreadable, or oversized `stdin_file`
+**When**: canonical stdin materialization is attempted
+**Then**: the call returns an error result before launching the child
+**And**: no managed workload process is started
+
+#### Scenario: MCP run reports persisted completion notification as armed
+
+**Given**: an MCP client supplies a valid launch-time completion command sink
+**When**: `run` admits the job, persists notification metadata, launches the workload, and returns while it is still running
+**Then**: the response includes `notification.state="armed"`
+**And**: `notification.polling_required` is `false`
+**And**: the response tells the agent that completion will notify it and repeated `wait`, `status`, or `tail` polling is unnecessary
+**And**: `meta.json` already contains the same completion sink before the response is returned
+
+#### Scenario: MCP run without a sink does not claim notification is armed
+
+**Given**: an MCP client calls `run` without a completion sink
+**When**: the job remains running beyond inline observation
+**Then**: the response does not contain `notification.state="armed"`
+**And**: the client may choose its own later observation or notification strategy
+
+#### Scenario: invalid launch-time sink fails before workload launch
+
+**Given**: an MCP client supplies invalid completion notification input
+**When**: MCP `run` validates admission
+**Then**: the call returns a protocol-safe error
+**And**: no workload process is launched
+**And**: no response claims notification is armed
+
 #### Scenario: explicit client delivery target remains request-scoped
 
 **Given**: an MCP client configures a command sink adapter that requires a message destination

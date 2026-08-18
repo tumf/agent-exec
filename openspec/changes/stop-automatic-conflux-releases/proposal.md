@@ -13,7 +13,7 @@ verifications:
     owner: conflux-acceptance
     trigger: pull-request-validation
     automation: prek.toml
-    evidence: configuration assertion test output and clean-tree dry execution of the retained index hook
+    evidence: configuration assertion test output including a make -n dry-run recipe scan of the retained index hook
     rerun: cargo test --test integration conflux_on_merged_hook_has_no_release_side_effects
     prerequisites: []
     execution_class: repository-local
@@ -47,9 +47,10 @@ Add a deterministic configuration regression test that parses `.cflx.jsonc` and 
 
 ## Explicit Completion Conditions
 
-- `.cflx.jsonc` contains no release-capable command in `on_merged`.
+- `.cflx.jsonc` sets `hooks.on_merged` to exactly `make index` and contains no release-capable command in `on_merged`.
 - A focused test reads the actual tracked config and proves the prohibited command classes are absent.
-- The retained hook command can run without modifying tracked release metadata.
+- The retained hook target is itself non-releasing: the test scans the `make -n index` dry-run recipe (which prints commands without executing them) and finds no `cargo release`, `cargo publish`, `git tag`, `git push`, or `gh release` invocation. The hook is not executed for real during verification.
+- Explicit Makefile release targets (`bump-patch`, `bump-minor`, `bump-major`, `publish`) still exist, satisfying the criterion that release commands remain available as separate operator actions.
 - Canonical distribution requirements state that version/tag creation and publication require explicit release action, not an ordinary Conflux merge.
 
 ## Out of Scope
