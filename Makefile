@@ -2,7 +2,7 @@
 
 .DEFAULT_GOAL := build
 
-.PHONY: build help install release run test clean fmt fmt-check lint check setup index pre-commit pre-commit-hooks ci bump-patch bump-minor bump-major publish publish-tag
+.PHONY: build help install release run test clean fmt fmt-check lint check setup index pre-commit pre-commit-hooks ci version-bump-patch bump-patch bump-minor bump-major publish publish-tag
 
 CARGO ?= cargo
 BIN ?= agent-exec
@@ -32,6 +32,7 @@ help:
 	@echo "  make pre-commit        - Run prek on all files (matches CI)"
 	@echo "  make pre-commit-hooks  - Install git pre-commit hooks (prek)"
 	@echo "  make ci                - Run CI checks (fmt-check, lint, test)"
+	@echo "  make version-bump-patch - Bump patch version and commit only (no tag/push/publish)"
 	@echo "  make bump-patch        - Bump patch version and tag (no publish)"
 	@echo "  make bump-minor        - Bump minor version and tag (no publish)"
 	@echo "  make bump-major        - Bump major version and tag (no publish)"
@@ -129,6 +130,21 @@ pre-commit-hooks:
 	fi; \
 	"$$PREK" install --overwrite --hook-type pre-commit; \
 	echo "Pre-commit hook installed. Run 'make pre-commit' to verify."
+
+# Bump patch version and commit it locally only.
+#
+# This is the automatic per-Conflux-Change versioning path invoked by
+# `hooks.on_merged`. It deliberately keeps every release step disabled:
+# `--no-tag` prevents a release tag, `--no-push` prevents writing to any
+# remote (and with it cargo-release's behind-remote fetch, so the path needs
+# no network), and `--no-publish` prevents crates.io upload. Tagging,
+# pushing, and publication stay explicit operator actions via bump-patch,
+# bump-minor, bump-major, publish, and publish-tag below.
+version-bump-patch:
+	@echo "Bumping patch version (local version commit only)..."
+	@command -v cargo-release >/dev/null 2>&1 || (echo "cargo-release not found. Run 'make setup' first." && exit 1)
+	@cargo release patch --execute --no-confirm --no-publish --no-tag --no-push
+	@echo "Patch version bumped and committed locally (no tag, no push, no publish)"
 
 # Bump patch version (0.1.0 -> 0.1.1) and create git tag (no publish)
 bump-patch:

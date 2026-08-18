@@ -2939,57 +2939,97 @@ fn cflx_on_merged_hook(config: &str) -> String {
     rest[..end].to_string()
 }
 
-/// Ordinary Conflux completion must never release.
+/// Ordinary Conflux completion versions locally, and never releases.
 ///
-/// `hooks.on_merged` runs unattended after every accepted change, so a
-/// release-capable command there turns an ordinary merge into a version bump, a
-/// Git tag, and a push against whatever the remote currently holds. This guard
-/// pins the hook to the local index refresh, checks the retained target's own
-/// recipe through a `make -n` dry run (which prints the recipe without running
-/// it), and confirms the explicit release targets still exist as separate
-/// operator actions.
+/// `hooks.on_merged` runs unattended after every accepted Change, and Conflux
+/// invokes it once per merged Change. The repository wants exactly one local
+/// patch-version commit out of that callback -- not zero, not a batched one --
+/// while every release step stays an explicit operator action. This guard pins
+/// the tracked hook to one version-only bump followed by the local index
+/// refresh, checks both targets' recipes through a `make -n` dry run (which
+/// prints the recipe without running it) for the required no-tag/no-push/
+/// no-publish safeguards, and confirms the explicit release targets still exist
+/// separately.
 #[test]
-fn conflux_on_merged_hook_has_no_release_side_effects() {
+fn conflux_on_merged_hook_bumps_patch_without_release() {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
 
     let config = std::fs::read_to_string(manifest.join(".cflx.jsonc")).expect("read .cflx.jsonc");
     let on_merged = cflx_on_merged_hook(&config);
+
+    // One bump, then one index refresh. `&&` short-circuits, so a failed bump
+    // stops the hook instead of leaving an unversioned Change post-processed.
+    let steps: Vec<&str> = on_merged.split("&&").map(str::trim).collect();
     assert_eq!(
-        on_merged, "make index",
-        "hooks.on_merged must stay the local index refresh only"
+        steps,
+        vec!["make version-bump-patch", "make index"],
+        "hooks.on_merged must run exactly one version-only bump then one index refresh: {on_merged:?}"
     );
+
+    // Conflux already calls the hook once per merged Change. Repeating either
+    // step here would batch or double-count increments within one callback.
+    for step in &steps {
+        assert_eq!(
+            steps.iter().filter(|other| *other == step).count(),
+            1,
+            "hooks.on_merged must not repeat {step:?}: {on_merged:?}"
+        );
+    }
+
+    // The hook itself must delegate; it must never carry a release verb.
     for token in [
-        "bump", "release", "tag", "publish", "upload", "push", "cargo", "git",
+        "tag",
+        "push",
+        "publish",
+        "upload",
+        "cargo",
+        "git",
+        "gh ",
+        "bump-minor",
+        "bump-major",
     ] {
         assert!(
             !on_merged.contains(token),
             "hooks.on_merged must not reference {token:?}: {on_merged:?}"
         );
     }
-
-    // Dry run only: `make -n` prints the recipe and executes none of it.
-    let dry_run = Command::new("make")
-        .args(["-n", "index"])
-        .current_dir(manifest)
-        .output()
-        .expect("run make -n index");
+    // `bump-patch` is the explicit, tag-creating release target; the automatic
+    // path must use the dedicated version-only target instead.
     assert!(
-        dry_run.status.success(),
-        "make -n index failed: {}",
-        String::from_utf8_lossy(&dry_run.stderr)
+        !on_merged.contains("make bump-patch"),
+        "hooks.on_merged must not invoke the tagging bump-patch target: {on_merged:?}"
     );
-    let recipe = String::from_utf8_lossy(&dry_run.stdout);
-    for command in [
-        "cargo release",
-        "cargo publish",
-        "git tag",
-        "git push",
-        "gh release",
+
+    // Dry runs only: `make -n` prints each recipe and executes none of it.
+    let bump_recipe = make_dry_run(manifest, "version-bump-patch");
+    for flag in [
+        "cargo release patch",
+        "--execute",
+        "--no-confirm",
+        "--no-publish",
+        "--no-tag",
+        "--no-push",
     ] {
         assert!(
-            !recipe.contains(command),
-            "the retained on_merged target must not run {command:?}: {recipe}"
+            bump_recipe.contains(flag),
+            "the automatic bump target must pass {flag:?}: {bump_recipe}"
         );
+    }
+    // `cargo release ... --execute` performs the version + commit steps, so the
+    // bump lands as a real commit rather than a dirty working tree.
+    assert!(
+        bump_recipe.contains("command -v cargo-release"),
+        "the automatic bump target must keep the cargo-release availability guard: {bump_recipe}"
+    );
+
+    let index_recipe = make_dry_run(manifest, "index");
+    for recipe in [&bump_recipe, &index_recipe] {
+        for command in ["cargo publish", "git tag", "git push", "gh release"] {
+            assert!(
+                !recipe.contains(command),
+                "the automatic on_merged path must not run {command:?}: {recipe}"
+            );
+        }
     }
 
     // Releasing stays possible, but only as an explicit operator command.
@@ -3000,6 +3040,21 @@ fn conflux_on_merged_hook_has_no_release_side_effects() {
             "Makefile must keep the explicit {target} release target"
         );
     }
+}
+
+/// Print a Makefile recipe without running any of it.
+fn make_dry_run(manifest: &std::path::Path, target: &str) -> String {
+    let dry_run = Command::new("make")
+        .args(["-n", target])
+        .current_dir(manifest)
+        .output()
+        .unwrap_or_else(|error| panic!("run make -n {target}: {error}"));
+    assert!(
+        dry_run.status.success(),
+        "make -n {target} failed: {}",
+        String::from_utf8_lossy(&dry_run.stderr)
+    );
+    String::from_utf8_lossy(&dry_run.stdout).into_owned()
 }
 
 /// Task 3.2: `schema` response includes `generated_at` field.
