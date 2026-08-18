@@ -2,7 +2,7 @@
 //!
 //! Stdout output is JSON by default; YAML when --yaml is set.
 //! Tracing logs go to stderr.
-//! Schema version is fixed at "0.2".
+//! Schema version is fixed at "0.3".
 
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,7 +15,7 @@ pub fn set_yaml_output(yaml: bool) {
     YAML_OUTPUT.store(yaml, Ordering::Relaxed);
 }
 
-pub const SCHEMA_VERSION: &str = "0.2";
+pub const SCHEMA_VERSION: &str = "0.3";
 
 /// Serialize `value` and print to stdout in the selected format (JSON default, YAML with --yaml).
 ///
@@ -254,9 +254,17 @@ pub struct RunData {
 }
 
 /// Response for `status` command.
+///
+/// The diagnostic fields below were added in schema `0.3`.  They are optional at
+/// the published compatibility boundary even where the current implementation
+/// can always derive them, so clients that ignore unknown fields stay
+/// compatible.  Sensitive job inputs (environment values, stdin content,
+/// notification secrets, shell-expanded command strings) are deliberately absent.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StatusData {
     pub job_id: String,
+    /// Persisted lifecycle state.  A stale `running` record keeps this value and
+    /// is distinguished by `process_alive = false`; `status` never rewrites it.
     pub state: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
@@ -267,6 +275,51 @@ pub struct StatusData {
     pub started_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<String>,
+    /// Persisted argv of the managed workload; never shell-expanded.
+    #[serde(default)]
+    pub command: Vec<String>,
+    /// Effective working directory recorded at job creation time, when persisted.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub cwd: Option<String>,
+    /// User-defined tags; empty array when none.
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// Persisted supervisor PID, when recorded.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub pid: Option<u32>,
+    /// Best-effort PID liveness for persisted `running` state only.  Omitted for
+    /// non-running state and when the platform provides no probe; omission means
+    /// no live observation was made.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub process_alive: Option<bool>,
+    /// RFC 3339 timestamp of the last `state.json` write.
+    #[serde(default)]
+    pub updated_at: String,
+    /// Response time minus `started_at`; present only for non-terminal jobs that
+    /// have started.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub elapsed_ms: Option<u64>,
+    /// Persisted terminal wall-clock duration; never computed at read time.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub duration_ms: Option<u64>,
+    /// Persisted terminating signal name, when recorded.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub signal: Option<String>,
+    /// Whether the supervisor finished draining output after terminal state.
+    #[serde(default = "default_logs_drained")]
+    pub logs_drained: bool,
+    /// Absolute path to stdout.log for this job.
+    #[serde(default)]
+    pub stdout_log_path: String,
+    /// Absolute path to stderr.log for this job.
+    #[serde(default)]
+    pub stderr_log_path: String,
+    /// Current stdout.log size from file metadata; `0` when missing or unreadable.
+    #[serde(default)]
+    pub stdout_total_bytes: u64,
+    /// Current stderr.log size from file metadata; `0` when missing or unreadable.
+    #[serde(default)]
+    pub stderr_total_bytes: u64,
 }
 
 /// Response for `tail` command.

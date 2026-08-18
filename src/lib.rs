@@ -16,6 +16,7 @@ pub mod kill;
 pub mod list;
 pub mod mcp;
 pub mod notify;
+pub mod process;
 pub mod restart;
 pub mod run;
 pub mod schema;

@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$comment": "2026-08-13T00:00:00Z",
+  "$comment": "2026-08-19T00:00:00Z",
   "title": "agent-exec CLI response schema",
   "description": "JSON Schema for all stdout responses produced by agent-exec.",
   "definitions": {
@@ -14,7 +14,7 @@
       "properties": {
         "schema_version": {
           "type": "string",
-          "const": "0.2",
+          "const": "0.3",
           "description": "Schema version identifier."
         },
         "ok": {
@@ -295,7 +295,7 @@
           "required": [
             "job_id",
             "state",
-            "started_at"
+            "created_at"
           ],
           "properties": {
             "type": {
@@ -306,7 +306,9 @@
             },
             "state": {
               "type": "string",
+              "description": "Persisted lifecycle state. A stale running record keeps \"running\" and is distinguished by process_alive=false.",
               "enum": [
+                "created",
                 "running",
                 "exited",
                 "killed",
@@ -320,9 +322,14 @@
                 "null"
               ]
             },
-            "started_at": {
+            "created_at": {
               "type": "string",
               "format": "date-time"
+            },
+            "started_at": {
+              "type": "string",
+              "format": "date-time",
+              "description": "Absent while the job is in created state."
             },
             "finished_at": {
               "type": [
@@ -330,6 +337,74 @@
                 "null"
               ],
               "format": "date-time"
+            },
+            "command": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Optional (schema 0.3). Persisted argv; never shell-expanded."
+            },
+            "cwd": {
+              "type": "string",
+              "description": "Optional (schema 0.3). Persisted effective working directory."
+            },
+            "tags": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Optional (schema 0.3). Empty array when the job has no tags."
+            },
+            "pid": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Optional (schema 0.3). Persisted supervisor PID."
+            },
+            "process_alive": {
+              "type": "boolean",
+              "description": "Optional (schema 0.3). Best-effort PID liveness, resolved only for persisted running state; omission means no live observation was made."
+            },
+            "updated_at": {
+              "type": "string",
+              "format": "date-time",
+              "description": "Optional (schema 0.3). Last state.json write time."
+            },
+            "elapsed_ms": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Optional (schema 0.3). Response time minus started_at; present only for non-terminal jobs that have started."
+            },
+            "duration_ms": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Optional (schema 0.3). Persisted terminal wall-clock duration; never computed at read time."
+            },
+            "signal": {
+              "type": "string",
+              "description": "Optional (schema 0.3). Persisted terminating signal name."
+            },
+            "logs_drained": {
+              "type": "boolean",
+              "description": "Optional (schema 0.3). Whether the supervisor finished draining output after terminal state."
+            },
+            "stdout_log_path": {
+              "type": "string",
+              "description": "Optional (schema 0.3). Canonical stdout.log path."
+            },
+            "stderr_log_path": {
+              "type": "string",
+              "description": "Optional (schema 0.3). Canonical stderr.log path."
+            },
+            "stdout_total_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Optional (schema 0.3). stdout.log size from file metadata; 0 when missing or unreadable."
+            },
+            "stderr_total_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Optional (schema 0.3). stderr.log size from file metadata; 0 when missing or unreadable."
             }
           }
         }

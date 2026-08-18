@@ -31,44 +31,18 @@ use tracing::debug;
 
 use crate::jobstore::resolve_root;
 use crate::jobstore::short_job_id;
+use crate::process::pid_liveness;
 use crate::run::resolve_effective_cwd;
 use crate::schema::{JobStatus, JobSummary, ListData, Response};
 use crate::tag::{matches_all_patterns, validate_filter_pattern};
 
-#[cfg(unix)]
+/// Whether a persisted PID still looks alive.
+///
+/// `list` presents jobs optimistically: when the platform provides no probe
+/// (`None`), the persisted `running` record is preserved rather than downgraded
+/// to `unknown`.
 fn pid_is_alive(pid: u32) -> bool {
-    let ret = unsafe { libc::kill(pid as libc::pid_t, 0) };
-    if ret == 0 {
-        return true;
-    }
-
-    let err = std::io::Error::last_os_error();
-    matches!(err.raw_os_error(), Some(libc::EPERM))
-}
-
-#[cfg(windows)]
-fn pid_is_alive(pid: u32) -> bool {
-    use windows::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
-    use windows::Win32::System::Threading::{
-        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-    };
-
-    let handle = match unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) } {
-        Ok(handle) => handle,
-        Err(_) => return false,
-    };
-
-    let mut exit_code = 0u32;
-    let ok = unsafe { GetExitCodeProcess(handle, &mut exit_code) }.is_ok();
-    unsafe {
-        let _ = CloseHandle(handle);
-    }
-    ok && exit_code == STILL_ACTIVE.0
-}
-
-#[cfg(not(any(unix, windows)))]
-fn pid_is_alive(_pid: u32) -> bool {
-    true
+    pid_liveness(pid).unwrap_or(true)
 }
 
 fn effective_state(state: &crate::schema::JobState) -> String {

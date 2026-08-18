@@ -200,7 +200,7 @@ pub fn run_cmd_with_subcommand_root_flag(
 pub fn assert_envelope(v: &serde_json::Value, expected_type: &str, expected_ok: bool) {
     assert_eq!(
         v["schema_version"].as_str().unwrap_or(""),
-        "0.2",
+        "0.3",
         "schema_version mismatch: {v}"
     );
     assert_eq!(
