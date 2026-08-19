@@ -1,5 +1,40 @@
 # CLI Contract
 
+Use this reference for CLI fallback, configuration, command defaults, and response details. MCP clients should discover tool arguments and result schemas from the MCP server instead of duplicating them here.
+
+## CLI fallback
+
+When MCP is unavailable, start with:
+
+```bash
+agent-exec run -- <command>
+```
+
+Pass ordinary arguments directly after `--`. Use `sh -lc` only when pipes, redirects, variable expansion, or compound shell syntax are required. Do not add timing, notification, masking, or shell-wrapper options without a concrete need.
+
+Examples:
+
+```bash
+agent-exec run -- make test
+agent-exec run -- npm run build
+agent-exec run -- cargo test
+```
+
+## MCP server configuration
+
+Configure agent-exec as a stdio MCP server:
+
+```yaml
+mcp_servers:
+  agent-exec:
+    command: agent-exec
+    args: ["mcp"]
+```
+
+Use `args: ["--root", "/path/to/jobs", "mcp"]` only when a non-default jobs root is required.
+
+Each MCP host must set its own safe observation ceiling through `AGENT_EXEC_MCP_MAX_UNTIL_SECONDS`. This value becomes the default and maximum `until` for MCP `run` and `wait`; agent-exec does not infer the host timeout or reserve a safety margin. For example, a host with a fixed 60-second request deadline can set `AGENT_EXEC_MCP_MAX_UNTIL_SECONDS=55`.
+
 ## Successful responses
 
 Expect one JSON object on stdout for every successful command:

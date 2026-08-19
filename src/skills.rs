@@ -15,6 +15,7 @@ const EMBEDDED_CLI_CONTRACT_MD: &[u8] =
     include_bytes!("../skills/agent-exec/references/cli-contract.md");
 const EMBEDDED_COMPLETION_EVENTS_MD: &[u8] =
     include_bytes!("../skills/agent-exec/references/completion-events.md");
+const EMBEDDED_HERMES_MD: &[u8] = include_bytes!("../skills/agent-exec/references/hermes.md");
 const EMBEDDED_OPENCLAW_MD: &[u8] = include_bytes!("../skills/agent-exec/references/openclaw.md");
 
 /// Represents a single embedded file: relative path within the skill dir and content.
@@ -36,6 +37,10 @@ pub static EMBEDDED_AGENT_EXEC_FILES: &[EmbeddedFile] = &[
     EmbeddedFile {
         relative_path: "references/completion-events.md",
         content: EMBEDDED_COMPLETION_EVENTS_MD,
+    },
+    EmbeddedFile {
+        relative_path: "references/hermes.md",
+        content: EMBEDDED_HERMES_MD,
     },
     EmbeddedFile {
         relative_path: "references/openclaw.md",
