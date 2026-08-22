@@ -11,8 +11,10 @@ Use agent-exec for non-trivial shell work so execution remains detached, observa
 
 - Prefer the MCP tools when available. Start with `run` and retain the returned `job_id`.
 - Treat `status`, `tail`, and bounded `wait` as observation only. Transport closure, wait expiry, missing output, or moving to other work does not stop the job.
+- Never set the current `timeout` launch field or `--timeout` flag. It terminates the managed job and can permanently lose unfinished results; it is not an observation deadline or a safety default.
+- Use `until` when the caller only needs control returned after a bounded observation period. `until` must leave the job running.
+- Call `kill` only after an explicit cancellation request. Do not infer cancellation from elapsed time, client timeout, inactivity, missing output, or an estimated completion time.
 - Use further observation only for an explicit progress request, result collection, or diagnosis.
-- Call `kill` only after an explicit cancellation request.
 - Treat `notification.state="armed"` with `polling_required=false` as proof that the sink was persisted, not that downstream delivery succeeded. Do not add duplicate polling or a watcher.
 - A response without notification state proves nothing about completion routing. Keep an observation path until terminal state is verified.
 - Verify completion from terminal state, exit status, logs, and the requested artifact. A callback or watcher firing is not workload success.
