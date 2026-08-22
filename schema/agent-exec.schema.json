@@ -388,6 +388,14 @@
               "type": "boolean",
               "description": "Optional (schema 0.3). Whether the supervisor finished draining output after terminal state."
             },
+            "abandoned_by": {
+              "type": "string",
+              "description": "Optional (schema 0.3). Control that abandoned this workload, e.g. \"abandon_job_after\". Present only when a configured abandon-job-after limit actually terminated the job; the terminal state value itself is unchanged."
+            },
+            "result_loss": {
+              "type": "boolean",
+              "description": "Optional (schema 0.3). True when the job was abandoned and unfinished results may be lost. Absent whenever abandoned_by is absent."
+            },
             "stdout_log_path": {
               "type": "string",
               "description": "Optional (schema 0.3). Canonical stdout.log path."
@@ -636,6 +644,14 @@
             "null"
           ],
           "format": "date-time"
+        },
+        "abandoned_by": {
+          "type": "string",
+          "description": "Optional (schema 0.3). Control that abandoned this workload, e.g. \"abandon_job_after\". Present only when a configured abandon-job-after limit actually terminated the job; the terminal state value itself is unchanged."
+        },
+        "result_loss": {
+          "type": "boolean",
+          "description": "Optional (schema 0.3). True when the job was abandoned and unfinished results may be lost. Absent whenever abandoned_by is absent."
         }
       }
     },

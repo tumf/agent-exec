@@ -29,7 +29,7 @@
       <pre><code>curl -X POST http://127.0.0.1:19263/exec \
   -H 'Content-Type: application/json' \
   -d '{"command":["sh","-c","echo hello"]}'</code></pre>
-      <p>Documented handler responses use the CLI <code>schema_version</code>, <code>ok</code>, and <code>type</code> envelope. <code>POST /exec</code> requires a nonempty <code>command</code> array of strings. Optional fields are <code>cwd</code>, <code>env</code>, <code>timeout</code>, <code>wait</code>, <code>until</code>, and <code>max_bytes</code>. Unknown fields are rejected.</p>
+      <p>Documented handler responses use the CLI <code>schema_version</code>, <code>ok</code>, and <code>type</code> envelope. <code>POST /exec</code> requires a nonempty <code>command</code> array of strings. Optional fields are <code>cwd</code>, <code>env</code>, <code>abandon_job_after</code>, <code>acknowledge_result_loss</code>, <code>wait</code>, <code>until</code>, and <code>max_bytes</code>. Unknown fields are rejected. <code>abandon_job_after</code> gives up on the job, terminates it, and may permanently lose unfinished results, so it requires <code>acknowledge_result_loss: true</code>; use <code>until</code> to stop waiting without stopping the job. The removed <code>timeout</code> and <code>timeout_ms</code> fields are rejected with migration guidance and never launch a job.</p>
     </article>
   </main>
   <footer class="site-footer"><p><a class="brand" href="../index.html">agent-exec</a> · MCP and HTTP.</p><nav aria-label="Footer"><a href="integrations.html">Integrations</a><a href="output-contracts.html">Output contract</a></nav></footer>

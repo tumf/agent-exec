@@ -434,6 +434,8 @@ impl JobDir {
             finished_at: None,
             updated_at: crate::run::now_rfc3339_pub(),
             logs_drained: true,
+            abandoned_by: None,
+            result_loss: None,
             windows_job_name: None,
         };
         self.write_state(&state)?;
@@ -474,6 +476,8 @@ impl JobDir {
             finished_at: None,
             updated_at: crate::run::now_rfc3339_pub(),
             logs_drained: true,
+            abandoned_by: None,
+            result_loss: None,
             windows_job_name,
         };
         self.write_state(&state)?;
@@ -594,7 +598,8 @@ mod tests {
             tags: vec![],
             inherit_env: true,
             env_files: vec![],
-            timeout_ms: 0,
+            abandon_job_after_ms: Some(0),
+            timeout_ms: Some(0),
             kill_after_ms: 0,
             progress_every_ms: 0,
             shell_wrapper: None,
@@ -666,6 +671,8 @@ mod tests {
             finished_at: None,
             updated_at: "2024-01-01T00:00:01Z".to_string(),
             logs_drained: true,
+            abandoned_by: None,
+            result_loss: None,
             windows_job_name: None,
         };
         job_dir.write_state(&state).unwrap();
@@ -710,6 +717,8 @@ mod tests {
                 finished_at: None,
                 updated_at: format!("2024-01-01T00:00:{:02}Z", i),
                 logs_drained: true,
+                abandoned_by: None,
+                result_loss: None,
                 windows_job_name: None,
             };
             job_dir.write_state(&state).unwrap();
@@ -750,7 +759,8 @@ mod tests {
             tags: vec![],
             inherit_env: true,
             env_files: vec![],
-            timeout_ms: 0,
+            abandon_job_after_ms: Some(0),
+            timeout_ms: Some(0),
             kill_after_ms: 0,
             progress_every_ms: 0,
             shell_wrapper: None,

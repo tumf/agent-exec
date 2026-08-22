@@ -1362,18 +1362,29 @@ fn run_no_inherit_env_clears_env() {
     }
 }
 
-/// Spec: --timeout causes the child process to be terminated after the deadline.
+/// Spec: --abandon-job-after terminates the child process after the deadline.
 #[test]
-fn run_timeout_terminates_child() {
+fn abandon_job_after_terminates_child() {
     let h = TestHarness::new();
 
-    // Start a long sleep with a short timeout.
-    // run returns immediately, so this can be tested directly; timeout is tested via status.
-    let run_v = h.run(&["run", "--timeout", "1", "--kill-after", "1", "sleep", "60"]);
+    // Start a long sleep with a short abandonment limit.
+    // run returns immediately, so this can be tested directly; abandonment is
+    // observed via status.
+    let run_v = h.run(&[
+        "run",
+        "--abandon-job-after",
+        "1",
+        "--acknowledge-result-loss",
+        "--kill-after",
+        "1",
+        "sleep",
+        "60",
+    ]);
     let job_id = run_v["job_id"].as_str().unwrap().to_string();
 
-    // Poll until the job is no longer running (timeout + kill-after should fire).
-    // Use a polling loop instead of a fixed sleep to tolerate slow CI runners.
+    // Poll until the job is no longer running (abandon-job-after + kill-after
+    // should fire). Use a polling loop instead of a fixed sleep to tolerate slow
+    // CI runners.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         std::thread::sleep(std::time::Duration::from_millis(200));
@@ -1384,7 +1395,7 @@ fn run_timeout_terminates_child() {
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "job should have been terminated by timeout; state={state}"
+            "job should have been terminated by abandon-job-after; state={state}"
         );
     }
 }
@@ -9559,4 +9570,464 @@ fn status_response_validates_against_checked_in_schema() {
             .contains(&serde_json::json!("created")),
         "StatusResponse must allow state=created"
     );
+}
+
+// ── abandon-job-after ──────────────────────────────────────────────────────────
+//
+// `until` bounds observation and never signals the job; `--abandon-job-after`
+// gives up on the job, terminates it, and can permanently lose unfinished
+// results. These tests hold that boundary at the CLI surface: the warning is
+// present, the destructive control is unusable without acknowledgement, the old
+// spelling can never launch, and abandonment is identifiable after the fact.
+
+/// Run the binary and return `(exit code, stdout, stderr)`.
+fn abandon_job_after_raw(h: &TestHarness, args: &[&str]) -> (Option<i32>, String, String) {
+    let output = run_raw_with_root_and_stdin(args, Some(h.root()), None);
+    (
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout).to_string(),
+        String::from_utf8_lossy(&output.stderr).to_string(),
+    )
+}
+
+/// Number of job directories under the harness root.
+fn abandon_job_after_job_count(h: &TestHarness) -> usize {
+    std::fs::read_dir(h.root())
+        .expect("read jobs root")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .count()
+}
+
+/// Poll `status` until the job leaves `running`, then return the final response.
+fn abandon_job_after_await_terminal(h: &TestHarness, job_id: &str) -> serde_json::Value {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let v = h.run(&["status", job_id]);
+        if v["state"].as_str().unwrap_or("running") != "running" {
+            return v;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "job {job_id} never reached a terminal state: {v}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+}
+
+fn abandon_job_after_read_meta(h: &TestHarness, job_id: &str) -> serde_json::Value {
+    let path = std::path::Path::new(h.root())
+        .join(job_id)
+        .join("meta.json");
+    serde_json::from_slice(&std::fs::read(&path).expect("read meta.json")).expect("parse meta.json")
+}
+
+fn abandon_job_after_write_meta(h: &TestHarness, job_id: &str, meta: &serde_json::Value) {
+    let path = std::path::Path::new(h.root())
+        .join(job_id)
+        .join("meta.json");
+    std::fs::write(
+        &path,
+        serde_json::to_vec_pretty(meta).expect("serialize meta"),
+    )
+    .expect("write");
+}
+
+#[test]
+fn abandon_job_after_help_leads_with_the_result_loss_warning() {
+    for subcommand in ["run", "create"] {
+        let output = Command::new(binary())
+            .args([subcommand, "--help"])
+            .output()
+            .expect("run --help");
+        let help = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            help.contains("--abandon-job-after"),
+            "{subcommand} --help must document --abandon-job-after: {help}"
+        );
+        assert!(
+            help.contains("WARNING: Gives up on the job, terminates it, and may permanently lose"),
+            "{subcommand} --help must open the description with the result-loss warning: {help}"
+        );
+        assert!(
+            help.contains("--acknowledge-result-loss"),
+            "{subcommand} --help must document --acknowledge-result-loss: {help}"
+        );
+        assert!(
+            !help.contains("--timeout"),
+            "the removed --timeout spelling must stay hidden from {subcommand} --help: {help}"
+        );
+    }
+}
+
+#[test]
+fn abandon_job_after_without_acknowledgement_is_rejected_before_job_creation() {
+    for subcommand in ["run", "create"] {
+        let h = TestHarness::new();
+        let (code, stdout, stderr) = abandon_job_after_raw(
+            &h,
+            &[subcommand, "--abandon-job-after", "1", "--", "sleep", "60"],
+        );
+        assert_eq!(
+            code,
+            Some(2),
+            "{subcommand}: stdout={stdout} stderr={stderr}"
+        );
+        assert!(stdout.trim().is_empty(), "{subcommand} stdout: {stdout}");
+        assert!(
+            stderr.contains("may permanently lose unfinished results"),
+            "{subcommand} must warn about result loss: {stderr}"
+        );
+        assert!(
+            stderr.contains("--acknowledge-result-loss") && stderr.contains("--until"),
+            "{subcommand} must name the acknowledgement and the observation bound: {stderr}"
+        );
+        assert_eq!(
+            abandon_job_after_job_count(&h),
+            0,
+            "{subcommand} must not create a job when acknowledgement is missing"
+        );
+    }
+}
+
+#[test]
+fn abandon_job_after_legacy_timeout_flag_is_rejected_with_migration_guidance() {
+    for subcommand in ["run", "create"] {
+        let h = TestHarness::new();
+        let (code, stdout, stderr) =
+            abandon_job_after_raw(&h, &[subcommand, "--timeout", "1", "--", "sleep", "60"]);
+        assert_eq!(
+            code,
+            Some(2),
+            "{subcommand}: stdout={stdout} stderr={stderr}"
+        );
+        assert!(stdout.trim().is_empty(), "{subcommand} stdout: {stdout}");
+        for expected in [
+            "--abandon-job-after",
+            "--acknowledge-result-loss",
+            "--until",
+        ] {
+            assert!(
+                stderr.contains(expected),
+                "{subcommand} migration error must name {expected}: {stderr}"
+            );
+        }
+        assert_eq!(
+            abandon_job_after_job_count(&h),
+            0,
+            "the removed --timeout spelling must never create a job"
+        );
+    }
+}
+
+#[test]
+fn abandon_job_after_marks_actual_abandonment_in_state_status_and_list() {
+    let h = TestHarness::new();
+    let run_v = h.run(&[
+        "run",
+        "--no-wait",
+        "--abandon-job-after",
+        "1",
+        "--acknowledge-result-loss",
+        "--",
+        "sleep",
+        "60",
+    ]);
+    let job_id = run_v["job_id"].as_str().expect("job_id").to_string();
+
+    let status = abandon_job_after_await_terminal(&h, &job_id);
+    assert_eq!(
+        status["abandoned_by"].as_str(),
+        Some("abandon_job_after"),
+        "status must identify the abandoning control: {status}"
+    );
+    assert_eq!(
+        status["result_loss"].as_bool(),
+        Some(true),
+        "status must report result loss: {status}"
+    );
+
+    let state_path = std::path::Path::new(h.root())
+        .join(&job_id)
+        .join("state.json");
+    let state: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&state_path).expect("read state.json"))
+            .expect("parse state.json");
+    assert_eq!(state["abandoned_by"].as_str(), Some("abandon_job_after"));
+    assert_eq!(state["result_loss"].as_bool(), Some(true));
+
+    let list = h.run(&["list", "--all"]);
+    let entry = list["jobs"]
+        .as_array()
+        .expect("jobs array")
+        .iter()
+        .find(|j| j["job_id"].as_str() == Some(job_id.as_str()))
+        .expect("job in list");
+    assert_eq!(entry["abandoned_by"].as_str(), Some("abandon_job_after"));
+    assert_eq!(entry["result_loss"].as_bool(), Some(true));
+}
+
+#[test]
+fn abandon_job_after_emits_markers_in_the_completion_event() {
+    let h = TestHarness::new();
+    let events = std::path::Path::new(h.root()).join("events.ndjson");
+    let run_v = h.run(&[
+        "run",
+        "--no-wait",
+        "--abandon-job-after",
+        "1",
+        "--acknowledge-result-loss",
+        "--notify-file",
+        events.to_str().expect("events path"),
+        "--",
+        "sleep",
+        "60",
+    ]);
+    let job_id = run_v["job_id"].as_str().expect("job_id").to_string();
+    abandon_job_after_await_terminal(&h, &job_id);
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let event = loop {
+        if let Ok(contents) = std::fs::read_to_string(&events)
+            && let Some(line) = contents.lines().next()
+            && let Ok(value) = serde_json::from_str::<serde_json::Value>(line)
+        {
+            break value;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no completion event was delivered for {job_id}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    };
+    assert_eq!(event["event_type"].as_str(), Some("job.finished"));
+    assert_eq!(event["abandoned_by"].as_str(), Some("abandon_job_after"));
+    assert_eq!(event["result_loss"].as_bool(), Some(true));
+}
+
+#[test]
+fn abandon_job_after_markers_are_absent_when_the_limit_never_fires() {
+    let h = TestHarness::new();
+    let run_v = h.run(&[
+        "run",
+        "--abandon-job-after",
+        "300",
+        "--acknowledge-result-loss",
+        "--",
+        "echo",
+        "hi",
+    ]);
+    let job_id = run_v["job_id"].as_str().expect("job_id").to_string();
+    let status = abandon_job_after_await_terminal(&h, &job_id);
+    assert_eq!(status["state"].as_str(), Some("exited"), "{status}");
+    assert!(
+        status.get("abandoned_by").is_none() && status.get("result_loss").is_none(),
+        "a configured limit that never fired must not mark the result: {status}"
+    );
+}
+
+#[test]
+fn abandon_job_after_default_is_unlimited() {
+    let h = TestHarness::new();
+    let run_v = h.run(&["run", "--no-wait", "--", "sleep", "2"]);
+    let job_id = run_v["job_id"].as_str().expect("job_id").to_string();
+    let meta = abandon_job_after_read_meta(&h, &job_id);
+    assert_eq!(meta["abandon_job_after_ms"].as_u64(), Some(0), "{meta}");
+    assert_eq!(meta["timeout_ms"].as_u64(), Some(0), "{meta}");
+}
+
+#[test]
+fn abandon_job_after_until_expiry_leaves_the_job_running() {
+    let h = TestHarness::new();
+    let run_v = h.run(&["run", "--until", "1", "--", "sleep", "10"]);
+    let job_id = run_v["job_id"].as_str().expect("job_id").to_string();
+    assert_eq!(
+        run_v["state"].as_str(),
+        Some("running"),
+        "until expiry must return a non-terminal observation: {run_v}"
+    );
+    let status = h.run(&["status", &job_id]);
+    assert_eq!(
+        status["state"].as_str(),
+        Some("running"),
+        "until expiry must not signal the managed job: {status}"
+    );
+    assert!(
+        status.get("abandoned_by").is_none(),
+        "observation must never mark abandonment: {status}"
+    );
+    let _ = h.run(&["kill", &job_id]);
+}
+
+#[test]
+fn abandon_job_after_dual_writes_equal_persisted_fields_for_downgrade() {
+    let h = TestHarness::new();
+    let create_v = h.run(&[
+        "create",
+        "--abandon-job-after",
+        "30",
+        "--acknowledge-result-loss",
+        "--",
+        "sleep",
+        "60",
+    ]);
+    let job_id = create_v["job_id"].as_str().expect("job_id").to_string();
+    let meta = abandon_job_after_read_meta(&h, &job_id);
+    assert_eq!(
+        meta["abandon_job_after_ms"].as_u64(),
+        Some(30_000),
+        "{meta}"
+    );
+    // An older binary reads only `timeout_ms`; the equal mirror is what keeps it
+    // from silently dropping the configured limit on start or restart.
+    assert_eq!(meta["timeout_ms"].as_u64(), Some(30_000), "{meta}");
+}
+
+#[test]
+fn abandon_job_after_legacy_only_metadata_still_starts_and_abandons() {
+    let h = TestHarness::new();
+    let create_v = h.run(&[
+        "create",
+        "--abandon-job-after",
+        "1",
+        "--acknowledge-result-loss",
+        "--",
+        "sleep",
+        "60",
+    ]);
+    let job_id = create_v["job_id"].as_str().expect("job_id").to_string();
+
+    // Rewrite the definition into the pre-migration shape an existing job has.
+    let mut meta = abandon_job_after_read_meta(&h, &job_id);
+    meta.as_object_mut()
+        .expect("meta object")
+        .remove("abandon_job_after_ms");
+    abandon_job_after_write_meta(&h, &job_id, &meta);
+
+    let start_v = h.run(&["start", "--no-wait", &job_id]);
+    assert_envelope(&start_v, "start", true);
+    let status = abandon_job_after_await_terminal(&h, &job_id);
+    assert_eq!(
+        status["abandoned_by"].as_str(),
+        Some("abandon_job_after"),
+        "legacy-only metadata must keep applying its limit: {status}"
+    );
+}
+
+#[test]
+fn abandon_job_after_restart_applies_persisted_limit() {
+    let h = TestHarness::new();
+    let create_v = h.run(&[
+        "create",
+        "--abandon-job-after",
+        "1",
+        "--acknowledge-result-loss",
+        "--",
+        "sleep",
+        "60",
+    ]);
+    let job_id = create_v["job_id"].as_str().expect("job_id").to_string();
+    h.run(&["start", "--no-wait", &job_id]);
+    abandon_job_after_await_terminal(&h, &job_id);
+
+    let restart_v = h.run(&["restart", "--no-wait", &job_id]);
+    assert_envelope(&restart_v, "restart", true);
+    let status = abandon_job_after_await_terminal(&h, &job_id);
+    assert_eq!(
+        status["abandoned_by"].as_str(),
+        Some("abandon_job_after"),
+        "restart must reapply the persisted limit: {status}"
+    );
+}
+
+#[test]
+fn abandon_job_after_unequal_persisted_fields_fail_closed() {
+    for subcommand in ["start", "restart"] {
+        let h = TestHarness::new();
+        let create_v = h.run(&[
+            "create",
+            "--abandon-job-after",
+            "30",
+            "--acknowledge-result-loss",
+            "--",
+            "sleep",
+            "60",
+        ]);
+        let job_id = create_v["job_id"].as_str().expect("job_id").to_string();
+
+        let mut meta = abandon_job_after_read_meta(&h, &job_id);
+        meta["timeout_ms"] = serde_json::json!(5_000);
+        abandon_job_after_write_meta(&h, &job_id, &meta);
+
+        let v = h.run(&[subcommand, "--no-wait", &job_id]);
+        assert_eq!(v["ok"].as_bool(), Some(false), "{subcommand}: {v}");
+        assert_eq!(
+            v["error"]["code"].as_str(),
+            Some("abandon_limit_conflict"),
+            "{subcommand}: {v}"
+        );
+        let message = v["error"]["message"].as_str().unwrap_or_default();
+        for expected in [
+            job_id.as_str(),
+            "abandon_job_after_ms=30000",
+            "timeout_ms=5000",
+        ] {
+            assert!(
+                message.contains(expected),
+                "{subcommand} error must name {expected}: {message}"
+            );
+        }
+
+        let state_path = std::path::Path::new(h.root())
+            .join(&job_id)
+            .join("state.json");
+        let state: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&state_path).expect("read state.json"))
+                .expect("parse state.json");
+        assert_eq!(
+            state["job"]["status"].as_str(),
+            Some("created"),
+            "{subcommand} must fail closed without launching: {state}"
+        );
+    }
+}
+
+#[test]
+fn abandon_job_after_public_docs_have_no_live_legacy_launch_syntax() {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let files = [
+        "README.md",
+        "skills/agent-exec/SKILL.md",
+        "skills/agent-exec/references/cli-contract.md",
+        "skills/agent-exec/references/completion-events.md",
+        "site/docs/mcp-http.html",
+        "site/docs/cli.html",
+    ];
+    // Migration and rejection text is allowed to name the removed spelling; live
+    // launch syntax is not.
+    let migration_marker = |line: &str| {
+        let line = line.to_ascii_lowercase();
+        line.contains("removed") || line.contains("rejected") || line.contains("migration")
+    };
+    for file in files {
+        let path = repo.join(file);
+        let Ok(contents) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for (number, line) in contents.lines().enumerate() {
+            if migration_marker(line) {
+                continue;
+            }
+            assert!(
+                !line.contains("--timeout "),
+                "{file}:{} still shows live --timeout launch syntax: {line}",
+                number + 1
+            );
+            assert!(
+                !line.contains("\"timeout\":"),
+                "{file}:{} still shows a live timeout launch field: {line}",
+                number + 1
+            );
+        }
+    }
 }

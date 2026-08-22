@@ -74,7 +74,22 @@ struct RunParams {
     command: Vec<String>,
     cwd: Option<String>,
     env: Option<std::collections::BTreeMap<String, String>>,
-    timeout: Option<f64>,
+    /// WARNING: Gives up on the job, terminates it, and may permanently lose
+    /// unfinished results. Use `until` to stop waiting without stopping the job.
+    ///
+    /// Seconds after which the managed job is terminated; omitted or `null`
+    /// means no limit. Requires `acknowledge_result_loss=true`.
+    abandon_job_after: Option<f64>,
+    /// Explicit acknowledgement that `abandon_job_after` may permanently lose
+    /// unfinished results. Required whenever `abandon_job_after` is set.
+    acknowledge_result_loss: Option<bool>,
+    /// REMOVED launch input. Accepted only so the rejection can carry migration
+    /// guidance; it never launches a job. Use `abandon_job_after` with
+    /// `acknowledge_result_loss` to abandon the job, or `until` to stop waiting
+    /// without stopping it.
+    timeout: Option<Value>,
+    /// REMOVED launch input; see `timeout`.
+    timeout_ms: Option<Value>,
     until: Option<f64>,
     /// Inline UTF-8 bytes fed to the managed child's stdin. Mutually exclusive
     /// with `stdin_file`. Unlike the CLI `--stdin`, a "-" value is literal input:
@@ -281,6 +296,16 @@ fn domain_error(error: anyhow::Error) -> ErrorResponse {
     } else if error.downcast_ref::<crate::run::StdinTooLarge>().is_some() {
         "stdin_too_large"
     } else if error
+        .downcast_ref::<crate::schema::AbandonLimitConflict>()
+        .is_some()
+    {
+        "abandon_limit_conflict"
+    } else if error
+        .downcast_ref::<crate::run::ResultLossNotAcknowledged>()
+        .is_some()
+    {
+        "result_loss_not_acknowledged"
+    } else if error
         .downcast_ref::<crate::run::SupervisorLaunchFailed>()
         .is_some()
     {
@@ -298,10 +323,35 @@ impl Mcp {
         if params.command.is_empty() || params.command.iter().any(|value| value.is_empty()) {
             return tool_error("command must be a non-empty argv array");
         }
-        let timeout = match seconds(params.timeout, "timeout", 0) {
+        // Legacy launch inputs are rejected before anything is created, and the
+        // error names both replacements so the caller can pick by intent.
+        for (legacy, supplied) in [
+            ("timeout", params.timeout.is_some()),
+            ("timeout_ms", params.timeout_ms.is_some()),
+        ] {
+            if supplied {
+                return tool_error(run::legacy_timeout_migration_message(
+                    legacy,
+                    run::API_ABANDON_INPUT,
+                    run::API_ACKNOWLEDGE_INPUT,
+                    run::API_UNTIL_INPUT,
+                ));
+            }
+        }
+        let abandon_job_after = match seconds(params.abandon_job_after, run::API_ABANDON_INPUT, 0) {
             Ok(value) => value,
             Err(message) => return tool_error(message),
         };
+        let abandon_job_after_ms = abandon_job_after.saturating_mul(1000);
+        if let Err(e) = run::validate_result_loss_acknowledgement(
+            abandon_job_after_ms,
+            params.acknowledge_result_loss.unwrap_or(false),
+            run::API_ABANDON_INPUT,
+            run::API_ACKNOWLEDGE_INPUT,
+            run::API_UNTIL_INPUT,
+        ) {
+            return tool_error(e.to_string());
+        }
         let until = match until_seconds(
             params.until,
             10,
@@ -333,7 +383,8 @@ impl Mcp {
                 root: self.root.as_deref(),
                 cwd: params.cwd.as_deref(),
                 env_vars,
-                timeout_ms: timeout.saturating_mul(1000),
+                abandon_job_after_ms,
+                acknowledge_result_loss: true,
                 until_seconds: until,
                 stdin,
                 stdin_max_bytes: run::DEFAULT_STDIN_MAX_BYTES,

@@ -43,12 +43,12 @@ A plain serde alias is insufficient because it produces a generic duplicate-fiel
 
 ## Result compatibility and observability
 
-The terminal state string `timeout` remains unchanged for existing clients. When `abandon-job-after` actually causes termination, persisted state and every projection derived from it expose additive fields:
+The terminal state value is unchanged for existing clients. (The original premise named a terminal state string `timeout`; no such value exists in this codebase. Abandonment surfaces through the existing `killed` state and its terminating signal, and that mapping is left exactly as it was.) When `abandon-job-after` actually causes termination, persisted state and every projection derived from it expose additive fields:
 
 - `abandoned_by: "abandon_job_after"`
 - `result_loss: true`
 
-`status`, `list`, completion events, schemas, and skills explain that legacy `state="timeout"` denotes abandonment by this workload control. Historical state files without the additive fields remain readable and do not synthesize unsupported provenance.
+`status`, `list`, completion events, schemas, and skills explain that the additive pair — not the terminal state value — denotes abandonment by this workload control. Historical state files without the additive fields remain readable and do not synthesize unsupported provenance.
 
 ## Surface mapping
 
@@ -63,7 +63,7 @@ The terminal state string `timeout` remains unchanged for existing clients. When
 | Embedded public request | `timeout_ms` | `abandon_job_after_ms` + acknowledgement boolean |
 | Private `_supervise` argv/parser | `--timeout` | unchanged private handoff |
 | Persisted metadata | `timeout_ms` | migration release dual-writes equal old/new fields; reads legacy/new/equal dual |
-| Terminal result | `state="timeout"` | state unchanged; additive abandonment markers on actual deadline termination |
+| Terminal result | terminal `state` value | state unchanged; additive abandonment markers on actual deadline termination |
 | Observation | `until` | unchanged and non-destructive |
 
 ## Verification strategy

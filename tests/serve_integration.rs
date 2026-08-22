@@ -54,6 +54,24 @@ impl ServeProcessBuilder {
     }
 
     fn start(self) -> ServeProcess {
+        // `free_port` closes its listener before `serve` binds, so two tests
+        // running concurrently can be handed the same port and one of them exits
+        // with "address already in use". Retry on a fresh port instead of
+        // reporting that lost race as a failure of whatever the test asserts.
+        for attempt in 0..5 {
+            if let Some(server) = self.try_start() {
+                return server;
+            }
+            thread::sleep(Duration::from_millis(50 * (attempt + 1)));
+        }
+        panic!("serve process did not start on any of 5 candidate ports");
+    }
+
+    /// Spawn one server and return it only once it answers `/health` itself.
+    ///
+    /// Returns `None` when the child lost the port race or never became
+    /// reachable, so the caller can retry on a different port.
+    fn try_start(&self) -> Option<ServeProcess> {
         let root = tempfile::tempdir().expect("create tempdir");
         let port = free_port();
         let bind = format!("127.0.0.1:{port}");
@@ -72,21 +90,26 @@ impl ServeProcessBuilder {
         }
         cmd.stdout(Stdio::null()).stderr(Stdio::null());
 
-        let child = cmd.spawn().expect("spawn serve process");
+        let mut child = cmd.spawn().expect("spawn serve process");
 
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         loop {
-            if std::net::TcpStream::connect(format!("127.0.0.1:{port}")).is_ok() {
-                break;
+            // A child that already exited lost the port race; a live child that
+            // serves `/health` owns the port we are about to use.
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                let _ = child.wait();
+                return None;
             }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "server did not start within 10 seconds on port {port}"
-            );
+            if health_is_ready(port) {
+                return Some(ServeProcess { child, port, root });
+            }
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
             thread::sleep(Duration::from_millis(50));
         }
-
-        ServeProcess { child, port, root }
     }
 }
 
@@ -109,6 +132,26 @@ impl Drop for ServeProcess {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+/// True when `/health` on `port` answers with the canonical health envelope.
+///
+/// Stronger than a bare TCP connect: it proves the server we just spawned is the
+/// one listening, not a leftover socket from a concurrently starting test.
+fn health_is_ready(port: u16) -> bool {
+    let output = Command::new("curl")
+        .args([
+            "-s",
+            "--max-time",
+            "2",
+            &format!("http://127.0.0.1:{port}/health"),
+        ])
+        .output();
+    let Ok(output) = output else {
+        return false;
+    };
+    serde_json::from_slice::<serde_json::Value>(&output.stdout)
+        .is_ok_and(|json| json["type"] == "health")
 }
 
 /// Parse the output of `curl -s -w "\n%{http_code}" ...`.
@@ -477,16 +520,120 @@ fn test_exec_max_bytes() {
 }
 
 #[test]
-fn test_exec_rejects_timeout_ms() {
+fn abandon_job_after_exec_legacy_timeout_error_is_actionable() {
+    let srv = ServeProcess::start();
+    for body in [
+        r#"{"command":["echo","hi"],"timeout":1}"#,
+        r#"{"command":["echo","hi"],"timeout_ms":1000}"#,
+    ] {
+        let (status, json) = post_json(&srv.url("/exec"), body);
+        assert_eq!(status, 400, "expected 400 for {body}: {json}");
+        assert_eq!(json["ok"], false, "{body}: {json}");
+        assert_eq!(json["error"]["code"], "removed_option", "{body}: {json}");
+        let message = json["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("abandon_job_after") && message.contains("until"),
+            "{body}: migration error must name both replacements: {message}"
+        );
+        assert_common_fields(&json);
+        assert_eq!(
+            abandon_job_after_job_dirs(srv.root_path()),
+            0,
+            "{body} must not create a job"
+        );
+    }
+}
+
+/// Number of job directories under a serve process's isolated jobs root.
+fn abandon_job_after_job_dirs(root: &std::path::Path) -> usize {
+    std::fs::read_dir(root)
+        .expect("read jobs root")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .count()
+}
+
+#[test]
+fn abandon_job_after_exec_rejects_unacknowledged_abandonment() {
+    let srv = ServeProcess::start();
+    for body in [
+        r#"{"command":["sleep","60"],"abandon_job_after":1}"#,
+        r#"{"command":["sleep","60"],"abandon_job_after":1,"acknowledge_result_loss":false}"#,
+    ] {
+        let (status, json) = post_json(&srv.url("/exec"), body);
+        assert_eq!(status, 400, "expected 400 for {body}: {json}");
+        assert_eq!(
+            json["error"]["code"], "result_loss_not_acknowledged",
+            "{body}: {json}"
+        );
+        let message = json["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("may permanently lose unfinished results")
+                && message.contains("acknowledge_result_loss")
+                && message.contains("until"),
+            "{body}: response must warn and name both alternatives: {message}"
+        );
+        assert_common_fields(&json);
+        assert_eq!(
+            abandon_job_after_job_dirs(srv.root_path()),
+            0,
+            "{body} must not create a job"
+        );
+    }
+}
+
+#[test]
+fn abandon_job_after_exec_terminates_an_acknowledged_workload() {
     let srv = ServeProcess::start();
     let (status, json) = post_json(
         &srv.url("/exec"),
-        r#"{"command":["echo","hi"],"timeout_ms":1000}"#,
+        r#"{"command":["sleep","60"],"abandon_job_after":1,"acknowledge_result_loss":true,"until":6}"#,
     );
-    assert_eq!(status, 400, "expected 400 for timeout_ms field: {json}");
-    assert_eq!(json["ok"], false);
-    assert_eq!(json["error"]["code"], "invalid_request");
-    assert_common_fields(&json);
+    assert_eq!(status, 200, "acknowledged abandonment must launch: {json}");
+    let job_id = json["job_id"].as_str().expect("job_id").to_string();
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let final_status = loop {
+        let (code, body) = get_json(&srv.url(&format!("/status/{job_id}")));
+        assert_eq!(code, 200, "status query failed: {body}");
+        if body["state"] != "running" {
+            break body;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "abandon_job_after never terminated the workload: {body}"
+        );
+        thread::sleep(Duration::from_millis(200));
+    };
+    assert_eq!(
+        final_status["abandoned_by"], "abandon_job_after",
+        "{final_status}"
+    );
+    assert_eq!(final_status["result_loss"], true, "{final_status}");
+}
+
+#[test]
+fn abandon_job_after_exec_until_expiry_leaves_the_job_running() {
+    let srv = ServeProcess::start();
+    let (status, json) = post_json(&srv.url("/exec"), r#"{"command":["sleep","30"],"until":1}"#);
+    assert_eq!(status, 200, "{json}");
+    assert_eq!(
+        json["state"], "running",
+        "until expiry must return a non-terminal job: {json}"
+    );
+    let job_id = json["job_id"].as_str().expect("job_id").to_string();
+    let (code, body) = get_json(&srv.url(&format!("/status/{job_id}")));
+    assert_eq!(code, 200, "{body}");
+    assert_eq!(
+        body["state"], "running",
+        "the service must not signal the workload: {body}"
+    );
+    assert!(
+        body.get("abandoned_by").is_none(),
+        "observation must never mark abandonment: {body}"
+    );
+    let (kill_code, kill_body) = post_json(&srv.url(&format!("/kill/{job_id}")), "");
+    assert_eq!(kill_code, 200, "{kill_body}");
 }
 
 // ---- Security integration tests ----

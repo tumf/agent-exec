@@ -120,11 +120,22 @@ enum Command {
         #[arg(long)]
         root: Option<String>,
 
-        /// Timeout in seconds; 0 = no timeout.
-        #[arg(long, default_value = "0")]
-        timeout: u64,
+        /// WARNING: Gives up on the job, terminates it, and may permanently lose
+        /// unfinished results. Use --until to stop waiting without stopping the
+        /// job. Seconds; 0 = no limit (default). Requires
+        /// --acknowledge-result-loss.
+        #[arg(long, default_value = "0", value_name = "SECONDS")]
+        abandon_job_after: u64,
 
-        /// Seconds after SIGTERM to send SIGKILL; 0 = immediate SIGKILL on timeout.
+        /// Acknowledge that --abandon-job-after may permanently lose unfinished results.
+        #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue)]
+        acknowledge_result_loss: bool,
+
+        /// Removed: always fails with migration guidance and never creates a job.
+        #[arg(long, hide = true, value_name = "SECONDS")]
+        timeout: Option<u64>,
+
+        /// Seconds after SIGTERM to send SIGKILL; 0 = immediate SIGKILL on abandonment.
         #[arg(long, default_value = "0")]
         kill_after: u64,
 
@@ -301,8 +312,18 @@ enum Command {
         auto_gc_max_jobs: Option<u64>,
         #[arg(long, value_name = "BYTES")]
         auto_gc_max_bytes: Option<u64>,
-        #[arg(long, default_value = "0")]
-        timeout: u64,
+        /// WARNING: Gives up on the job, terminates it, and may permanently lose
+        /// unfinished results. Use --until to stop waiting without stopping the
+        /// job. Seconds; 0 = no limit (default). Requires
+        /// --acknowledge-result-loss.
+        #[arg(long, default_value = "0", value_name = "SECONDS")]
+        abandon_job_after: u64,
+        /// Acknowledge that --abandon-job-after may permanently lose unfinished results.
+        #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue)]
+        acknowledge_result_loss: bool,
+        /// Removed: always fails with migration guidance and never creates a job.
+        #[arg(long, hide = true, value_name = "SECONDS")]
+        timeout: Option<u64>,
         #[arg(long, default_value = "0")]
         kill_after: u64,
         #[arg(long, value_hint = ValueHint::DirPath)]
@@ -415,7 +436,7 @@ enum Command {
 
         /// Maximum client-side wait deadline in seconds (default: 30).
         /// This controls how long `wait` polls and does not stop the underlying job;
-        /// use `run --timeout` to enforce process runtime limits.
+        /// use `run --abandon-job-after` to give up on and terminate the job.
         #[arg(long, conflicts_with = "forever")]
         until: Option<u64>,
 
@@ -725,6 +746,23 @@ fn main() {
             ErrorResponse::new("invalid_state", format!("{e:#}"), false).print();
         } else if e.downcast_ref::<JobIdCollisionExhausted>().is_some() {
             ErrorResponse::new("io_error", format!("{e:#}"), false).print();
+        } else if e
+            .downcast_ref::<agent_exec::schema::AbandonLimitConflict>()
+            .is_some()
+        {
+            // Not retryable: meta.json has to be repaired before the identical
+            // start or restart can succeed.
+            ErrorResponse::new("abandon_limit_conflict", format!("{e:#}"), false).print();
+        } else if e
+            .downcast_ref::<agent_exec::run::ResultLossNotAcknowledged>()
+            .is_some()
+        {
+            ErrorResponse::new("result_loss_not_acknowledged", format!("{e:#}"), false).print();
+        } else if e
+            .downcast_ref::<agent_exec::run::LegacyTimeoutInput>()
+            .is_some()
+        {
+            ErrorResponse::new("removed_option", format!("{e:#}"), false).print();
         } else if e.downcast_ref::<agent_exec::run::StdinRequired>().is_some() {
             ErrorResponse::new("stdin_required", format!("{e:#}"), false).print();
         } else if e.downcast_ref::<agent_exec::run::StdinTooLarge>().is_some() {
@@ -832,9 +870,51 @@ fn resolve_compression_or_exit(
     }
 }
 
+/// Reject the removed public `--timeout` spelling before any job is created.
+///
+/// The flag stays declared (hidden) so its rejection can name both safe
+/// alternatives instead of clap's generic unknown-argument error. It is a
+/// migration trap, never an alias: it can no longer launch a workload.
+fn reject_legacy_timeout_or_exit(timeout: Option<u64>) {
+    if timeout.is_some() {
+        Cli::command()
+            .error(
+                clap::error::ErrorKind::ValueValidation,
+                agent_exec::run::legacy_timeout_migration_message(
+                    "--timeout",
+                    agent_exec::run::CLI_ABANDON_INPUT,
+                    agent_exec::run::CLI_ACKNOWLEDGE_INPUT,
+                    agent_exec::run::CLI_UNTIL_INPUT,
+                ),
+            )
+            .exit();
+    }
+}
+
+/// Require explicit result-loss acknowledgement before a destructive launch.
+///
+/// Runs at the CLI boundary so the message names CLI flags; `run`/`create`
+/// enforce the same rule again for non-CLI callers.
+fn require_result_loss_acknowledgement_or_exit(abandon_job_after: u64, acknowledged: bool) {
+    if let Err(e) = agent_exec::run::validate_result_loss_acknowledgement(
+        abandon_job_after.saturating_mul(1000),
+        acknowledged,
+        agent_exec::run::CLI_ABANDON_INPUT,
+        agent_exec::run::CLI_ACKNOWLEDGE_INPUT,
+        agent_exec::run::CLI_UNTIL_INPUT,
+    ) {
+        Cli::command()
+            .error(
+                clap::error::ErrorKind::MissingRequiredArgument,
+                e.to_string(),
+            )
+            .exit();
+    }
+}
+
 #[derive(Debug)]
 struct DefinitionOptions {
-    timeout: u64,
+    abandon_job_after: u64,
     kill_after: u64,
     cwd: Option<String>,
     env_vars: Vec<String>,
@@ -859,7 +939,7 @@ struct DefinitionOptions {
 
 #[derive(Debug)]
 struct ResolvedDefinitionOptions {
-    timeout_ms: u64,
+    abandon_job_after_ms: u64,
     kill_after_ms: u64,
     cwd: Option<String>,
     env_vars: Vec<String>,
@@ -905,7 +985,7 @@ impl DefinitionOptions {
             self.config.as_deref(),
         )?;
         Ok(ResolvedDefinitionOptions {
-            timeout_ms: self.timeout.saturating_mul(1000),
+            abandon_job_after_ms: self.abandon_job_after.saturating_mul(1000),
             kill_after_ms: self.kill_after.saturating_mul(1000),
             cwd: self.cwd,
             env_vars: self.env_vars,
@@ -998,6 +1078,8 @@ fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Create {
             root,
+            abandon_job_after,
+            acknowledge_result_loss,
             timeout,
             kill_after,
             cwd,
@@ -1022,8 +1104,10 @@ fn run(cli: Cli) -> Result<()> {
             output_file,
             command,
         } => {
+            reject_legacy_timeout_or_exit(timeout);
+            require_result_loss_acknowledgement_or_exit(abandon_job_after, acknowledge_result_loss);
             let definition = DefinitionOptions {
-                timeout,
+                abandon_job_after,
                 kill_after,
                 cwd,
                 env_vars,
@@ -1049,7 +1133,8 @@ fn run(cli: Cli) -> Result<()> {
             agent_exec::create::execute(agent_exec::create::CreateOpts {
                 command,
                 root: root.as_deref(),
-                timeout_ms: definition.timeout_ms,
+                abandon_job_after_ms: definition.abandon_job_after_ms,
+                acknowledge_result_loss: true,
                 kill_after_ms: definition.kill_after_ms,
                 cwd: definition.cwd.as_deref(),
                 env_vars: definition.env_vars,
@@ -1176,6 +1261,8 @@ fn run(cli: Cli) -> Result<()> {
             auto_gc_older_than,
             auto_gc_max_jobs,
             auto_gc_max_bytes,
+            abandon_job_after,
+            acknowledge_result_loss,
             timeout,
             kill_after,
             cwd,
@@ -1208,6 +1295,8 @@ fn run(cli: Cli) -> Result<()> {
             rtk,
             command,
         } => {
+            reject_legacy_timeout_or_exit(timeout);
+            require_result_loss_acknowledgement_or_exit(abandon_job_after, acknowledge_result_loss);
             let config_path = config.clone();
             let cfg = agent_exec::config::resolve_config(config_path.as_deref())?;
             let auto_gc = AutoGcOptions {
@@ -1228,7 +1317,7 @@ fn run(cli: Cli) -> Result<()> {
             }
             .resolve(&cfg);
             let definition = DefinitionOptions {
-                timeout,
+                abandon_job_after,
                 kill_after,
                 cwd,
                 env_vars,
@@ -1264,7 +1353,8 @@ fn run(cli: Cli) -> Result<()> {
                 forever: inline.forever,
                 max_bytes: inline.max_bytes,
                 compression_mode: inline.compression_mode,
-                timeout_ms: definition.timeout_ms,
+                abandon_job_after_ms: definition.abandon_job_after_ms,
+                acknowledge_result_loss: true,
                 kill_after_ms: definition.kill_after_ms,
                 cwd: definition.cwd.as_deref(),
                 env_vars: definition.env_vars,

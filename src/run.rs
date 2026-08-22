@@ -68,8 +68,18 @@ pub struct RunOpts<'a> {
     /// Maximum bytes to include from the head of each stream.
     pub max_bytes: u64,
     pub compression_mode: crate::compress::CompressionMode,
-    /// Timeout in milliseconds; 0 = no timeout.
-    pub timeout_ms: u64,
+    /// WARNING: Gives up on the job, terminates it, and may permanently lose
+    /// unfinished results. Use `until_seconds` to stop waiting without stopping
+    /// the job.
+    ///
+    /// Runtime-abandonment limit in milliseconds; `0` = unlimited (the default).
+    /// Any nonzero value requires [`RunOpts::acknowledge_result_loss`].
+    pub abandon_job_after_ms: u64,
+    /// Explicit acknowledgement that abandonment may lose unfinished results.
+    ///
+    /// Required when [`RunOpts::abandon_job_after_ms`] is nonzero; the launch is
+    /// rejected before the job directory is created otherwise.
+    pub acknowledge_result_loss: bool,
     /// Milliseconds after SIGTERM before SIGKILL; 0 = immediate SIGKILL.
     pub kill_after_ms: u64,
     /// Working directory for the command.
@@ -131,7 +141,8 @@ impl<'a> Default for RunOpts<'a> {
             forever: false,
             max_bytes: 65536,
             compression_mode: crate::compress::CompressionMode::default(),
-            timeout_ms: 0,
+            abandon_job_after_ms: 0,
+            acknowledge_result_loss: false,
             kill_after_ms: 0,
             cwd: None,
             env_vars: vec![],
@@ -181,7 +192,9 @@ pub struct SpawnSupervisorParams {
     pub job_id: String,
     pub root: std::path::PathBuf,
     pub full_log_path: String,
-    pub timeout_ms: u64,
+    /// Already-admitted runtime-abandonment limit in milliseconds; 0 = unlimited.
+    /// Handed to the private supervisor over its unchanged `--timeout` wire flag.
+    pub abandon_job_after_ms: u64,
     pub kill_after_ms: u64,
     pub cwd: Option<String>,
     /// Real (unmasked) KEY=VALUE env var pairs.
@@ -402,6 +415,110 @@ impl std::fmt::Display for StdinTooLarge {
 
 impl std::error::Error for StdinTooLarge {}
 
+/// First sentence of every public description of `abandon-job-after`.
+///
+/// Naming is the first warning; this is the second. Every launch surface — CLI
+/// help, MCP schema, HTTP schema, and the public Rust API docs — begins its
+/// description of the control with this text so no caller can reach it while
+/// still believing it merely bounds observation.
+pub const ABANDON_JOB_AFTER_WARNING: &str = "WARNING: Gives up on the job, terminates it, and may permanently lose unfinished results. Use until to stop waiting without stopping the job.";
+
+/// Sentinel error type for an unacknowledged destructive launch request.
+///
+/// Raised before any job directory is created, so a rejected request never
+/// leaves a persisted definition behind. Callers map it to the stable
+/// `result_loss_not_acknowledged` error code.
+#[derive(Debug)]
+pub struct ResultLossNotAcknowledged(pub String);
+
+impl std::fmt::Display for ResultLossNotAcknowledged {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for ResultLossNotAcknowledged {}
+
+/// Sentinel error type for a removed public `timeout` launch input.
+///
+/// The old spelling is a migration trap, never an alias: it is rejected before
+/// job creation and can no longer launch a workload. Callers map it to the
+/// stable `removed_option` error code.
+#[derive(Debug)]
+pub struct LegacyTimeoutInput(pub String);
+
+impl std::fmt::Display for LegacyTimeoutInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for LegacyTimeoutInput {}
+
+/// Migration guidance for a removed public `timeout` input on `surface`.
+///
+/// The message names both safe replacements so the caller can pick by intent:
+/// the destructive control for deliberate abandonment, and the non-destructive
+/// observation bound for merely wanting to stop waiting.
+pub fn legacy_timeout_migration_message(
+    legacy_input: &str,
+    abandon_input: &str,
+    acknowledge_input: &str,
+    until_input: &str,
+) -> String {
+    format!(
+        "{legacy_input} has been removed because it did not say which lifetime it limited. \
+         To give up on the job and terminate it, accepting that unfinished results may be \
+         permanently lost, use {abandon_input} together with {acknowledge_input}. To stop \
+         waiting without stopping the job, use {until_input}."
+    )
+}
+
+/// Guidance for a destructive launch request that carries no acknowledgement.
+pub fn result_loss_acknowledgement_message(
+    abandon_input: &str,
+    acknowledge_input: &str,
+    until_input: &str,
+) -> String {
+    format!(
+        "{ABANDON_JOB_AFTER_WARNING} {abandon_input} therefore requires {acknowledge_input}. \
+         Re-run with {acknowledge_input} to accept losing unfinished results, or use \
+         {until_input} to stop waiting without stopping the job."
+    )
+}
+
+/// Admission rule for the destructive runtime-abandonment control.
+///
+/// A zero limit is not destructive and needs no acknowledgement; any nonzero
+/// limit does. Kept free of I/O so the decision is directly unit-testable.
+pub fn validate_result_loss_acknowledgement(
+    abandon_job_after_ms: u64,
+    acknowledge_result_loss: bool,
+    abandon_input: &str,
+    acknowledge_input: &str,
+    until_input: &str,
+) -> Result<(), ResultLossNotAcknowledged> {
+    if abandon_job_after_ms > 0 && !acknowledge_result_loss {
+        return Err(ResultLossNotAcknowledged(
+            result_loss_acknowledgement_message(abandon_input, acknowledge_input, until_input),
+        ));
+    }
+    Ok(())
+}
+
+/// CLI spellings of the abandonment admission inputs.
+pub const CLI_ABANDON_INPUT: &str = "--abandon-job-after";
+/// CLI spelling of the result-loss acknowledgement flag.
+pub const CLI_ACKNOWLEDGE_INPUT: &str = "--acknowledge-result-loss";
+/// CLI spelling of the non-destructive observation bound.
+pub const CLI_UNTIL_INPUT: &str = "--until";
+/// Structured (MCP/HTTP/embedded) spelling of the abandonment control.
+pub const API_ABANDON_INPUT: &str = "abandon_job_after";
+/// Structured spelling of the result-loss acknowledgement.
+pub const API_ACKNOWLEDGE_INPUT: &str = "acknowledge_result_loss";
+/// Structured spelling of the non-destructive observation bound.
+pub const API_UNTIL_INPUT: &str = "until";
+
 /// Sentinel error type for supervisor launch failures.
 ///
 /// Raised when the selected supervisor executable cannot be spawned, exits
@@ -499,6 +616,8 @@ fn write_launch_failed_state(job_dir: &JobDir) -> Result<()> {
         finished_at: Some(now.clone()),
         updated_at: now,
         logs_drained: true,
+        abandoned_by: None,
+        result_loss: None,
         windows_job_name: None,
     };
     job_dir.write_state(&state)
@@ -656,6 +775,78 @@ pub fn reap_spawned_child(mut child: std::process::Child) {
 #[cfg(not(unix))]
 pub fn reap_spawned_child(_child: std::process::Child) {}
 
+/// Build the reserved supervisor invocation for `params`, excluding the
+/// executable itself.
+///
+/// Split out of [`spawn_supervisor_process`] so this producer and its private
+/// consumer, `SuperviseArgs::parse` in [`crate::embedded`], can be tested
+/// against each other without spawning a process. The grammar is private: the
+/// runtime-abandonment limit deliberately keeps its original `--timeout` wire
+/// spelling so the internal handoff never becomes a second public migration
+/// surface.
+pub fn supervisor_argv(params: &SpawnSupervisorParams) -> Result<Vec<std::ffi::OsString>> {
+    let mut argv: Vec<std::ffi::OsString> = vec![
+        crate::embedded::SUPERVISOR_MARKER.into(),
+        "--job-id".into(),
+        params.job_id.clone().into(),
+        "--supervise-root".into(),
+        params.root.display().to_string().into(),
+        "--full-log".into(),
+        params.full_log_path.clone().into(),
+    ];
+
+    if params.abandon_job_after_ms > 0 {
+        let abandon_job_after_seconds = params.abandon_job_after_ms.saturating_add(999) / 1000;
+        argv.push("--timeout".into());
+        argv.push(abandon_job_after_seconds.to_string().into());
+    }
+    if params.kill_after_ms > 0 {
+        let kill_after_seconds = params.kill_after_ms.saturating_add(999) / 1000;
+        argv.push("--kill-after".into());
+        argv.push(kill_after_seconds.to_string().into());
+    }
+    if let Some(ref cwd) = params.cwd {
+        argv.push("--cwd".into());
+        argv.push(cwd.clone().into());
+    }
+    for env_file in &params.env_files {
+        argv.push("--env-file".into());
+        argv.push(env_file.clone().into());
+    }
+    for env_var in &params.env_vars {
+        argv.push("--env".into());
+        argv.push(env_var.clone().into());
+    }
+    if !params.inherit_env {
+        argv.push("--no-inherit-env".into());
+    }
+    if let Some(ref stdin_file) = params.stdin_file {
+        argv.push("--stdin-file".into());
+        argv.push(stdin_file.clone().into());
+    }
+    if params.progress_every_ms > 0 {
+        let progress_every_seconds = params.progress_every_ms.saturating_add(999) / 1000;
+        argv.push("--progress-every".into());
+        argv.push(progress_every_seconds.to_string().into());
+    }
+    if let Some(ref nc) = params.notify_command {
+        argv.push("--notify-command".into());
+        argv.push(nc.clone().into());
+    }
+    if let Some(ref nf) = params.notify_file {
+        argv.push("--notify-file".into());
+        argv.push(nf.clone().into());
+    }
+    let wrapper_json =
+        serde_json::to_string(&params.shell_wrapper).context("serialize shell wrapper")?;
+    argv.push("--shell-wrapper-resolved".into());
+    argv.push(wrapper_json.into());
+
+    argv.push("--".into());
+    argv.extend(params.command.iter().map(std::ffi::OsString::from));
+    Ok(argv)
+}
+
 /// Re-execute the selected supervisor executable and wait for it to acknowledge startup.
 ///
 /// The caller MUST have persisted the job's `created` state before calling this;
@@ -671,62 +862,7 @@ pub fn spawn_supervisor_process(
 ) -> Result<(u32, String)> {
     let mut supervisor_cmd = Command::new(&params.supervisor_exe);
     supervisor_cmd
-        .arg(crate::embedded::SUPERVISOR_MARKER)
-        .arg("--job-id")
-        .arg(&params.job_id)
-        .arg("--supervise-root")
-        .arg(params.root.display().to_string())
-        .arg("--full-log")
-        .arg(&params.full_log_path);
-
-    if params.timeout_ms > 0 {
-        let timeout_seconds = params.timeout_ms.saturating_add(999) / 1000;
-        supervisor_cmd
-            .arg("--timeout")
-            .arg(timeout_seconds.to_string());
-    }
-    if params.kill_after_ms > 0 {
-        let kill_after_seconds = params.kill_after_ms.saturating_add(999) / 1000;
-        supervisor_cmd
-            .arg("--kill-after")
-            .arg(kill_after_seconds.to_string());
-    }
-    if let Some(ref cwd) = params.cwd {
-        supervisor_cmd.arg("--cwd").arg(cwd);
-    }
-    for env_file in &params.env_files {
-        supervisor_cmd.arg("--env-file").arg(env_file);
-    }
-    for env_var in &params.env_vars {
-        supervisor_cmd.arg("--env").arg(env_var);
-    }
-    if !params.inherit_env {
-        supervisor_cmd.arg("--no-inherit-env");
-    }
-    if let Some(ref stdin_file) = params.stdin_file {
-        supervisor_cmd.arg("--stdin-file").arg(stdin_file);
-    }
-    if params.progress_every_ms > 0 {
-        let progress_every_seconds = params.progress_every_ms.saturating_add(999) / 1000;
-        supervisor_cmd
-            .arg("--progress-every")
-            .arg(progress_every_seconds.to_string());
-    }
-    if let Some(ref nc) = params.notify_command {
-        supervisor_cmd.arg("--notify-command").arg(nc);
-    }
-    if let Some(ref nf) = params.notify_file {
-        supervisor_cmd.arg("--notify-file").arg(nf);
-    }
-    let wrapper_json =
-        serde_json::to_string(&params.shell_wrapper).context("serialize shell wrapper")?;
-    supervisor_cmd
-        .arg("--shell-wrapper-resolved")
-        .arg(&wrapper_json);
-
-    supervisor_cmd
-        .arg("--")
-        .args(&params.command)
+        .args(supervisor_argv(&params)?)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
@@ -831,6 +967,16 @@ pub fn run_response(opts: RunOpts) -> Result<Response<RunData>> {
         anyhow::bail!("no command specified for run");
     }
 
+    // Admission runs before the jobs root or any job directory is touched, so a
+    // rejected destructive request leaves nothing persisted behind.
+    validate_result_loss_acknowledgement(
+        opts.abandon_job_after_ms,
+        opts.acknowledge_result_loss,
+        API_ABANDON_INPUT,
+        API_ACKNOWLEDGE_INPUT,
+        API_UNTIL_INPUT,
+    )?;
+
     let elapsed_start = std::time::Instant::now();
 
     let root = resolve_root(opts.root);
@@ -897,7 +1043,10 @@ pub fn run_response(opts: RunOpts) -> Result<Response<RunData>> {
         // Execution-definition fields (used by start if ever applicable).
         inherit_env: opts.inherit_env,
         env_files: opts.env_files.clone(),
-        timeout_ms: opts.timeout_ms,
+        // Dual-written for one migration release so an older binary reading only
+        // `timeout_ms` preserves the same limit; see `JobMeta::set_abandon_job_after_ms`.
+        abandon_job_after_ms: Some(opts.abandon_job_after_ms),
+        timeout_ms: Some(opts.abandon_job_after_ms),
         kill_after_ms: opts.kill_after_ms,
         progress_every_ms: opts.progress_every_ms,
         shell_wrapper: Some(opts.shell_wrapper.clone()),
@@ -948,7 +1097,7 @@ pub fn run_response(opts: RunOpts) -> Result<Response<RunData>> {
             job_id: job_id.clone(),
             root: root.clone(),
             full_log_path: full_log_path.clone(),
-            timeout_ms: opts.timeout_ms,
+            abandon_job_after_ms: opts.abandon_job_after_ms,
             kill_after_ms: opts.kill_after_ms,
             cwd: opts.cwd.map(|s| s.to_string()),
             env_vars: opts.env_vars.clone(),
@@ -1043,8 +1192,11 @@ pub struct SuperviseOpts<'a> {
     pub command: &'a [String],
     /// Override full.log path; None = use job dir default.
     pub full_log: Option<&'a str>,
-    /// Timeout in milliseconds; 0 = no timeout.
-    pub timeout_ms: u64,
+    /// Already-admitted runtime-abandonment limit in milliseconds; 0 = unlimited.
+    ///
+    /// The supervisor is an internal boundary, not a public admission boundary:
+    /// result-loss acknowledgement was enforced when the definition was created.
+    pub abandon_job_after_ms: u64,
     /// Milliseconds after SIGTERM before SIGKILL; 0 = immediate SIGKILL.
     pub kill_after_ms: u64,
     /// Working directory for the child process.
@@ -1708,6 +1860,8 @@ fn supervise_inner(opts: SuperviseOpts, job_dir: &JobDir, acknowledged: &mut boo
                     finished_at: Some(now_rfc3339()),
                     updated_at: now_rfc3339(),
                     logs_drained: true,
+                    abandoned_by: None,
+                    result_loss: None,
                     windows_job_name: None,
                 };
                 // Best-effort: if writing state fails, we still propagate the
@@ -1734,6 +1888,9 @@ fn supervise_inner(opts: SuperviseOpts, job_dir: &JobDir, acknowledged: &mut boo
                         duration_ms: None,
                         exit_code: None,
                         signal: None,
+                        // A launch that never ran a workload cannot have abandoned one.
+                        abandoned_by: None,
+                        result_loss: None,
                         stdout_log_path: stdout_log,
                         stderr_log_path: stderr_log,
                     };
@@ -1816,6 +1973,8 @@ fn supervise_inner(opts: SuperviseOpts, job_dir: &JobDir, acknowledged: &mut boo
         finished_at: None,
         updated_at: now_rfc3339(),
         logs_drained: true,
+        abandoned_by: None,
+        result_loss: None,
         windows_job_name,
     };
     job_dir.write_state(&state)?;
@@ -1869,9 +2028,9 @@ fn supervise_inner(opts: SuperviseOpts, job_dir: &JobDir, acknowledged: &mut boo
         let _ = tx_stderr_done.send(());
     });
 
-    // Timeout / kill-after / progress-every handling.
-    // We spawn a watcher thread to handle timeout and periodic state.json updates.
-    let timeout_ms = opts.timeout_ms;
+    // Abandon-job-after / kill-after / progress-every handling.
+    // We spawn a watcher thread to handle abandonment and periodic state.json updates.
+    let abandon_job_after_ms = opts.abandon_job_after_ms;
     let kill_after_ms = opts.kill_after_ms;
     let progress_every_ms = opts.progress_every_ms;
     let watcher_job_dir = JobDir {
@@ -1883,13 +2042,17 @@ fn supervise_inner(opts: SuperviseOpts, job_dir: &JobDir, acknowledged: &mut boo
     // Use an atomic flag to signal the watcher thread when the child has exited.
     use std::sync::atomic::{AtomicBool, Ordering};
     let child_done = Arc::new(AtomicBool::new(false));
+    // Set only when the configured limit actually fired. A limit that never
+    // fired must not mark the terminal result as abandoned.
+    let abandoned = Arc::new(AtomicBool::new(false));
 
-    let watcher = if timeout_ms > 0 || progress_every_ms > 0 {
+    let watcher = if abandon_job_after_ms > 0 || progress_every_ms > 0 {
         let child_done_clone = Arc::clone(&child_done);
+        let abandoned_clone = Arc::clone(&abandoned);
         Some(std::thread::spawn(move || {
             let start = std::time::Instant::now();
-            let timeout_dur = if timeout_ms > 0 {
-                Some(std::time::Duration::from_millis(timeout_ms))
+            let abandon_dur = if abandon_job_after_ms > 0 {
+                Some(std::time::Duration::from_millis(abandon_job_after_ms))
             } else {
                 None
             };
@@ -1911,11 +2074,14 @@ fn supervise_inner(opts: SuperviseOpts, job_dir: &JobDir, acknowledged: &mut boo
 
                 let elapsed = start.elapsed();
 
-                // Check for timeout.
-                if let Some(td) = timeout_dur
+                // Check whether the abandonment limit has been reached.
+                if let Some(td) = abandon_dur
                     && elapsed >= td
                 {
-                    info!(job_id = %job_id_str, "timeout reached, sending SIGTERM to process group");
+                    // SeqCst so the terminal-state writer below observes the flag
+                    // that was set before the signal that ended the child.
+                    abandoned_clone.store(true, Ordering::SeqCst);
+                    info!(job_id = %job_id_str, "abandon-job-after reached, sending SIGTERM to process group");
                     // Send SIGTERM to the entire process group (negative PID).
                     // The child was placed in its own session/group via setsid.
                     #[cfg(unix)]
@@ -1989,6 +2155,18 @@ fn supervise_inner(opts: SuperviseOpts, job_dir: &JobDir, acknowledged: &mut boo
     #[cfg(not(unix))]
     let (terminal_status, signal_name) = (JobStatus::Exited, None::<String>);
 
+    // The terminal state value itself is unchanged by this contract; abandonment
+    // is identified by additive provenance markers instead. A configured limit
+    // that never fired leaves both markers absent.
+    let (abandoned_by, result_loss) = if abandoned.load(Ordering::SeqCst) {
+        (
+            Some(crate::schema::ABANDONED_BY_ABANDON_JOB_AFTER.to_string()),
+            Some(true),
+        )
+    } else {
+        (None, None)
+    };
+
     let mut state = JobState {
         job: JobStateJob {
             id: job_id.to_string(),
@@ -2004,6 +2182,8 @@ fn supervise_inner(opts: SuperviseOpts, job_dir: &JobDir, acknowledged: &mut boo
         finished_at: Some(finished_at.clone()),
         updated_at: now_rfc3339(),
         logs_drained: false,
+        abandoned_by: abandoned_by.clone(),
+        result_loss,
         windows_job_name: None, // not needed after process exits
     };
     job_dir.write_state(&state)?;
@@ -2075,6 +2255,8 @@ fn supervise_inner(opts: SuperviseOpts, job_dir: &JobDir, acknowledged: &mut boo
             duration_ms: Some(duration_ms),
             exit_code,
             signal: signal_name,
+            abandoned_by,
+            result_loss,
             stdout_log_path: stdout_log,
             stderr_log_path: stderr_log,
         };
@@ -2485,6 +2667,67 @@ fn assign_to_job_object(job_id: &str, pid: u32) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn abandon_job_after_zero_needs_no_acknowledgement() {
+        // The default is unlimited, which is not destructive.
+        assert!(
+            validate_result_loss_acknowledgement(
+                0,
+                false,
+                CLI_ABANDON_INPUT,
+                CLI_ACKNOWLEDGE_INPUT,
+                CLI_UNTIL_INPUT,
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn abandon_job_after_nonzero_requires_acknowledgement() {
+        let err = validate_result_loss_acknowledgement(
+            1,
+            false,
+            CLI_ABANDON_INPUT,
+            CLI_ACKNOWLEDGE_INPUT,
+            CLI_UNTIL_INPUT,
+        )
+        .expect_err("a nonzero limit without acknowledgement must be rejected");
+        let message = err.to_string();
+        assert!(message.starts_with(ABANDON_JOB_AFTER_WARNING), "{message}");
+        for expected in [CLI_ACKNOWLEDGE_INPUT, CLI_UNTIL_INPUT] {
+            assert!(message.contains(expected), "{message}");
+        }
+
+        assert!(
+            validate_result_loss_acknowledgement(
+                1,
+                true,
+                CLI_ABANDON_INPUT,
+                CLI_ACKNOWLEDGE_INPUT,
+                CLI_UNTIL_INPUT,
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn abandon_job_after_legacy_migration_message_names_both_alternatives() {
+        let message = legacy_timeout_migration_message(
+            "--timeout",
+            CLI_ABANDON_INPUT,
+            CLI_ACKNOWLEDGE_INPUT,
+            CLI_UNTIL_INPUT,
+        );
+        for expected in [
+            "--timeout",
+            CLI_ABANDON_INPUT,
+            CLI_ACKNOWLEDGE_INPUT,
+            CLI_UNTIL_INPUT,
+        ] {
+            assert!(message.contains(expected), "{message}");
+        }
+    }
 
     #[test]
     fn rfc3339_epoch() {

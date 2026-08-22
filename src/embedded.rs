@@ -10,7 +10,7 @@
 //!
 //! Managed jobs stay managed because supervision runs in a **detached process**,
 //! not an in-process thread: the supervisor owns the workload's stdout/stderr,
-//! timeout escalation, notifications, state updates, and process-tree cleanup
+//! abandonment escalation, notifications, state updates, and process-tree cleanup
 //! long after the launching call returns. Running it in-process would tie job
 //! lifetime to the embedding process, so the embedded launcher always
 //! re-executes a supervisor executable.
@@ -283,9 +283,19 @@ pub struct RunRequest {
     pub forever: bool,
     /// Maximum bytes taken from the head of each stream for the response.
     pub max_bytes: u64,
-    /// Workload timeout in milliseconds; 0 = no timeout.
-    pub timeout_ms: u64,
-    /// Milliseconds between SIGTERM and SIGKILL on timeout; 0 = immediate SIGKILL.
+    /// WARNING: Gives up on the job, terminates it, and may permanently lose
+    /// unfinished results. Use [`RunRequest::until_seconds`] to stop waiting
+    /// without stopping the job.
+    ///
+    /// Runtime-abandonment limit in milliseconds; `0` = unlimited (the default).
+    /// Any nonzero value requires [`RunRequest::acknowledge_result_loss`].
+    pub abandon_job_after_ms: u64,
+    /// Explicit acknowledgement that abandonment may lose unfinished results.
+    ///
+    /// Required when [`RunRequest::abandon_job_after_ms`] is nonzero; the launch
+    /// is rejected before the job directory is created otherwise.
+    pub acknowledge_result_loss: bool,
+    /// Milliseconds between SIGTERM and SIGKILL on abandonment; 0 = immediate SIGKILL.
     pub kill_after_ms: u64,
     /// Working directory for the workload.
     pub cwd: Option<String>,
@@ -340,7 +350,8 @@ impl Default for RunRequest {
             until_seconds: cli_defaults.until_seconds,
             forever: cli_defaults.forever,
             max_bytes: cli_defaults.max_bytes,
-            timeout_ms: cli_defaults.timeout_ms,
+            abandon_job_after_ms: cli_defaults.abandon_job_after_ms,
+            acknowledge_result_loss: cli_defaults.acknowledge_result_loss,
             kill_after_ms: cli_defaults.kill_after_ms,
             cwd: None,
             env_vars: Vec::new(),
@@ -568,7 +579,8 @@ impl EmbeddedClient {
             forever: request.forever,
             max_bytes: request.max_bytes,
             compression_mode: request.compression_mode,
-            timeout_ms: request.timeout_ms,
+            abandon_job_after_ms: request.abandon_job_after_ms,
+            acknowledge_result_loss: request.acknowledge_result_loss,
             kill_after_ms: request.kill_after_ms,
             cwd: request.cwd.as_deref(),
             env_vars: request.env_vars,
@@ -699,6 +711,12 @@ struct SuperviseArgs {
     job_id: Option<String>,
     supervise_root: Option<String>,
     full_log: Option<String>,
+    /// Already-admitted runtime-abandonment limit in seconds, received over the
+    /// private `--timeout` wire flag.
+    ///
+    /// The wire spelling deliberately stays `--timeout`: this handoff is not a
+    /// public surface, so renaming it would only create a second migration
+    /// surface. The producer is [`crate::run::spawn_supervisor_process`].
     timeout: Option<u64>,
     kill_after: Option<u64>,
     cwd: Option<String>,
@@ -817,7 +835,7 @@ impl SuperviseArgs {
             root: root.as_path(),
             command: &self.command,
             full_log: self.full_log.as_deref(),
-            timeout_ms: self.timeout.unwrap_or(0).saturating_mul(1000),
+            abandon_job_after_ms: self.timeout.unwrap_or(0).saturating_mul(1000),
             kill_after_ms: self.kill_after.unwrap_or(0).saturating_mul(1000),
             cwd: self.cwd.as_deref(),
             env_vars: self.env_vars.clone(),
@@ -1104,6 +1122,86 @@ mod tests {
         assert!(parsed.no_inherit_env);
         assert_eq!(parsed.progress_every, Some(1));
         assert_eq!(parsed.command, vec!["echo hello".to_string()]);
+    }
+
+    /// The producer of the private supervisor invocation and this parser must
+    /// stay mutually consistent by construction.
+    ///
+    /// Building the argv through [`crate::run::supervisor_argv`] rather than
+    /// hand-writing it means a rename on either side of the private
+    /// `abandon_job_after_ms` -> `--timeout` -> `SuperviseOpts` chain fails to
+    /// compile or fails here, instead of only failing at runtime.
+    #[test]
+    fn abandon_job_after_survives_the_private_supervisor_handoff() {
+        let params = crate::run::SpawnSupervisorParams {
+            supervisor_exe: PathBuf::from("/nonexistent/agent-exec"),
+            job_id: "abc123".to_string(),
+            root: PathBuf::from("/tmp/root"),
+            full_log_path: "/tmp/root/abc123/full.log".to_string(),
+            abandon_job_after_ms: 5_000,
+            kill_after_ms: 2_000,
+            cwd: None,
+            env_vars: vec![],
+            env_files: vec![],
+            inherit_env: true,
+            stdin_file: None,
+            progress_every_ms: 0,
+            notify_command: None,
+            notify_file: None,
+            shell_wrapper: vec!["sh".to_string(), "-lc".to_string()],
+            command: vec!["echo hello".to_string()],
+        };
+
+        // The generated argv carries the marker plus the flags; the parser sees
+        // everything after the marker.
+        let generated = crate::run::supervisor_argv(&params).expect("generate supervisor argv");
+        assert_eq!(generated[0], std::ffi::OsString::from(SUPERVISOR_MARKER));
+        assert!(
+            generated.contains(&std::ffi::OsString::from("--timeout")),
+            "the private wire spelling must stay --timeout: {generated:?}"
+        );
+        assert!(
+            !generated.contains(&std::ffi::OsString::from("--abandon-job-after")),
+            "the private handoff must not gain a second public spelling: {generated:?}"
+        );
+
+        let parsed = SuperviseArgs::parse(&generated[1..]).expect("generated grammar must parse");
+        assert_eq!(parsed.timeout, Some(5));
+        assert_eq!(parsed.kill_after, Some(2));
+        assert_eq!(
+            parsed.timeout.unwrap_or(0).saturating_mul(1000),
+            params.abandon_job_after_ms,
+            "the admitted limit must survive the handoff unchanged"
+        );
+    }
+
+    /// A zero limit means unlimited, so no runtime-limit flag is handed off and
+    /// the supervisor resolves it back to zero.
+    #[test]
+    fn abandon_job_after_zero_omits_the_private_runtime_limit_flag() {
+        let params = crate::run::SpawnSupervisorParams {
+            supervisor_exe: PathBuf::from("/nonexistent/agent-exec"),
+            job_id: "abc123".to_string(),
+            root: PathBuf::from("/tmp/root"),
+            full_log_path: "/tmp/root/abc123/full.log".to_string(),
+            abandon_job_after_ms: 0,
+            kill_after_ms: 0,
+            cwd: None,
+            env_vars: vec![],
+            env_files: vec![],
+            inherit_env: true,
+            stdin_file: None,
+            progress_every_ms: 0,
+            notify_command: None,
+            notify_file: None,
+            shell_wrapper: vec!["sh".to_string(), "-lc".to_string()],
+            command: vec!["echo hello".to_string()],
+        };
+        let generated = crate::run::supervisor_argv(&params).expect("generate supervisor argv");
+        assert!(!generated.contains(&std::ffi::OsString::from("--timeout")));
+        let parsed = SuperviseArgs::parse(&generated[1..]).expect("generated grammar must parse");
+        assert_eq!(parsed.timeout, None);
+        assert_eq!(parsed.timeout.unwrap_or(0).saturating_mul(1000), 0);
     }
 
     #[test]
