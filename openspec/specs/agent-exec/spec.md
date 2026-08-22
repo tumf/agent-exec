@@ -224,7 +224,7 @@ And stdout が JSON-only である旨が明記されている
 `run` はジョブを起動し、既定で最大 10 秒待機して inline output を返さなければならない（MUST）。
 `--no-wait` が指定された場合は即時返却しなければならない（MUST）。
 `--wait`、`--until`、`--forever`、`--no-wait`、`--max-bytes` を受け付けなければならない（MUST）。
-`run`/`create`/`_supervise` の runtime 制御時間オプション（`--timeout`、`--kill-after`、`--progress-every`）は人間向け契約として秒単位で提示されなければならない（MUST）。
+`run`/`create` の runtime 制御時間オプション（`--abandon-job-after`、`--kill-after`、`--progress-every`）は人間向け契約として秒単位で提示されなければならない（MUST）。private `_supervise` handoff は公開 surface ではなく、その秒単位 `--timeout` wire spelling を維持しなければならない（MUST）。
 
 #### Scenario: run は既定待機で inline output を返す
 
