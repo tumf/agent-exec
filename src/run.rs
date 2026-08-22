@@ -1714,6 +1714,14 @@ fn supervise_inner(opts: SuperviseOpts, job_dir: &JobDir, acknowledged: &mut boo
         );
     }
     *acknowledged = true;
+
+    // Author (or re-arm) the abandonment control *before* publishing `running`.
+    // Ordering is the compatibility contract: once a job is observable as
+    // running under this supervisor, its control record exists, so a running job
+    // without one can only be owned by a supervisor that predates the mutable
+    // control and must reject deadline changes instead of faking them.
+    crate::abandon::prepare_launch_control(job_dir, opts.abandon_job_after_ms)?;
+
     job_dir.init_state(std::process::id(), &started_at)?;
 
     // Execute command through the shell wrapper.
@@ -2028,9 +2036,12 @@ fn supervise_inner(opts: SuperviseOpts, job_dir: &JobDir, acknowledged: &mut boo
         let _ = tx_stderr_done.send(());
     });
 
-    // Abandon-job-after / kill-after / progress-every handling.
-    // We spawn a watcher thread to handle abandonment and periodic state.json updates.
-    let abandon_job_after_ms = opts.abandon_job_after_ms;
+    // Abandonment control observation / kill-after / progress-every handling.
+    //
+    // The observer runs for *every* managed workload, including unlimited jobs
+    // with progress reporting disabled: a deadline can be set at any time while
+    // the job runs, and a supervisor that only started watching when the launch
+    // definition carried a limit could never honour one.
     let kill_after_ms = opts.kill_after_ms;
     let progress_every_ms = opts.progress_every_ms;
     let watcher_job_dir = JobDir {
@@ -2039,76 +2050,73 @@ fn supervise_inner(opts: SuperviseOpts, job_dir: &JobDir, acknowledged: &mut boo
     };
     let job_id_str = job_id.to_string();
 
-    // Use an atomic flag to signal the watcher thread when the child has exited.
+    // Child completion is published through a condition variable rather than a
+    // polled flag. The observer now runs for every workload, so its shutdown
+    // latency became the supervisor's shutdown latency: a poll-only watcher
+    // would keep the supervisor alive for up to one cadence after the workload
+    // exited, widening the window in which a late `notify set` is still picked
+    // up at completion.
+    use std::sync::Condvar;
     use std::sync::atomic::{AtomicBool, Ordering};
-    let child_done = Arc::new(AtomicBool::new(false));
-    // Set only when the configured limit actually fired. A limit that never
+    let child_done = Arc::new((Mutex::new(false), Condvar::new()));
+    // Set only when the effective control actually fired. A control that never
     // fired must not mark the terminal result as abandoned.
     let abandoned = Arc::new(AtomicBool::new(false));
 
-    let watcher = if abandon_job_after_ms > 0 || progress_every_ms > 0 {
+    let watcher = {
         let child_done_clone = Arc::clone(&child_done);
         let abandoned_clone = Arc::clone(&abandoned);
-        Some(std::thread::spawn(move || {
+        std::thread::spawn(move || {
             let start = std::time::Instant::now();
-            let abandon_dur = if abandon_job_after_ms > 0 {
-                Some(std::time::Duration::from_millis(abandon_job_after_ms))
-            } else {
-                None
-            };
             let progress_dur = if progress_every_ms > 0 {
                 Some(std::time::Duration::from_millis(progress_every_ms))
             } else {
                 None
             };
 
+            // Bounded observation cadence: an update accepted at any instant is
+            // acted on within one interval.
             let poll_interval = std::time::Duration::from_millis(100);
 
             loop {
-                std::thread::sleep(poll_interval);
-
-                // Exit the watcher loop if the child process has finished.
-                if child_done_clone.load(Ordering::Relaxed) {
-                    break;
+                let (lock, cvar) = &*child_done_clone;
+                {
+                    let done = lock.lock().unwrap_or_else(|e| e.into_inner());
+                    let (done, _) = cvar
+                        .wait_timeout(done, poll_interval)
+                        .unwrap_or_else(|e| e.into_inner());
+                    // Exit the observer loop if the child process has finished.
+                    if *done {
+                        break;
+                    }
                 }
 
-                let elapsed = start.elapsed();
-
-                // Check whether the abandonment limit has been reached.
-                if let Some(td) = abandon_dur
-                    && elapsed >= td
+                // Re-read the durable control on every wake. A timer that merely
+                // expired is never a reason to signal: only the current locked
+                // revision decides, so an accepted update or clear is observed
+                // before the old deadline could act.
+                if let Some(control) = crate::abandon::read_control(&watcher_job_dir)
+                    && control.is_due(crate::abandon::now_unix_ms())
+                    && matches!(
+                        crate::abandon::try_trigger(
+                            &watcher_job_dir,
+                            control.revision,
+                            pid,
+                            crate::abandon::now_unix_ms(),
+                        ),
+                        Ok(crate::abandon::TriggerOutcome::Triggered)
+                    )
                 {
                     // SeqCst so the terminal-state writer below observes the flag
                     // that was set before the signal that ended the child.
                     abandoned_clone.store(true, Ordering::SeqCst);
-                    info!(job_id = %job_id_str, "abandon-job-after reached, sending SIGTERM to process group");
-                    // Send SIGTERM to the entire process group (negative PID).
-                    // The child was placed in its own session/group via setsid.
-                    #[cfg(unix)]
-                    {
-                        unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGTERM) };
-                    }
-                    // If kill_after > 0, wait kill_after ms then SIGKILL.
-                    if kill_after_ms > 0 {
-                        std::thread::sleep(std::time::Duration::from_millis(kill_after_ms));
-                        info!(job_id = %job_id_str, "kill-after elapsed, sending SIGKILL to process group");
-                        #[cfg(unix)]
-                        {
-                            unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) };
-                        }
-                    } else {
-                        // Immediate SIGKILL to the process group.
-                        #[cfg(unix)]
-                        {
-                            unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) };
-                        }
-                    }
+                    crate::abandon::signal_abandonment(&job_id_str, pid, kill_after_ms);
                     break;
                 }
 
                 // Progress-every: update updated_at periodically.
                 if let Some(pd) = progress_dur {
-                    let elapsed_ms = elapsed.as_millis() as u64;
+                    let elapsed_ms = start.elapsed().as_millis() as u64;
                     let pd_ms = pd.as_millis() as u64;
                     let poll_ms = poll_interval.as_millis() as u64;
                     if elapsed_ms % pd_ms < poll_ms {
@@ -2121,16 +2129,19 @@ fn supervise_inner(opts: SuperviseOpts, job_dir: &JobDir, acknowledged: &mut boo
                     }
                 }
             }
-        }))
-    } else {
-        None
+        })
     };
 
     // Wait for child to finish.
     let exit_status = child.wait().context("wait for child")?;
 
-    // Signal the watcher that the child has finished so it can exit its loop.
-    child_done.store(true, Ordering::Relaxed);
+    // Wake the observer immediately so it exits its loop without waiting out the
+    // current cadence interval.
+    {
+        let (lock, cvar) = &*child_done;
+        *lock.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        cvar.notify_all();
+    }
 
     // Persist terminal state immediately after the wrapped root process exits.
     // This must happen BEFORE joining log threads, because log threads block on
@@ -2224,10 +2235,8 @@ fn supervise_inner(opts: SuperviseOpts, job_dir: &JobDir, acknowledged: &mut boo
     state.updated_at = now_rfc3339();
     job_dir.write_state(&state)?;
 
-    // Join watcher if present; it exits promptly once child_done is set.
-    if let Some(w) = watcher {
-        let _ = w.join();
-    }
+    // Join the control observer; it exits promptly once child_done is set.
+    let _ = watcher.join();
 
     // Reload the latest notification config from meta.json to pick up any post-creation
     // updates (e.g. from `notify set` invoked after the job was launched).
@@ -2443,6 +2452,14 @@ fn dispatch_file_sink(file_path: &str, event_json: &str) -> crate::schema::SinkD
 /// Public alias so other modules can call the timestamp helper.
 pub fn now_rfc3339_pub() -> String {
     now_rfc3339()
+}
+
+/// Format whole Unix seconds as an RFC 3339 UTC timestamp.
+///
+/// Exposed so [`crate::abandon`] can build millisecond-precision deadlines on
+/// the same conversion this crate already uses everywhere else.
+pub fn format_rfc3339_pub(secs: u64) -> String {
+    format_rfc3339(secs)
 }
 
 fn now_rfc3339() -> String {

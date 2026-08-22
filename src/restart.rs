@@ -72,6 +72,19 @@ pub fn execute(opts: RestartOpts) -> Result<()> {
         "restarting job"
     );
 
+    // A supervisor that died between persisting `triggered` and signaling leaves
+    // a workload that is durably marked for abandonment but that nothing is
+    // going to abandon. Resume that transition here, before the restart
+    // termination path masks it, so the persisted decision is honoured rather
+    // than silently replaced by an ordinary restart.
+    if crate::abandon::recover_triggered_transition(&job_dir, meta.kill_after_ms)? {
+        info!(
+            job_id = %job_dir.job_id,
+            "resumed a persisted abandonment transition before restarting"
+        );
+    }
+
+    let state = job_dir.read_state()?;
     if *state.status() == JobStatus::Running {
         terminate_running_job(&job_dir, opts.signal)?;
     }

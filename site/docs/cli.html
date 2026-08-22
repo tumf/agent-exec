@@ -23,6 +23,7 @@
         <tr><th scope="row"><code>wait</code></th><td>Observe a job until a bounded deadline.</td></tr>
         <tr><th scope="row"><code>tail</code></th><td>Read bounded stdout and stderr excerpts.</td></tr>
         <tr><th scope="row"><code>kill</code></th><td>Explicitly stop a running job.</td></tr>
+        <tr><th scope="row"><code>abandon</code></th><td>Change (<code>abandon set --in &lt;SECONDS&gt; --acknowledge-result-loss</code>) or remove (<code>abandon clear</code>) a running job&#39;s abandonment deadline. <code>--in</code> is measured from durable acceptance of the update, not from job start.</td></tr>
         <tr><th scope="row"><code>delete</code></th><td>Delete one selected job unless it is running. <code>delete --all</code> deletes terminal jobs in the current directory and skips running or created jobs.</td></tr>
         <tr><th scope="row"><code>restart</code></th><td>Start a new execution from an existing job definition.</td></tr>
         <tr><th scope="row"><code>list</code> / <code>ps</code></th><td>List jobs, or only running jobs with <code>ps</code>.</td></tr>

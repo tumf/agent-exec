@@ -7,6 +7,51 @@ Removals, type changes, meaning changes, and newly required fields bump MAJOR.
 
 ## schema 0.3
 
+- A running job's abandonment deadline is no longer fixed at launch. Added
+  `agent-exec abandon set <job_id> --in <seconds> --acknowledge-result-loss` and
+  `agent-exec abandon clear <job_id>`, with matching MCP `set_abandonment` /
+  `clear_abandonment` tools, HTTP `PUT /abandon/{job_id}` and
+  `DELETE /abandon/{job_id}`, and `EmbeddedClient::set_abandonment` /
+  `clear_abandonment`. `--in` / `abandon_in` is measured from durable acceptance
+  of the update, not from job start. Every set requires result-loss
+  acknowledgement because the resulting action is still destructive; clear never
+  signals the job and requires none. HTTP CORS preflight now permits `PUT` and
+  `DELETE`.
+- Added the `abandon_set` and `abandon_clear` response types, carrying the
+  durable `abandon_revision` the operation committed, its phase, the accepted
+  duration and absolute deadline, and `abandon_configured_by`.
+- Added optional `abandon_job_after_ms`, `abandon_deadline`,
+  `abandon_remaining_ms`, `abandon_revision`, and `abandon_configured_by` to
+  `status` (`StatusResponse`). They project the deadline the supervisor will
+  actually act on rather than the one the job was defined with. All five are
+  null when no supervisor-authored control record exists; duration, deadline,
+  and remaining time are also null when the control is disabled, and remaining
+  time is null for terminal jobs. `abandon_remaining_ms` is computed at response
+  time, clamped to the inclusive range `[0, abandon_job_after_ms]`, and is
+  advisory: firing is decided by the supervisor's locked control transition.
+  `status` stays read-only and never creates a control record.
+- Jobs now carry a revisioned job-local `abandon_control.json`, authored by the
+  supervisor before it publishes `running`. Updater and supervisor serialize
+  through advisory locking on a fixed-name `abandon.lock`, and the record is
+  replaced atomically. An update that commits first is observed before the old
+  deadline can signal; a trigger that commits first makes later updates fail
+  with `invalid_state` instead of claiming it prevented the abandonment.
+- A running job without a supervisor-authored control record — one launched by a
+  release that predates this contract — rejects set and clear with a stable
+  `invalid_state` error carrying restart guidance, and mutates nothing. Created,
+  terminal, and already-triggered jobs are rejected the same way.
+- The supervisor now runs its control observer for every managed workload,
+  including unlimited jobs with progress reporting disabled, so a deadline set
+  after launch is honoured. It re-reads the current locked revision before
+  signaling and never fires because a timer merely expired.
+- Restart re-arms a `launch`-configured control from its configured duration and
+  preserves the accepted absolute deadline and revision of an `update`-configured
+  one, so it never restores a launch-time deadline over a runtime change. A
+  transition persisted as `triggered` whose workload is still alive is resumed
+  rather than silently replaced.
+- Every accepted set/clear synchronizes both dual-written compatibility duration
+  fields; a clear writes zero to both, so a downgrade cannot resurrect a deadline
+  the operator removed.
 - Renamed the destructive launch control from `timeout` to `abandon-job-after`
   (`--abandon-job-after` on the CLI, `abandon_job_after` in MCP, HTTP `/exec`,
   and the public Rust request types). The old name did not say which lifetime it

@@ -133,7 +133,7 @@ State filters depend on the command:
 | `status`, `tail`, `restart`, `tag set`, `notify set` | All known job IDs; unreadable states may still appear |
 | `start` | `created` |
 | `wait` | `created`, `running` |
-| `kill` | `running` |
+| `kill`, `abandon set`, `abandon clear` | `running` |
 | `delete` | `exited`, `killed`, `failed` |
 
 Completion is advisory. Command implementations still validate the selected job and may support behavior not offered by completion.
@@ -265,6 +265,41 @@ configured limit that never fires adds neither marker.
 
 The removed `--timeout` spelling always fails with migration guidance and never
 launches a job.
+
+### Changing the deadline of a job that is already running
+
+A deadline chosen at launch often turns out to be wrong once you can see the job
+making progress. `abandon set` replaces it and `abandon clear` removes it, both
+against a job that is already running:
+
+```bash
+# Give a job that is already running 10 more minutes, measured from now.
+agent-exec abandon set <JOB_ID> --in 600 --acknowledge-result-loss
+
+# Remove the deadline entirely; the workload keeps running and is never signaled.
+agent-exec abandon clear <JOB_ID>
+```
+
+`--in` is measured from the moment the update is durably accepted, not from when
+the job started. Set is destructive for exactly the same reason `--abandon-job-after`
+is, so it requires `--acknowledge-result-loss`; clear is not, so it does not.
+
+Both operations are serialized against the supervisor's own deadline handling
+through a per-job lock, so the outcome is never ambiguous:
+
+- an update that commits first is observed before the old deadline can signal;
+- once abandonment has begun, a later update fails with `invalid_state` instead
+  of claiming it prevented an abandonment that had already started.
+
+A running job launched by a release older than this one has no supervisor-authored
+control record. Both operations reject it with `invalid_state` and tell you to
+`agent-exec restart` it, rather than reporting a change its supervisor will not
+honour. Created and terminal jobs are rejected the same way.
+
+Restart keeps whichever deadline is actually in force: a launch-configured limit
+is re-armed from its configured duration, while a deadline you set or cleared at
+runtime keeps its accepted absolute value and is never overwritten by the
+launch-time one.
 
 ### Argv-first invocation
 
@@ -447,8 +482,11 @@ Schema `0.3` adds execution context and observability derived from data the job 
 - timing: `updated_at`, live `elapsed_ms`, persisted terminal `duration_ms`, and `signal`
 - output: `logs_drained`, `stdout_log_path`, `stderr_log_path`, `stdout_total_bytes`, and `stderr_total_bytes`
 - abandonment provenance: `abandoned_by` and `result_loss`, present only when a configured `--abandon-job-after` limit actually terminated the job
+- effective abandonment control: `abandon_job_after_ms`, `abandon_deadline`, `abandon_remaining_ms`, `abandon_revision`, and `abandon_configured_by`
 
 `abandoned_by="abandon_job_after"` with `result_loss=true` identifies a job the caller gave up on, whose unfinished results may be lost. The terminal `state` value itself is unchanged, so existing clients keep working; both markers are absent when the limit never fired and for jobs recorded before the markers existed. The same pair appears in `list` and in the `job.finished` completion event.
+
+The `abandon_*` fields report the deadline the supervisor will actually act on, not the one the job was defined with, so they reflect any runtime `abandon set` / `abandon clear`. `abandon_configured_by` is `launch` or `update`. All five are null when the job has no supervisor-authored control record, which is how a running job launched by an older release identifies itself; duration, deadline, and remaining time are also null when the control is disabled, and remaining time is null for terminal jobs. `abandon_remaining_ms` is computed at response time and clamped to the inclusive range `[0, abandon_job_after_ms]`; it is diagnostic, because firing is decided by the supervisor's locked control transition rather than by this value. `status` remains read-only and never creates a control record.
 
 `state` is the persisted lifecycle state and `status` never rewrites it. `process_alive` is a separate best-effort, same-user-scoped probe that runs only for persisted `running` state; it is omitted otherwise, and omission means no live observation was made. A stale running job therefore appears as `state="running"` with `process_alive=false` here, and as `unknown` in `list`. The probe is not an authoritative liveness guarantee and does not defend against PID reuse.
 
@@ -701,6 +739,8 @@ Keep the default loopback bind unless remote access is required. For non-loopbac
 | `GET` | `/tail/{id}` | `tail` | Returns bounded `stdout` and `stderr` tails. |
 | `GET` | `/wait/{id}` | `wait --forever` | Blocks until a terminal state and returns bounded stdout/stderr output metadata. |
 | `POST` | `/kill/{id}` | `kill` | Sends `TERM`; `?no_wait=true` skips observation. |
+| `PUT` | `/abandon/{id}` | `abandon set` | Replaces a running job's abandonment deadline. |
+| `DELETE` | `/abandon/{id}` | `abandon clear` | Removes a running job's abandonment deadline. |
 
 HTTP responses use the same `schema_version`, `ok`, and `type` envelope fields as CLI responses.
 
@@ -720,6 +760,29 @@ HTTP responses use the same `schema_version`, `ok`, and `type` envelope fields a
 ```
 
 Only `command` is required. `abandon_job_after` gives up on the job and terminates it, and may permanently lose unfinished results; use `until` to stop waiting without stopping the job. Pass it as a nonnegative number of seconds; it may be fractional, and a non-null value requires `acknowledge_result_loss: true` or the request is rejected with HTTP 400 before a job is created. `until` must be a nonnegative integer number of seconds. `wait` defaults to `true`, `until` to `10`, and `max_bytes` to `65536`. The removed `timeout` and `timeout_ms` fields are rejected with migration guidance.
+
+### `PUT /abandon/{id}` and `DELETE /abandon/{id}`
+
+```json
+{
+  "abandon_in": 600,
+  "acknowledge_result_loss": true
+}
+```
+
+`PUT` replaces a running job's abandonment deadline; `abandon_in` is a nonnegative
+number of seconds measured from durable acceptance of the update, not from job
+start. Because it is destructive it requires `acknowledge_result_loss: true`, and a
+request without it is rejected with HTTP 400 `result_loss_not_acknowledged` before
+any control state is read or written. `DELETE` clears the deadline, takes no body,
+and requires no acknowledgement because it never signals the job.
+
+Both return the `abandon_set` / `abandon_clear` envelope with the durable
+`abandon_revision` the operation committed. A job that is not running, whose
+abandonment has already been triggered, or that has no supervisor-authored control
+record is rejected with HTTP 400 `invalid_state`; an unknown job is HTTP 404
+`job_not_found`. Both routes require the bearer token when one is configured, and
+CORS preflight permits `PUT` and `DELETE`.
 
 ### Docker client example
 
@@ -794,6 +857,8 @@ When MCP is unavailable, use `agent-exec run -- <command>` with CLI observation 
 | `tail` | `job_id: string`, `lines?: integer`, `max_bytes?: integer` | Reads bounded tails; defaults are 50 lines and 65,536 bytes. |
 | `wait` | `job_id: string`, `until?: integer` | Observes for a bounded duration and returns bounded stdout/stderr output metadata; the legacy omitted `until` is 30 seconds unless configured. Indefinite MCP waits are not supported. |
 | `kill` | `job_id: string` | Sends `TERM`. |
+| `set_abandonment` | `job_id: string`, `abandon_in: number`, `acknowledge_result_loss?: boolean` | Replaces a running job's abandonment deadline. `abandon_in` is seconds from durable acceptance of the update, not from job start. Gives up on the job and terminates it at that point, may permanently lose unfinished results, and requires `acknowledge_result_loss: true`. |
+| `clear_abandonment` | `job_id: string` | Removes a running job's abandonment deadline. Non-destructive: the job is never signaled, so no acknowledgement is required. |
 
 Retain the job ID returned by `run`. Closing the MCP transport, reaching an observation deadline, receiving no output, or encountering a tool error does not stop the job. Use `kill` only for explicit cancellation.
 

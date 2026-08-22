@@ -10031,3 +10031,1006 @@ fn abandon_job_after_public_docs_have_no_live_legacy_launch_syntax() {
         }
     }
 }
+
+// ── mutable running-job abandonment control ────────────────────────────────────
+//
+// A launch-time deadline is only the first value of a control that stays
+// mutable while the job runs. These tests hold the contract that makes changing
+// it safe: the supervisor authors the record, updater and supervisor linearize
+// through one lock, and no surface may report a change that the supervisor will
+// not honour. A metadata-only implementation fails every one of them.
+
+/// Path to a job's supervisor-authored abandonment control record.
+fn mutable_abandonment_control_path(h: &TestHarness, job_id: &str) -> std::path::PathBuf {
+    std::path::Path::new(h.root())
+        .join(job_id)
+        .join("abandon_control.json")
+}
+
+fn mutable_abandonment_read_control(h: &TestHarness, job_id: &str) -> serde_json::Value {
+    let path = mutable_abandonment_control_path(h, job_id);
+    serde_json::from_slice(&std::fs::read(&path).expect("read abandon_control.json"))
+        .expect("parse abandon_control.json")
+}
+
+fn mutable_abandonment_write_control(h: &TestHarness, job_id: &str, control: &serde_json::Value) {
+    std::fs::write(
+        mutable_abandonment_control_path(h, job_id),
+        serde_json::to_vec_pretty(control).expect("serialize control"),
+    )
+    .expect("write abandon_control.json");
+}
+
+/// Launch a detached long-running job and return its ID.
+fn mutable_abandonment_launch(h: &TestHarness, args: &[&str]) -> String {
+    let mut argv = vec!["run", "--no-wait"];
+    argv.extend_from_slice(args);
+    let v = h.run(&argv);
+    assert_envelope(&v, "run", true);
+    v["job_id"].as_str().expect("job_id").to_string()
+}
+
+/// Poll until the job's abandonment control reaches `phase`.
+fn mutable_abandonment_await_phase(
+    h: &TestHarness,
+    job_id: &str,
+    phase: &str,
+) -> serde_json::Value {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let control = mutable_abandonment_read_control(h, job_id);
+        if control["phase"].as_str().unwrap_or("") == phase {
+            return control;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "job {job_id} control never reached phase {phase}: {control}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+/// A compatible supervisor publishes the control record before it publishes
+/// `running`, so "observably running" always implies "updatable".
+#[test]
+fn mutable_abandonment_supervisor_authors_a_control_record_before_running() {
+    let h = TestHarness::new();
+    let job_id = mutable_abandonment_launch(&h, &["--", "sleep", "30"]);
+
+    let status = h.run(&["status", &job_id]);
+    assert_eq!(status["state"].as_str().unwrap_or(""), "running");
+
+    let control = mutable_abandonment_read_control(&h, &job_id);
+    assert_eq!(control["revision"].as_u64(), Some(1));
+    assert_eq!(control["phase"].as_str(), Some("disabled"));
+    // An unlimited job was never configured destructively, so it has no source.
+    assert!(
+        control.get("configured_by").is_none(),
+        "unlimited launch must not claim a configuration source: {control}"
+    );
+
+    h.run(&["kill", &job_id]);
+}
+
+/// The control observer runs for every workload, so a job launched with no
+/// limit and no progress reporting still honours a deadline set later. A
+/// supervisor that only watched when the launch definition carried a limit
+/// would leave this job running forever.
+#[test]
+fn mutable_abandonment_unlimited_job_observes_a_newly_set_deadline() {
+    let h = TestHarness::new();
+    let job_id = mutable_abandonment_launch(&h, &["--", "sleep", "60"]);
+
+    let set = h.run(&[
+        "abandon",
+        "set",
+        &job_id,
+        "--in",
+        "1",
+        "--acknowledge-result-loss",
+    ]);
+    assert_envelope(&set, "abandon_set", true);
+    assert_eq!(set["abandon_revision"].as_u64(), Some(2));
+    assert_eq!(set["abandon_phase"].as_str(), Some("active"));
+    assert_eq!(set["abandon_job_after_ms"].as_u64(), Some(1000));
+    assert_eq!(set["abandon_configured_by"].as_str(), Some("update"));
+    assert!(set["abandon_deadline"].as_str().is_some(), "{set}");
+
+    let terminal = abandon_job_after_await_terminal(&h, &job_id);
+    assert_eq!(terminal["state"].as_str().unwrap_or(""), "killed");
+    assert_eq!(
+        terminal["abandoned_by"].as_str(),
+        Some("abandon_job_after"),
+        "the runtime deadline must be recorded as the abandoning control: {terminal}"
+    );
+    assert_eq!(terminal["result_loss"].as_bool(), Some(true));
+}
+
+/// Shortening a launch-configured deadline is measured from acceptance, and the
+/// job dies on the new deadline rather than the original one.
+#[test]
+fn mutable_abandonment_shortens_a_launch_configured_deadline() {
+    let h = TestHarness::new();
+    let job_id = mutable_abandonment_launch(
+        &h,
+        &[
+            "--abandon-job-after",
+            "600",
+            "--acknowledge-result-loss",
+            "--",
+            "sleep",
+            "600",
+        ],
+    );
+
+    let launch_control = mutable_abandonment_read_control(&h, &job_id);
+    assert_eq!(launch_control["configured_by"].as_str(), Some("launch"));
+    assert_eq!(
+        launch_control["abandon_job_after_ms"].as_u64(),
+        Some(600_000)
+    );
+
+    let started = std::time::Instant::now();
+    let set = h.run(&[
+        "abandon",
+        "set",
+        &job_id,
+        "--in",
+        "1",
+        "--acknowledge-result-loss",
+    ]);
+    assert_envelope(&set, "abandon_set", true);
+
+    let terminal = abandon_job_after_await_terminal(&h, &job_id);
+    assert_eq!(terminal["state"].as_str().unwrap_or(""), "killed");
+    assert_eq!(terminal["abandoned_by"].as_str(), Some("abandon_job_after"));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(60),
+        "the shortened deadline, not the launch-time one, must decide"
+    );
+}
+
+/// Extending a deadline must be observed *before* the old one can act: the
+/// supervisor re-reads the locked revision instead of trusting an expired timer.
+#[test]
+fn mutable_abandonment_extends_a_deadline_before_the_old_one_fires() {
+    let h = TestHarness::new();
+    let job_id = mutable_abandonment_launch(
+        &h,
+        &[
+            "--abandon-job-after",
+            "2",
+            "--acknowledge-result-loss",
+            "--",
+            "sleep",
+            "60",
+        ],
+    );
+
+    let set = h.run(&[
+        "abandon",
+        "set",
+        &job_id,
+        "--in",
+        "600",
+        "--acknowledge-result-loss",
+    ]);
+    assert_envelope(&set, "abandon_set", true);
+    assert_eq!(set["abandon_revision"].as_u64(), Some(2));
+
+    // Well past the original two-second deadline.
+    std::thread::sleep(std::time::Duration::from_secs(4));
+    let status = h.run(&["status", &job_id]);
+    assert_eq!(
+        status["state"].as_str().unwrap_or(""),
+        "running",
+        "the superseded deadline must not signal the workload: {status}"
+    );
+    assert_eq!(status["abandon_revision"].as_u64(), Some(2));
+    assert_eq!(status["abandon_configured_by"].as_str(), Some("update"));
+
+    h.run(&["kill", &job_id]);
+}
+
+/// Clearing is non-destructive: the workload survives the deadline it had.
+#[test]
+fn mutable_abandonment_clear_preserves_the_running_workload() {
+    let h = TestHarness::new();
+    let job_id = mutable_abandonment_launch(
+        &h,
+        &[
+            "--abandon-job-after",
+            "2",
+            "--acknowledge-result-loss",
+            "--",
+            "sleep",
+            "60",
+        ],
+    );
+
+    // No acknowledgement flag exists for clear, and none is required.
+    let cleared = h.run(&["abandon", "clear", &job_id]);
+    assert_envelope(&cleared, "abandon_clear", true);
+    assert_eq!(cleared["abandon_phase"].as_str(), Some("disabled"));
+    assert_eq!(cleared["abandon_revision"].as_u64(), Some(2));
+    assert!(cleared.get("abandon_deadline").is_none(), "{cleared}");
+    assert!(cleared.get("abandon_job_after_ms").is_none(), "{cleared}");
+
+    std::thread::sleep(std::time::Duration::from_secs(4));
+    let status = h.run(&["status", &job_id]);
+    assert_eq!(
+        status["state"].as_str().unwrap_or(""),
+        "running",
+        "a cleared deadline must never signal the workload: {status}"
+    );
+    assert!(status.get("abandon_deadline").is_none(), "{status}");
+    assert!(status.get("abandon_remaining_ms").is_none(), "{status}");
+    assert_eq!(status["abandon_revision"].as_u64(), Some(2));
+
+    h.run(&["kill", &job_id]);
+}
+
+/// A set with no acknowledgement is rejected before it can touch control state.
+#[test]
+fn mutable_abandonment_set_requires_result_loss_acknowledgement() {
+    let h = TestHarness::new();
+    let job_id = mutable_abandonment_launch(&h, &["--", "sleep", "30"]);
+    let before = mutable_abandonment_read_control(&h, &job_id);
+
+    let rejected = h.run(&["abandon", "set", &job_id, "--in", "5"]);
+    assert_envelope(&rejected, "error", false);
+    assert_eq!(
+        rejected["error"]["code"].as_str().unwrap_or(""),
+        "result_loss_not_acknowledged"
+    );
+    assert!(
+        rejected["error"]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("--acknowledge-result-loss"),
+        "the rejection must name the flag that unblocks it: {rejected}"
+    );
+
+    assert_eq!(
+        mutable_abandonment_read_control(&h, &job_id),
+        before,
+        "a rejected set must not mutate control state"
+    );
+    h.run(&["kill", &job_id]);
+}
+
+/// A running job with no supervisor-authored record is owned by a supervisor
+/// that predates this contract. Reporting success would be a lie, so both
+/// operations fail with restart guidance and touch nothing.
+#[test]
+fn mutable_abandonment_legacy_supervisor_rejects_set_and_clear() {
+    let h = TestHarness::new();
+    let job_id = mutable_abandonment_launch(
+        &h,
+        &[
+            "--abandon-job-after",
+            "600",
+            "--acknowledge-result-loss",
+            "--",
+            "sleep",
+            "600",
+        ],
+    );
+
+    // A supervisor that predates the control record leaves none behind.
+    std::fs::remove_file(mutable_abandonment_control_path(&h, &job_id)).expect("remove control");
+    let meta_before = abandon_job_after_read_meta(&h, &job_id);
+
+    for args in [
+        vec![
+            "abandon",
+            "set",
+            job_id.as_str(),
+            "--in",
+            "5",
+            "--acknowledge-result-loss",
+        ],
+        vec!["abandon", "clear", job_id.as_str()],
+    ] {
+        let rejected = h.run(&args);
+        assert_envelope(&rejected, "error", false);
+        assert_eq!(
+            rejected["error"]["code"].as_str().unwrap_or(""),
+            "invalid_state",
+            "{args:?} -> {rejected}"
+        );
+        let message = rejected["error"]["message"].as_str().unwrap_or("");
+        assert!(
+            message.contains("restart"),
+            "{args:?} must direct the operator to restart: {rejected}"
+        );
+    }
+
+    assert!(
+        !mutable_abandonment_control_path(&h, &job_id).exists(),
+        "a rejected operation must not materialize a control record"
+    );
+    assert_eq!(
+        abandon_job_after_read_meta(&h, &job_id),
+        meta_before,
+        "a rejected operation must not mutate compatibility metadata"
+    );
+
+    // Read-only status reports the missing control as null and writes nothing.
+    let status = h.run(&["status", &job_id]);
+    for field in [
+        "abandon_revision",
+        "abandon_configured_by",
+        "abandon_deadline",
+        "abandon_remaining_ms",
+        "abandon_job_after_ms",
+    ] {
+        assert!(
+            status.get(field).is_none(),
+            "{field} must be null for a job with no control record: {status}"
+        );
+    }
+    assert!(
+        !mutable_abandonment_control_path(&h, &job_id).exists(),
+        "status must never materialize a control record"
+    );
+
+    h.run(&["kill", &job_id]);
+}
+
+/// Created and terminal jobs are not running, so their deadlines are not
+/// runtime-changeable.
+#[test]
+fn mutable_abandonment_rejects_created_and_terminal_jobs() {
+    let h = TestHarness::new();
+
+    let created = h.run(&["create", "--", "sleep", "1"]);
+    assert_envelope(&created, "create", true);
+    let created_id = created["job_id"].as_str().expect("job_id").to_string();
+
+    let finished = h.run(&["run", "--", "echo", "done"]);
+    let finished_id = finished["job_id"].as_str().expect("job_id").to_string();
+    wait_until_terminal(&h, &finished_id);
+
+    for job_id in [created_id, finished_id] {
+        for args in [
+            vec![
+                "abandon",
+                "set",
+                job_id.as_str(),
+                "--in",
+                "5",
+                "--acknowledge-result-loss",
+            ],
+            vec!["abandon", "clear", job_id.as_str()],
+        ] {
+            let rejected = h.run(&args);
+            assert_envelope(&rejected, "error", false);
+            assert_eq!(
+                rejected["error"]["code"].as_str().unwrap_or(""),
+                "invalid_state",
+                "{args:?} -> {rejected}"
+            );
+        }
+    }
+}
+
+/// Once the supervisor has durably committed the transition, no later update
+/// may claim it prevented the abandonment.
+#[test]
+fn mutable_abandonment_trigger_wins_against_a_later_update() {
+    let h = TestHarness::new();
+    let job_id = mutable_abandonment_launch(&h, &["--", "sleep", "60"]);
+
+    // A deadline that is already in the past when the observer next wakes makes
+    // the trigger side of the race deterministic.
+    let control = mutable_abandonment_read_control(&h, &job_id);
+    mutable_abandonment_write_control(
+        &h,
+        &job_id,
+        &serde_json::json!({
+            "revision": control["revision"].as_u64().unwrap_or(1) + 1,
+            "phase": "active",
+            "abandon_job_after_ms": 1000,
+            "deadline": "1970-01-01T00:00:01.000Z",
+            "configured_by": "update",
+            "updated_at": "1970-01-01T00:00:00.000Z",
+        }),
+    );
+
+    let triggered = mutable_abandonment_await_phase(&h, &job_id, "triggered");
+    assert_eq!(triggered["revision"].as_u64(), Some(2));
+    assert!(
+        triggered["triggered_pid"].as_u64().is_some(),
+        "a triggered transition must name the workload it targets: {triggered}"
+    );
+
+    let rejected = h.run(&[
+        "abandon",
+        "set",
+        &job_id,
+        "--in",
+        "600",
+        "--acknowledge-result-loss",
+    ]);
+    assert_envelope(&rejected, "error", false);
+    assert_eq!(
+        rejected["error"]["code"].as_str().unwrap_or(""),
+        "invalid_state",
+        "an update after the trigger committed must not claim success: {rejected}"
+    );
+
+    let terminal = abandon_job_after_await_terminal(&h, &job_id);
+    assert_eq!(terminal["abandoned_by"].as_str(), Some("abandon_job_after"));
+}
+
+/// Start a separate process that holds one job's abandonment control lock until
+/// it is killed, and return it once the lock is actually held.
+fn mutable_abandonment_hold_lock(h: &TestHarness, job_id: &str) -> std::process::Child {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_agent-exec-embedded-consumer"))
+        .arg(h.root())
+        .env("AGENT_EXEC_FIXTURE_HOLD_ABANDON_LOCK", job_id)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn abandonment lock holder");
+
+    use std::io::{BufRead, BufReader};
+    let mut line = String::new();
+    BufReader::new(child.stdout.as_mut().expect("holder stdout"))
+        .read_line(&mut line)
+        .expect("read holder readiness line");
+    assert_eq!(
+        line.trim(),
+        "abandon_lock=held",
+        "lock holder did not report readiness"
+    );
+    child
+}
+
+/// The supervisor takes the per-job lock *before* it signals, which is the whole
+/// mechanism behind "an update that commits first is never overtaken by a stale
+/// deadline". While another writer holds the lock, an already-due deadline
+/// cannot reach the workload; when that writer dies without releasing it, the
+/// operating system frees the lock and the transition proceeds.
+#[test]
+fn mutable_abandonment_supervisor_cannot_signal_without_the_job_lock() {
+    let h = TestHarness::new();
+    let job_id = mutable_abandonment_launch(&h, &["--", "sleep", "60"]);
+
+    let mut holder = mutable_abandonment_hold_lock(&h, &job_id);
+
+    // An already-due deadline published underneath the held lock.
+    mutable_abandonment_write_control(
+        &h,
+        &job_id,
+        &serde_json::json!({
+            "revision": 2,
+            "phase": "active",
+            "abandon_job_after_ms": 1000,
+            "deadline": "1970-01-01T00:00:01.000Z",
+            "configured_by": "update",
+            "updated_at": "1970-01-01T00:00:00.000Z",
+        }),
+    );
+
+    // Many observation cadences pass; the workload must survive all of them.
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    let status = h.run(&["status", &job_id]);
+    assert_eq!(
+        status["state"].as_str().unwrap_or(""),
+        "running",
+        "a due deadline must not signal while another writer holds the lock: {status}"
+    );
+    assert_eq!(
+        mutable_abandonment_read_control(&h, &job_id)["phase"].as_str(),
+        Some("active"),
+        "the transition must not be committed without the lock"
+    );
+
+    // The holder dies without releasing anything.
+    holder.kill().expect("kill lock holder");
+    holder.wait().expect("reap lock holder");
+
+    let triggered = mutable_abandonment_await_phase(&h, &job_id, "triggered");
+    assert_eq!(
+        triggered["revision"].as_u64(),
+        Some(2),
+        "the observer must act on the revision it re-read under the lock: {triggered}"
+    );
+    let terminal = abandon_job_after_await_terminal(&h, &job_id);
+    assert_eq!(terminal["state"].as_str().unwrap_or(""), "killed");
+}
+
+/// Concurrent updaters serialize through the fixed-name lock and each accepted
+/// operation reports its own strictly increasing revision.
+#[test]
+fn mutable_abandonment_concurrent_updaters_return_ordered_revisions() {
+    let h = TestHarness::new();
+    let job_id = mutable_abandonment_launch(&h, &["--", "sleep", "60"]);
+
+    let mut children: Vec<std::process::Child> = Vec::new();
+    for _ in 0..6 {
+        let child = Command::new(binary())
+            .args([
+                "abandon",
+                "set",
+                &job_id,
+                "--in",
+                "600",
+                "--acknowledge-result-loss",
+            ])
+            .env("AGENT_EXEC_ROOT", h.root())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn concurrent updater");
+        children.push(child);
+    }
+
+    let mut revisions: Vec<u64> = Vec::new();
+    for child in children {
+        let output = child.wait_with_output().expect("await updater");
+        let value: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("updater stdout is JSON");
+        assert_envelope(&value, "abandon_set", true);
+        revisions.push(value["abandon_revision"].as_u64().expect("revision"));
+    }
+    revisions.sort_unstable();
+    assert_eq!(
+        revisions,
+        (2..=7).collect::<Vec<u64>>(),
+        "each accepted update must commit its own revision"
+    );
+
+    let control = mutable_abandonment_read_control(&h, &job_id);
+    assert_eq!(control["revision"].as_u64(), Some(7));
+
+    h.run(&["kill", &job_id]);
+}
+
+/// A crash cannot wedge the job: the advisory lock lives on a fixed-name file
+/// that the operating system releases when its holder dies, and it is never
+/// placed on the control record, which atomic rename replaces.
+#[test]
+fn mutable_abandonment_fixed_lock_file_survives_a_crashed_holder() {
+    let h = TestHarness::new();
+    let job_id = mutable_abandonment_launch(&h, &["--", "sleep", "30"]);
+
+    let lock_path = std::path::Path::new(h.root())
+        .join(&job_id)
+        .join("abandon.lock");
+    assert!(
+        lock_path.exists(),
+        "the supervisor must create the lock file"
+    );
+    let lock_inode_before = std::fs::metadata(&lock_path).expect("lock metadata");
+
+    // A separate process takes the lock and dies without releasing it.
+    let mut holder = mutable_abandonment_hold_lock(&h, &job_id);
+    holder.kill().expect("kill lock holder");
+    holder.wait().expect("reap lock holder");
+
+    // The record is replaced by rename, so the lock file is never the record and
+    // a later updater still acquires it after the crash.
+    let accepted = h.run(&[
+        "abandon",
+        "set",
+        &job_id,
+        "--in",
+        "600",
+        "--acknowledge-result-loss",
+    ]);
+    assert_envelope(&accepted, "abandon_set", true);
+    let lock_inode_after = std::fs::metadata(&lock_path).expect("lock metadata");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(
+            lock_inode_before.ino(),
+            lock_inode_after.ino(),
+            "an update must not replace the lock inode it serializes on"
+        );
+    }
+    #[cfg(not(unix))]
+    let _ = (lock_inode_before, lock_inode_after);
+
+    h.run(&["kill", &job_id]);
+}
+
+/// A supervisor that died between persisting `triggered` and signaling leaves a
+/// workload nothing is going to abandon. Restart resumes that transition instead
+/// of quietly replacing it with an ordinary relaunch.
+#[test]
+fn mutable_abandonment_restart_resumes_a_triggered_transition() {
+    let h = TestHarness::new();
+    let job_id = mutable_abandonment_launch(&h, &["--", "sleep", "600"]);
+
+    let status = h.run(&["status", &job_id]);
+    let workload_pid = status["pid"].as_u64().expect("workload pid");
+
+    // Fixture: the transition is durable but the signal never happened.
+    mutable_abandonment_write_control(
+        &h,
+        &job_id,
+        &serde_json::json!({
+            "revision": 7,
+            "phase": "triggered",
+            "abandon_job_after_ms": 1000,
+            "deadline": "1970-01-01T00:00:01.000Z",
+            "configured_by": "update",
+            "updated_at": "1970-01-01T00:00:00.000Z",
+            "triggered_pid": workload_pid,
+        }),
+    );
+
+    let restarted = h.run(&["restart", "--no-wait", &job_id]);
+    assert_envelope(&restarted, "restart", true);
+
+    // The abandoned workload is gone rather than merely replaced.
+    #[cfg(unix)]
+    {
+        let alive = unsafe { libc::kill(workload_pid as libc::pid_t, 0) } == 0;
+        assert!(
+            !alive,
+            "the resumed transition must have signaled pid {workload_pid}"
+        );
+    }
+
+    h.run(&["kill", &job_id]);
+}
+
+/// Restart rearms a launch-configured control from its duration, preserving the
+/// existing restart contract.
+#[test]
+fn mutable_abandonment_restart_rearms_a_launch_configured_control() {
+    let h = TestHarness::new();
+    let job_id = mutable_abandonment_launch(
+        &h,
+        &[
+            "--abandon-job-after",
+            "600",
+            "--acknowledge-result-loss",
+            "--",
+            "sleep",
+            "600",
+        ],
+    );
+    let before = mutable_abandonment_read_control(&h, &job_id);
+    assert_eq!(before["configured_by"].as_str(), Some("launch"));
+
+    let restarted = h.run(&["restart", "--no-wait", &job_id]);
+    assert_envelope(&restarted, "restart", true);
+
+    let after = mutable_abandonment_read_control(&h, &job_id);
+    assert_eq!(after["configured_by"].as_str(), Some("launch"));
+    assert_eq!(after["abandon_job_after_ms"].as_u64(), Some(600_000));
+    assert!(
+        after["revision"].as_u64() > before["revision"].as_u64(),
+        "a rearmed launch control must commit a new revision: {after}"
+    );
+    assert!(
+        after["deadline"].as_str() != before["deadline"].as_str(),
+        "a rearmed launch control must move its deadline: {after}"
+    );
+
+    h.run(&["kill", &job_id]);
+}
+
+/// Restart never restores the launch-time deadline over one the operator
+/// accepted at runtime: the absolute deadline and its revision survive.
+#[test]
+fn mutable_abandonment_restart_preserves_an_updated_deadline() {
+    let h = TestHarness::new();
+    let job_id = mutable_abandonment_launch(
+        &h,
+        &[
+            "--abandon-job-after",
+            "5",
+            "--acknowledge-result-loss",
+            "--",
+            "sleep",
+            "600",
+        ],
+    );
+
+    let set = h.run(&[
+        "abandon",
+        "set",
+        &job_id,
+        "--in",
+        "600",
+        "--acknowledge-result-loss",
+    ]);
+    assert_envelope(&set, "abandon_set", true);
+    let accepted_deadline = set["abandon_deadline"]
+        .as_str()
+        .expect("deadline")
+        .to_string();
+    let accepted_revision = set["abandon_revision"].as_u64().expect("revision");
+
+    let restarted = h.run(&["restart", "--no-wait", &job_id]);
+    assert_envelope(&restarted, "restart", true);
+
+    let status = h.run(&["status", &job_id]);
+    assert_eq!(status["state"].as_str().unwrap_or(""), "running");
+    assert_eq!(
+        status["abandon_deadline"].as_str(),
+        Some(accepted_deadline.as_str()),
+        "restart must preserve the accepted absolute deadline: {status}"
+    );
+    assert_eq!(status["abandon_revision"].as_u64(), Some(accepted_revision));
+    assert_eq!(status["abandon_configured_by"].as_str(), Some("update"));
+
+    // Well past the five-second launch-time deadline that must not come back.
+    std::thread::sleep(std::time::Duration::from_secs(7));
+    let status = h.run(&["status", &job_id]);
+    assert_eq!(
+        status["state"].as_str().unwrap_or(""),
+        "running",
+        "the launch-time deadline must not be restored by restart: {status}"
+    );
+
+    h.run(&["kill", &job_id]);
+}
+
+/// Restart preserves an accepted clear too, so a downgrade-era relaunch cannot
+/// resurrect the limit the operator removed.
+#[test]
+fn mutable_abandonment_restart_preserves_a_cleared_deadline() {
+    let h = TestHarness::new();
+    let job_id = mutable_abandonment_launch(
+        &h,
+        &[
+            "--abandon-job-after",
+            "3",
+            "--acknowledge-result-loss",
+            "--",
+            "sleep",
+            "600",
+        ],
+    );
+    assert_envelope(
+        &h.run(&["abandon", "clear", &job_id]),
+        "abandon_clear",
+        true,
+    );
+
+    let restarted = h.run(&["restart", "--no-wait", &job_id]);
+    assert_envelope(&restarted, "restart", true);
+
+    std::thread::sleep(std::time::Duration::from_secs(5));
+    let status = h.run(&["status", &job_id]);
+    assert_eq!(
+        status["state"].as_str().unwrap_or(""),
+        "running",
+        "a cleared deadline must stay cleared across restart: {status}"
+    );
+    assert!(status.get("abandon_deadline").is_none(), "{status}");
+
+    h.run(&["kill", &job_id]);
+}
+
+/// Both compatibility duration fields are synchronized after every accepted
+/// operation, so an older reader sees the same limit this release enforces —
+/// and after a clear, sees zero rather than the launch limit.
+#[test]
+fn mutable_abandonment_synchronizes_downgrade_metadata() {
+    let h = TestHarness::new();
+    let job_id = mutable_abandonment_launch(
+        &h,
+        &[
+            "--abandon-job-after",
+            "600",
+            "--acknowledge-result-loss",
+            "--",
+            "sleep",
+            "600",
+        ],
+    );
+
+    assert_envelope(
+        &h.run(&[
+            "abandon",
+            "set",
+            &job_id,
+            "--in",
+            "42",
+            "--acknowledge-result-loss",
+        ]),
+        "abandon_set",
+        true,
+    );
+    let meta = abandon_job_after_read_meta(&h, &job_id);
+    assert_eq!(meta["abandon_job_after_ms"].as_u64(), Some(42_000));
+    assert_eq!(meta["timeout_ms"].as_u64(), Some(42_000));
+
+    assert_envelope(
+        &h.run(&["abandon", "clear", &job_id]),
+        "abandon_clear",
+        true,
+    );
+    let meta = abandon_job_after_read_meta(&h, &job_id);
+    assert_eq!(
+        meta["abandon_job_after_ms"].as_u64(),
+        Some(0),
+        "a clear must not leave an older reader able to rearm the deadline: {meta}"
+    );
+    assert_eq!(meta["timeout_ms"].as_u64(), Some(0), "{meta}");
+
+    h.run(&["kill", &job_id]);
+}
+
+/// Status projects the effective control, including the response-time remaining
+/// value and its inclusive clamp.
+#[test]
+fn mutable_abandonment_status_reports_the_effective_control() {
+    let h = TestHarness::new();
+    let job_id = mutable_abandonment_launch(&h, &["--", "sleep", "600"]);
+
+    let set = h.run(&[
+        "abandon",
+        "set",
+        &job_id,
+        "--in",
+        "600",
+        "--acknowledge-result-loss",
+    ]);
+    let deadline = set["abandon_deadline"]
+        .as_str()
+        .expect("deadline")
+        .to_string();
+    let revision = set["abandon_revision"].as_u64().expect("revision");
+
+    let status = h.run(&["status", &job_id]);
+    assert_eq!(status["abandon_job_after_ms"].as_u64(), Some(600_000));
+    assert_eq!(status["abandon_deadline"].as_str(), Some(deadline.as_str()));
+    assert_eq!(status["abandon_revision"].as_u64(), Some(revision));
+    assert_eq!(status["abandon_configured_by"].as_str(), Some("update"));
+    let remaining = status["abandon_remaining_ms"].as_u64().expect("remaining");
+    assert!(
+        remaining <= 600_000,
+        "remaining must clamp to the configured duration: {status}"
+    );
+    assert!(
+        remaining > 590_000,
+        "remaining must be computed at response time: {status}"
+    );
+
+    h.run(&["kill", &job_id]);
+    let terminal = abandon_job_after_await_terminal(&h, &job_id);
+    assert!(
+        terminal.get("abandon_remaining_ms").is_none(),
+        "a terminal job has no remaining time: {terminal}"
+    );
+    assert_eq!(
+        terminal["abandon_revision"].as_u64(),
+        Some(revision),
+        "the durable revision stays observable after termination: {terminal}"
+    );
+}
+
+/// Every reachable abandonment status shape validates against the published
+/// schema.
+#[test]
+fn mutable_abandonment_status_validates_against_the_checked_in_schema() {
+    let h = TestHarness::new();
+    let job_id = mutable_abandonment_launch(&h, &["--", "sleep", "600"]);
+
+    let mut observed = vec![h.run(&["status", &job_id])];
+    h.run(&[
+        "abandon",
+        "set",
+        &job_id,
+        "--in",
+        "600",
+        "--acknowledge-result-loss",
+    ]);
+    observed.push(h.run(&["status", &job_id]));
+    h.run(&["abandon", "clear", &job_id]);
+    observed.push(h.run(&["status", &job_id]));
+    h.run(&["kill", &job_id]);
+    observed.push(abandon_job_after_await_terminal(&h, &job_id));
+
+    let schema_path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("schema/agent-exec.schema.json");
+    let schema: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&schema_path).expect("read schema"))
+            .expect("parse schema");
+    let validator = jsonschema::validator_for(&schema).expect("compile schema");
+    for status in observed {
+        assert!(
+            validator.validate(&status).is_ok(),
+            "status response must validate against the published schema: {status}"
+        );
+    }
+}
+
+/// The set and clear envelopes are published, not ad-hoc.
+#[test]
+fn mutable_abandonment_responses_validate_against_the_checked_in_schema() {
+    let h = TestHarness::new();
+    let job_id = mutable_abandonment_launch(&h, &["--", "sleep", "600"]);
+
+    let observed = vec![
+        h.run(&[
+            "abandon",
+            "set",
+            &job_id,
+            "--in",
+            "600",
+            "--acknowledge-result-loss",
+        ]),
+        h.run(&["abandon", "clear", &job_id]),
+    ];
+    h.run(&["kill", &job_id]);
+
+    let schema_path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("schema/agent-exec.schema.json");
+    let schema: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&schema_path).expect("read schema"))
+            .expect("parse schema");
+    let validator = jsonschema::validator_for(&schema).expect("compile schema");
+    for response in observed {
+        assert!(
+            validator.validate(&response).is_ok(),
+            "abandonment response must validate against the published schema: {response}"
+        );
+    }
+}
+
+/// The CLI surface leads with the result-loss warning and offers `--in` only on
+/// the destructive half of the pair.
+#[test]
+fn mutable_abandonment_cli_help_documents_the_destructive_boundary() {
+    let output = Command::new(binary())
+        .args(["abandon", "set", "--help"])
+        .output()
+        .expect("abandon set --help");
+    let help = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        help.contains("WARNING: Gives up on the job, terminates it, and may permanently lose"),
+        "abandon set --help must open with the result-loss warning: {help}"
+    );
+    assert!(help.contains("--acknowledge-result-loss"), "{help}");
+    assert!(help.contains("--in"), "{help}");
+
+    let output = Command::new(binary())
+        .args(["abandon", "clear", "--help"])
+        .output()
+        .expect("abandon clear --help");
+    let help = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        help.contains("Non-destructive"),
+        "abandon clear --help must say it never signals the job: {help}"
+    );
+    assert!(
+        !help.contains("--acknowledge-result-loss"),
+        "clear must not require an acknowledgement: {help}"
+    );
+}
+
+/// Unknown jobs stay a job-domain error on both operations.
+#[test]
+fn mutable_abandonment_unknown_job_is_a_job_domain_error() {
+    let h = TestHarness::new();
+    for args in [
+        vec![
+            "abandon",
+            "set",
+            "NONEXISTENT_JOB_ID_XYZ",
+            "--in",
+            "5",
+            "--acknowledge-result-loss",
+        ],
+        vec!["abandon", "clear", "NONEXISTENT_JOB_ID_XYZ"],
+    ] {
+        let v = h.run(&args);
+        assert_envelope(&v, "error", false);
+        assert_eq!(
+            v["error"]["code"].as_str().unwrap_or(""),
+            "job_not_found",
+            "{args:?} -> {v}"
+        );
+    }
+}

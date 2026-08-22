@@ -91,6 +91,13 @@ Common exit codes:
 - Use `--mask KEY` when secrets are present in `--env`; masked values become `***` in output and persisted metadata.
 - `--abandon-job-after <SECONDS>` gives up on the job, terminates it, and may permanently lose unfinished results. It is not an observation deadline; `--until` bounds observation without stopping the job. It requires `--acknowledge-result-loss`, and the default is no limit. The removed `--timeout` spelling always fails with migration guidance and never creates a job.
 
+## `abandon` notes
+
+- `agent-exec abandon set <JOB_ID> --in <SECONDS> --acknowledge-result-loss` replaces a running job's abandonment deadline; `--in` is measured from durable acceptance of the update, not from job start. It is as destructive as `--abandon-job-after`, so it always requires `--acknowledge-result-loss`.
+- `agent-exec abandon clear <JOB_ID>` removes the deadline. It never signals the job, so it needs no acknowledgement.
+- Both are refused with `invalid_state` for created, terminal, and already-triggered jobs, and for a running job launched by an older release that has no supervisor-authored control record. In that last case the error tells you to `agent-exec restart` the job; do not treat a refusal as a partially applied change, because a rejected operation mutates nothing.
+- Once abandonment has begun, a later change fails rather than claiming it prevented the abandonment. Do not report to the user that a deadline was extended unless the response carried an `abandon_revision`.
+
 ## `status` notes
 
 - `state` is the persisted lifecycle state; `status` never rewrites it.
@@ -100,6 +107,7 @@ Common exit codes:
 - Log byte totals come from file metadata only. `status` never reads log contents; use `tail` for output.
 - `status` never exposes environment values, stdin content, notification secrets, or shell-expanded commands.
 - `abandoned_by="abandon_job_after"` with `result_loss=true` appears only when a configured `--abandon-job-after` limit actually terminated the job. The terminal `state` value is unchanged, and both markers are absent when the limit never fired. `list` reports the same pair.
+- `abandon_job_after_ms`, `abandon_deadline`, `abandon_remaining_ms`, `abandon_revision`, and `abandon_configured_by` report the deadline the supervisor will actually act on, including one changed at runtime. All five are null when the job has no supervisor-authored control record; duration, deadline, and remaining time are also null when the control is disabled, and remaining time is null for terminal jobs. `abandon_remaining_ms` is advisory: it is computed at response time and clamped to `[0, abandon_job_after_ms]`, and the supervisor decides firing from its own locked record.
 
 ## `list` notes
 

@@ -95,7 +95,9 @@ use crate::tag::InvalidTag;
 // internals while avoiding a parallel set of near-identical structs.
 pub use crate::compress::CompressionMode;
 pub use crate::run::StdinSource;
-pub use crate::schema::{JobStatus, JobSummary, KillData, ListData, RunData, StatusData, TailData};
+pub use crate::schema::{
+    AbandonData, JobStatus, JobSummary, KillData, ListData, RunData, StatusData, TailData,
+};
 
 /// Reserved `argv[1]` marker that identifies a supervisor invocation.
 ///
@@ -205,6 +207,9 @@ impl JobError {
         } else if err.downcast_ref::<InvalidTag>().is_some()
             || err.downcast_ref::<StdinRequired>().is_some()
             || err.downcast_ref::<StdinTooLarge>().is_some()
+            || err
+                .downcast_ref::<crate::run::ResultLossNotAcknowledged>()
+                .is_some()
             || err.downcast_ref::<crate::config::ConfigError>().is_some()
         {
             (JobErrorKind::InvalidInput, Vec::new())
@@ -641,6 +646,54 @@ impl EmbeddedClient {
             cwd: request.cwd.as_deref(),
             all: request.all,
             tags: request.tags,
+        })
+        .map_err(JobError::from_anyhow)
+    }
+
+    /// Replace a running job's abandonment deadline.
+    ///
+    /// WARNING: Gives up on the job, terminates it, and may permanently lose
+    /// unfinished results. Use an observation bound to stop waiting without
+    /// stopping the job.
+    ///
+    /// `abandon_in_ms` is measured from the moment the update is durably
+    /// accepted, not from when the job started. `acknowledge_result_loss` is
+    /// required for every set and is checked before any control state is read
+    /// or written. A running job whose supervisor never authored a control
+    /// record — one launched by a binary that predates this contract — is
+    /// rejected with [`JobErrorKind::InvalidState`] and restart guidance rather
+    /// than reporting a change no supervisor will honour.
+    pub fn set_abandonment(
+        &self,
+        job_id: &str,
+        abandon_in_ms: u64,
+        acknowledge_result_loss: bool,
+    ) -> JobResult<AbandonData> {
+        crate::abandon::require_set_acknowledgement(
+            acknowledge_result_loss,
+            "abandon_in_ms",
+            "acknowledge_result_loss",
+        )
+        .map_err(|e| JobError::from_anyhow(anyhow::Error::new(e)))?;
+        let root_arg = self.root_arg();
+        crate::abandon::update_data(crate::abandon::AbandonUpdateOpts {
+            job_id,
+            root: Some(root_arg.as_str()),
+            abandon_in_ms: Some(abandon_in_ms),
+        })
+        .map_err(JobError::from_anyhow)
+    }
+
+    /// Remove a running job's abandonment deadline.
+    ///
+    /// Non-destructive: the workload is never signaled, so no result-loss
+    /// acknowledgement is required.
+    pub fn clear_abandonment(&self, job_id: &str) -> JobResult<AbandonData> {
+        let root_arg = self.root_arg();
+        crate::abandon::update_data(crate::abandon::AbandonUpdateOpts {
+            job_id,
+            root: Some(root_arg.as_str()),
+            abandon_in_ms: None,
         })
         .map_err(JobError::from_anyhow)
     }

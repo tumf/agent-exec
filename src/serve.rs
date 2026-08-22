@@ -12,7 +12,7 @@ use axum::{
     http::StatusCode,
     middleware::{self, Next},
     response::{IntoResponse, Response as AxumResponse},
-    routing::{get, post},
+    routing::{get, post, put},
 };
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -106,6 +106,13 @@ async fn async_main(opts: ServeOpts, addr: std::net::SocketAddr) -> Result<()> {
     let mutating_routes = Router::new()
         .route("/exec", post(exec_handler))
         .route("/kill/{id}", post(kill_handler))
+        // Flat job-operation namespace, same shape as /kill/{id}: the method
+        // carries the intent, so replacing and removing a deadline need no
+        // extra path segment.
+        .route(
+            "/abandon/{id}",
+            put(set_abandonment_handler).delete(clear_abandonment_handler),
+        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
@@ -133,6 +140,11 @@ async fn async_main(opts: ServeOpts, addr: std::net::SocketAddr) -> Result<()> {
             .allow_methods([
                 axum::http::Method::GET,
                 axum::http::Method::POST,
+                // Abandonment updates are the only routes that use these, and a
+                // preflight that omits them would make the whole control
+                // unreachable from a browser client.
+                axum::http::Method::PUT,
+                axum::http::Method::DELETE,
                 axum::http::Method::OPTIONS,
             ])
             .allow_headers([
@@ -214,6 +226,15 @@ fn map_err_to_response(e: anyhow::Error) -> AxumResponse {
         .is_some()
     {
         err_resp(StatusCode::BAD_REQUEST, "invalid_state", &format!("{e:#}"))
+    } else if e
+        .downcast_ref::<crate::run::ResultLossNotAcknowledged>()
+        .is_some()
+    {
+        err_resp(
+            StatusCode::BAD_REQUEST,
+            "result_loss_not_acknowledged",
+            &format!("{e:#}"),
+        )
     } else if e
         .downcast_ref::<crate::run::SupervisorLaunchFailed>()
         .is_some()
@@ -625,6 +646,111 @@ async fn kill_handler(
             no_wait,
         })?;
         let response = Response::new("kill", data);
+        Ok::<_, anyhow::Error>(serde_json::to_value(&response)?)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(val)) => (StatusCode::OK, Json(val)).into_response(),
+        Ok(Err(e)) => map_err_to_response(e),
+        Err(e) => err_resp(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            &format!("task error: {e}"),
+        ),
+    }
+}
+
+// ---- PUT /abandon/:id, DELETE /abandon/:id ----
+
+/// Structured spelling of the runtime abandonment deadline input.
+const API_ABANDON_IN_INPUT: &str = "abandon_in";
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SetAbandonmentRequest {
+    /// WARNING: Gives up on the job, terminates it, and may permanently lose
+    /// unfinished results. Use `until` on an observation endpoint to stop
+    /// waiting without stopping the job.
+    ///
+    /// Seconds from durable acceptance of this update, not from job start.
+    abandon_in: Option<f64>,
+    /// Explicit acknowledgement that the replaced deadline may permanently lose
+    /// unfinished results. Required for every set.
+    acknowledge_result_loss: Option<bool>,
+}
+
+async fn set_abandonment_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    body: axum::body::Bytes,
+) -> AxumResponse {
+    let req: SetAbandonmentRequest = if body.is_empty() {
+        SetAbandonmentRequest {
+            abandon_in: None,
+            acknowledge_result_loss: None,
+        }
+    } else {
+        match serde_json::from_slice(&body) {
+            Ok(r) => r,
+            Err(e) => {
+                return err_resp(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    &format!("invalid JSON: {e}"),
+                );
+            }
+        }
+    };
+
+    // Admission first, before the job store is touched: a rejected request must
+    // never mutate control state.
+    if let Err(e) = crate::abandon::require_set_acknowledgement(
+        req.acknowledge_result_loss.unwrap_or(false),
+        API_ABANDON_IN_INPUT,
+        crate::run::API_ACKNOWLEDGE_INPUT,
+    ) {
+        return err_resp(
+            StatusCode::BAD_REQUEST,
+            "result_loss_not_acknowledged",
+            &e.to_string(),
+        );
+    }
+
+    let abandon_in_ms = match req.abandon_in {
+        Some(seconds) if seconds.is_finite() && seconds >= 0.0 => (seconds * 1000.0) as u64,
+        _ => {
+            return err_resp(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "abandon_in must be a nonnegative number of seconds",
+            );
+        }
+    };
+
+    abandon_response(state, id, Some(abandon_in_ms)).await
+}
+
+async fn clear_abandonment_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> AxumResponse {
+    abandon_response(state, id, None).await
+}
+
+/// Shared adapter: the canonical locked transition does the work.
+async fn abandon_response(
+    state: Arc<AppState>,
+    id: String,
+    abandon_in_ms: Option<u64>,
+) -> AxumResponse {
+    let root_opt = state.root.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let response = crate::abandon::update_response(crate::abandon::AbandonUpdateOpts {
+            job_id: &id,
+            root: root_opt.as_deref(),
+            abandon_in_ms,
+        })?;
         Ok::<_, anyhow::Error>(serde_json::to_value(&response)?)
     })
     .await;

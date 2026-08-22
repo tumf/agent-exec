@@ -756,3 +756,253 @@ fn test_cors_with_allow_origin() {
         "expected CORS header for allowed origin, got headers: {headers:?}"
     );
 }
+
+// ── mutable running-job abandonment control ────────────────────────────────────
+
+/// Issue a request with an explicit method and optional JSON body.
+fn request_with_method(method: &str, url: &str, body: Option<&str>) -> (u16, serde_json::Value) {
+    let mut args = vec![
+        "-s".to_string(),
+        "-w".to_string(),
+        "\n%{http_code}".to_string(),
+        "-X".to_string(),
+        method.to_string(),
+        "-H".to_string(),
+        "Content-Type: application/json".to_string(),
+    ];
+    if let Some(body) = body {
+        args.push("-d".to_string());
+        args.push(body.to_string());
+    }
+    args.push(url.to_string());
+    let output = Command::new("curl")
+        .args(&args)
+        .output()
+        .unwrap_or_else(|e| panic!("curl {method}: {e}"));
+    parse_curl_output(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// CORS preflight for a specific method on a specific route.
+fn preflight(url: &str, origin: &str, method: &str) -> (u16, Vec<(String, String)>) {
+    let args = [
+        "-s",
+        "-w",
+        "\n%{http_code}",
+        "-X",
+        "OPTIONS",
+        "-D",
+        "-",
+        "-H",
+        &format!("Origin: {origin}"),
+        "-H",
+        &format!("Access-Control-Request-Method: {method}"),
+        url,
+    ];
+    let output = Command::new("curl")
+        .args(args)
+        .output()
+        .expect("curl OPTIONS");
+    let raw = String::from_utf8_lossy(&output.stdout).to_string();
+    let status: u16 = raw
+        .trim_end()
+        .lines()
+        .last()
+        .unwrap_or("0")
+        .trim()
+        .parse()
+        .unwrap_or(0);
+    let headers = raw
+        .lines()
+        .filter(|l| l.contains(':'))
+        .filter_map(|l| {
+            let (k, v) = l.split_once(':')?;
+            Some((k.trim().to_lowercase(), v.trim().to_string()))
+        })
+        .collect();
+    (status, headers)
+}
+
+/// Launch a detached long-running job through the HTTP surface.
+fn mutable_abandonment_launch(srv: &ServeProcess) -> String {
+    let (status, body) = post_json(
+        &srv.url("/exec"),
+        r#"{"command":["sleep","600"],"wait":false}"#,
+    );
+    assert_eq!(status, 200, "{body}");
+    body["job_id"].as_str().expect("job_id").to_string()
+}
+
+/// PUT replaces the deadline and subsequent status reports the same control.
+#[test]
+fn mutable_abandonment_http_sets_and_reports_a_running_deadline() {
+    let srv = ServeProcess::start();
+    let job_id = mutable_abandonment_launch(&srv);
+
+    let (status, body) = request_with_method(
+        "PUT",
+        &srv.url(&format!("/abandon/{job_id}")),
+        Some(r#"{"abandon_in":30,"acknowledge_result_loss":true}"#),
+    );
+    assert_eq!(status, 200, "{body}");
+    assert_common_fields(&body);
+    assert_eq!(body["type"].as_str(), Some("abandon_set"), "{body}");
+    assert_eq!(body["abandon_revision"].as_u64(), Some(2));
+    assert_eq!(body["abandon_job_after_ms"].as_u64(), Some(30_000));
+    let deadline = body["abandon_deadline"]
+        .as_str()
+        .expect("deadline")
+        .to_string();
+
+    let (status, observed) = get_json(&srv.url(&format!("/status/{job_id}")));
+    assert_eq!(status, 200, "{observed}");
+    assert_eq!(observed["abandon_revision"].as_u64(), Some(2));
+    assert_eq!(
+        observed["abandon_deadline"].as_str(),
+        Some(deadline.as_str())
+    );
+    assert_eq!(observed["abandon_configured_by"].as_str(), Some("update"));
+
+    post_json(&srv.url(&format!("/kill/{job_id}")), "");
+}
+
+/// DELETE clears the deadline and the workload survives it.
+#[test]
+fn mutable_abandonment_http_clears_a_running_deadline() {
+    let srv = ServeProcess::start();
+    let (status, launched) = post_json(
+        &srv.url("/exec"),
+        r#"{"command":["sleep","600"],"wait":false,"abandon_job_after":2,"acknowledge_result_loss":true}"#,
+    );
+    assert_eq!(status, 200, "{launched}");
+    let job_id = launched["job_id"].as_str().expect("job_id").to_string();
+
+    let (status, body) =
+        request_with_method("DELETE", &srv.url(&format!("/abandon/{job_id}")), None);
+    assert_eq!(status, 200, "{body}");
+    assert_common_fields(&body);
+    assert_eq!(body["type"].as_str(), Some("abandon_clear"), "{body}");
+    assert_eq!(body["abandon_phase"].as_str(), Some("disabled"));
+
+    thread::sleep(Duration::from_secs(4));
+    let (_, observed) = get_json(&srv.url(&format!("/status/{job_id}")));
+    assert_eq!(
+        observed["state"].as_str().unwrap_or(""),
+        "running",
+        "a cleared deadline must not signal the job: {observed}"
+    );
+
+    post_json(&srv.url(&format!("/kill/{job_id}")), "");
+}
+
+/// The HTTP set requires acknowledgement, and the rejection does not mutate the
+/// control record.
+#[test]
+fn mutable_abandonment_http_set_requires_acknowledgement() {
+    let srv = ServeProcess::start();
+    let job_id = mutable_abandonment_launch(&srv);
+
+    for body in [
+        r#"{"abandon_in":30}"#,
+        r#"{"abandon_in":30,"acknowledge_result_loss":false}"#,
+    ] {
+        let (status, response) =
+            request_with_method("PUT", &srv.url(&format!("/abandon/{job_id}")), Some(body));
+        assert_eq!(status, 400, "{body} -> {response}");
+        assert_eq!(
+            response["error"]["code"].as_str().unwrap_or(""),
+            "result_loss_not_acknowledged",
+            "{body} -> {response}"
+        );
+    }
+
+    let (_, observed) = get_json(&srv.url(&format!("/status/{job_id}")));
+    assert_eq!(
+        observed["abandon_revision"].as_u64(),
+        Some(1),
+        "a rejected set must not commit a revision: {observed}"
+    );
+
+    post_json(&srv.url(&format!("/kill/{job_id}")), "");
+}
+
+/// A running job with no supervisor-authored control record is rejected with the
+/// stable job-domain error rather than a fabricated success.
+#[test]
+fn mutable_abandonment_http_rejects_a_legacy_supervisor() {
+    let srv = ServeProcess::start();
+    let job_id = mutable_abandonment_launch(&srv);
+    std::fs::remove_file(srv.root_path().join(&job_id).join("abandon_control.json"))
+        .expect("remove control record");
+
+    let (status, body) = request_with_method(
+        "PUT",
+        &srv.url(&format!("/abandon/{job_id}")),
+        Some(r#"{"abandon_in":30,"acknowledge_result_loss":true}"#),
+    );
+    assert_eq!(status, 400, "{body}");
+    assert_eq!(
+        body["error"]["code"].as_str().unwrap_or(""),
+        "invalid_state"
+    );
+
+    let (status, body) =
+        request_with_method("DELETE", &srv.url(&format!("/abandon/{job_id}")), None);
+    assert_eq!(status, 400, "{body}");
+    assert_eq!(
+        body["error"]["code"].as_str().unwrap_or(""),
+        "invalid_state"
+    );
+
+    post_json(&srv.url(&format!("/kill/{job_id}")), "");
+}
+
+/// Unknown jobs stay a job-domain 404 on both abandonment routes.
+#[test]
+fn mutable_abandonment_http_unknown_job_is_not_found() {
+    let srv = ServeProcess::start();
+    let (status, body) = request_with_method(
+        "PUT",
+        &srv.url("/abandon/NONEXISTENT_JOB"),
+        Some(r#"{"abandon_in":30,"acknowledge_result_loss":true}"#),
+    );
+    assert_eq!(status, 404, "{body}");
+    assert_eq!(
+        body["error"]["code"].as_str().unwrap_or(""),
+        "job_not_found"
+    );
+
+    let (status, body) = request_with_method("DELETE", &srv.url("/abandon/NONEXISTENT_JOB"), None);
+    assert_eq!(status, 404, "{body}");
+    assert_eq!(
+        body["error"]["code"].as_str().unwrap_or(""),
+        "job_not_found"
+    );
+}
+
+/// A preflight that omits PUT/DELETE would make the abandonment control
+/// unreachable from a browser client, so CORS must admit both.
+#[test]
+fn mutable_abandonment_cors_preflight_admits_put_and_delete() {
+    let srv = ServeProcessBuilder::new()
+        .allow_origin("https://example.com")
+        .start();
+
+    for method in ["PUT", "DELETE"] {
+        let (_, headers) = preflight(&srv.url("/abandon/some-job"), "https://example.com", method);
+        let allowed = headers
+            .iter()
+            .find(|(k, _)| k == "access-control-allow-methods")
+            .map(|(_, v)| v.to_ascii_uppercase())
+            .unwrap_or_default();
+        assert!(
+            allowed.contains(method),
+            "CORS preflight must admit {method}: {headers:?}"
+        );
+        assert!(
+            headers
+                .iter()
+                .any(|(k, v)| k == "access-control-allow-origin" && v == "https://example.com"),
+            "{headers:?}"
+        );
+    }
+}

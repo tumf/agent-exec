@@ -488,7 +488,11 @@ impl JobDir {
 /// Write `contents` to `target` atomically by writing to a temp file in the
 /// same directory and then renaming. This prevents readers from observing a
 /// partially-written file.
-fn write_atomic(dir: &std::path::Path, target: &std::path::Path, contents: &[u8]) -> Result<()> {
+pub fn write_atomic(
+    dir: &std::path::Path,
+    target: &std::path::Path,
+    contents: &[u8],
+) -> Result<()> {
     use std::io::Write;
 
     // Create a named temporary file in the same directory so that rename is

@@ -27,6 +27,12 @@ impl std::fmt::Display for McpStartupConfigError {
 
 impl std::error::Error for McpStartupConfigError {}
 
+/// Structured spelling of the runtime abandonment deadline input.
+///
+/// Distinct from the launch-time `abandon_job_after`: this one replaces the
+/// deadline of a job that is already running.
+pub const API_ABANDON_IN_INPUT: &str = "abandon_in";
+
 const DEFAULT_UNTIL_ENV: &str = "AGENT_EXEC_MCP_DEFAULT_UNTIL_SECONDS";
 const MAX_UNTIL_ENV: &str = "AGENT_EXEC_MCP_MAX_UNTIL_SECONDS";
 const MAX_OBSERVATION_SECONDS: u64 = 1_000_000_000_000_000;
@@ -115,6 +121,23 @@ struct RunParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 struct JobParams {
     job_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct SetAbandonmentParams {
+    job_id: String,
+    /// WARNING: Gives up on the job, terminates it, and may permanently lose
+    /// unfinished results. Use `until` on an observation tool to stop waiting
+    /// without stopping the job.
+    ///
+    /// Seconds from the moment this update is durably accepted — not from when
+    /// the job started — until the running job is terminated. Requires
+    /// `acknowledge_result_loss=true`.
+    abandon_in: f64,
+    /// Explicit acknowledgement that the replaced deadline may permanently lose
+    /// unfinished results. Required for every set.
+    acknowledge_result_loss: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -439,6 +462,46 @@ impl Mcp {
             until_seconds: until,
             forever: false,
         }))
+    }
+
+    #[tool(
+        description = "WARNING: Gives up on the job, terminates it, and may permanently lose unfinished results. Use until to stop waiting without stopping the job. Replaces a running managed job's abandonment deadline, measured from durable acceptance",
+        output_schema = rmcp::handler::server::tool::cached_schema_for_type::<McpResponseObject>()
+    )]
+    fn set_abandonment(&self, Parameters(params): Parameters<SetAbandonmentParams>) -> Json<Value> {
+        // Admission first: a rejected request must not reach the control record.
+        if let Err(e) = crate::abandon::require_set_acknowledgement(
+            params.acknowledge_result_loss.unwrap_or(false),
+            API_ABANDON_IN_INPUT,
+            run::API_ACKNOWLEDGE_INPUT,
+        ) {
+            return tool_error(e.to_string());
+        }
+        let abandon_in = match seconds(Some(params.abandon_in), API_ABANDON_IN_INPUT, 0) {
+            Ok(value) => value,
+            Err(message) => return tool_error(message),
+        };
+        envelope(crate::abandon::update_response(
+            crate::abandon::AbandonUpdateOpts {
+                job_id: &params.job_id,
+                root: self.root.as_deref(),
+                abandon_in_ms: Some(abandon_in.saturating_mul(1000)),
+            },
+        ))
+    }
+
+    #[tool(
+        description = "Remove a running managed job's abandonment deadline; non-destructive and never signals the job",
+        output_schema = rmcp::handler::server::tool::cached_schema_for_type::<McpResponseObject>()
+    )]
+    fn clear_abandonment(&self, Parameters(params): Parameters<JobParams>) -> Json<Value> {
+        envelope(crate::abandon::update_response(
+            crate::abandon::AbandonUpdateOpts {
+                job_id: &params.job_id,
+                root: self.root.as_deref(),
+                abandon_in_ms: None,
+            },
+        ))
     }
 
     #[tool(description = "Explicitly terminate a managed job with TERM", output_schema = rmcp::handler::server::tool::cached_schema_for_type::<McpResponseObject>())]

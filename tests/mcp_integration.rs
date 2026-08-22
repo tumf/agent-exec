@@ -161,7 +161,18 @@ fn mcp_lists_exactly_managed_job_tools_and_runs_jobs() {
         .map(|tool| tool["name"].as_str().expect("tool name"))
         .collect();
     names.sort_unstable();
-    assert_eq!(names, ["kill", "run", "status", "tail", "wait"]);
+    assert_eq!(
+        names,
+        [
+            "clear_abandonment",
+            "kill",
+            "run",
+            "set_abandonment",
+            "status",
+            "tail",
+            "wait"
+        ]
+    );
     for tool in listed["result"]["tools"].as_array().expect("tools") {
         assert!(
             tool.get("outputSchema")
@@ -1250,5 +1261,210 @@ fn abandon_job_after_mcp_abandonment_and_observation_remain_distinct() {
         &mcp.call(7, "kill", json!({ "job_id": observed_id })),
         "kill",
         true,
+    );
+}
+
+// ── mutable running-job abandonment control ────────────────────────────────────
+
+/// Launch a detached long-running managed job through MCP.
+fn mutable_abandonment_launch(mcp: &mut McpProcess, id: u64) -> String {
+    let launched = mcp.call(
+        id,
+        "run",
+        json!({ "command": ["sleep", "600"], "until": 0 }),
+    );
+    assert_envelope(&launched, "run", true);
+    launched["job_id"].as_str().expect("job_id").to_string()
+}
+
+/// MCP replaces a running deadline and reports the same effective control that
+/// `status` reads back out of the durable record.
+#[test]
+fn mutable_abandonment_mcp_sets_and_reports_a_running_deadline() {
+    let harness = TestHarness::new();
+    let mut mcp = McpProcess::start(harness.root());
+    mcp.initialize();
+
+    let job_id = mutable_abandonment_launch(&mut mcp, 2);
+
+    let set = mcp.call(
+        3,
+        "set_abandonment",
+        json!({ "job_id": job_id, "abandon_in": 30, "acknowledge_result_loss": true }),
+    );
+    assert_envelope(&set, "abandon_set", true);
+    assert_eq!(set["abandon_revision"].as_u64(), Some(2));
+    assert_eq!(set["abandon_job_after_ms"].as_u64(), Some(30_000));
+    assert_eq!(set["abandon_configured_by"].as_str(), Some("update"));
+    let deadline = set["abandon_deadline"]
+        .as_str()
+        .expect("deadline")
+        .to_string();
+
+    let status = mcp.call(4, "status", json!({ "job_id": job_id }));
+    assert_envelope(&status, "status", true);
+    assert_eq!(status["abandon_revision"].as_u64(), Some(2));
+    assert_eq!(status["abandon_deadline"].as_str(), Some(deadline.as_str()));
+    assert_eq!(status["abandon_configured_by"].as_str(), Some("update"));
+    assert!(
+        status["abandon_remaining_ms"].as_u64().is_some(),
+        "{status}"
+    );
+
+    mcp.call(5, "kill", json!({ "job_id": job_id }));
+}
+
+/// MCP clears a running deadline; the workload survives it.
+#[test]
+fn mutable_abandonment_mcp_clears_a_running_deadline() {
+    let harness = TestHarness::new();
+    let mut mcp = McpProcess::start(harness.root());
+    mcp.initialize();
+
+    let launched = mcp.call(
+        2,
+        "run",
+        json!({
+            "command": ["sleep", "600"],
+            "until": 0,
+            "abandon_job_after": 2,
+            "acknowledge_result_loss": true
+        }),
+    );
+    assert_envelope(&launched, "run", true);
+    let job_id = launched["job_id"].as_str().expect("job_id").to_string();
+
+    let cleared = mcp.call(3, "clear_abandonment", json!({ "job_id": job_id }));
+    assert_envelope(&cleared, "abandon_clear", true);
+    assert_eq!(cleared["abandon_phase"].as_str(), Some("disabled"));
+    assert!(cleared.get("abandon_deadline").is_none(), "{cleared}");
+
+    std::thread::sleep(std::time::Duration::from_secs(4));
+    let status = mcp.call(4, "status", json!({ "job_id": job_id }));
+    assert_eq!(
+        status["state"].as_str().unwrap_or(""),
+        "running",
+        "a cleared deadline must not signal the job: {status}"
+    );
+
+    mcp.call(5, "kill", json!({ "job_id": job_id }));
+}
+
+/// Every MCP set requires acknowledgement, and the rejection carries the
+/// result-loss warning rather than a bare validation message.
+#[test]
+fn mutable_abandonment_mcp_set_requires_acknowledgement() {
+    let harness = TestHarness::new();
+    let mut mcp = McpProcess::start(harness.root());
+    mcp.initialize();
+
+    let job_id = mutable_abandonment_launch(&mut mcp, 2);
+
+    for arguments in [
+        json!({ "job_id": job_id, "abandon_in": 30 }),
+        json!({ "job_id": job_id, "abandon_in": 30, "acknowledge_result_loss": false }),
+    ] {
+        let rejected = mcp.call(3, "set_abandonment", arguments.clone());
+        assert_eq!(
+            rejected["isError"].as_bool(),
+            Some(true),
+            "{arguments} -> {rejected}"
+        );
+        let message = rejected["message"].as_str().unwrap_or("");
+        assert!(
+            message.contains("permanently lose"),
+            "the rejection must carry the result-loss warning: {rejected}"
+        );
+        assert!(
+            message.contains("acknowledge_result_loss"),
+            "the rejection must name the field that unblocks it: {rejected}"
+        );
+    }
+
+    // Nothing was mutated: the launch revision is still current.
+    let status = mcp.call(4, "status", json!({ "job_id": job_id }));
+    assert_eq!(status["abandon_revision"].as_u64(), Some(1));
+
+    mcp.call(5, "kill", json!({ "job_id": job_id }));
+}
+
+/// A running job with no supervisor-authored control record is rejected with a
+/// stable job-domain error rather than reporting a change nothing will honour.
+#[test]
+fn mutable_abandonment_mcp_rejects_a_legacy_supervisor() {
+    let harness = TestHarness::new();
+    let mut mcp = McpProcess::start(harness.root());
+    mcp.initialize();
+
+    let job_id = mutable_abandonment_launch(&mut mcp, 2);
+    std::fs::remove_file(
+        std::path::Path::new(harness.root())
+            .join(&job_id)
+            .join("abandon_control.json"),
+    )
+    .expect("remove control record");
+
+    for (name, arguments) in [
+        (
+            "set_abandonment",
+            json!({ "job_id": job_id, "abandon_in": 30, "acknowledge_result_loss": true }),
+        ),
+        ("clear_abandonment", json!({ "job_id": job_id })),
+    ] {
+        let rejected = mcp.call(3, name, arguments);
+        assert_envelope(&rejected, "error", false);
+        assert_eq!(
+            rejected["error"]["code"].as_str().unwrap_or(""),
+            "invalid_state",
+            "{name} -> {rejected}"
+        );
+        assert!(
+            rejected["error"]["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains("restart"),
+            "{name} must direct the operator to restart: {rejected}"
+        );
+    }
+
+    mcp.call(4, "kill", json!({ "job_id": job_id }));
+}
+
+/// Both tools are advertised, and the destructive one leads with the warning.
+#[test]
+fn mutable_abandonment_mcp_advertises_both_tools_with_the_destructive_boundary() {
+    let harness = TestHarness::new();
+    let mut mcp = McpProcess::start(harness.root());
+    mcp.initialize();
+
+    let listed = mcp.request(2, "tools/list", json!({}));
+    let tools = listed["result"]["tools"].as_array().expect("tools array");
+    let by_name = |name: &str| {
+        tools
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .unwrap_or_else(|| panic!("{name} must be advertised: {listed}"))
+            .clone()
+    };
+
+    let set = by_name("set_abandonment");
+    assert!(
+        set["description"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with("WARNING: Gives up on the job, terminates it, and may permanently lose"),
+        "set_abandonment must lead with the result-loss warning: {set}"
+    );
+    let properties = &set["inputSchema"]["properties"];
+    assert!(properties.get("abandon_in").is_some(), "{set}");
+    assert!(properties.get("acknowledge_result_loss").is_some(), "{set}");
+
+    let clear = by_name("clear_abandonment");
+    assert!(
+        clear["description"]
+            .as_str()
+            .unwrap_or("")
+            .contains("non-destructive"),
+        "clear_abandonment must say it never signals the job: {clear}"
     );
 }

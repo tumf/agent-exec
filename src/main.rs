@@ -16,6 +16,12 @@ use agent_exec::mcp::McpStartupConfigError;
 use agent_exec::schema::ErrorResponse;
 use agent_exec::tag::InvalidTag;
 
+/// CLI spelling of the runtime abandonment deadline input.
+///
+/// Deliberately distinct from `--abandon-job-after`: that one defines a job,
+/// this one replaces the deadline of a job that is already running.
+const CLI_ABANDON_SET_INPUT: &str = "--in";
+
 /// Shell variants supported by the `completions` subcommand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum CompletionShell {
@@ -469,6 +475,12 @@ enum Command {
         job_id: String,
     },
 
+    /// Change or remove a running job's abandonment deadline.
+    Abandon {
+        #[command(subcommand)]
+        subcommand: AbandonSubcommand,
+    },
+
     /// Delete one or all finished jobs.
     #[command(visible_alias = "rm")]
     Delete {
@@ -618,6 +630,47 @@ enum Command {
         /// Set allowed CORS origin. Wildcard '*' is rejected.
         #[arg(long)]
         allow_origin: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum AbandonSubcommand {
+    /// Replace a running job's abandonment deadline.
+    ///
+    /// WARNING: Gives up on the job, terminates it, and may permanently lose
+    /// unfinished results. Use --until on an observation command to stop waiting
+    /// without stopping the job. --in is measured from the moment this update is
+    /// durably accepted, not from when the job started.
+    Set {
+        /// Override jobs root directory.
+        #[arg(long)]
+        root: Option<String>,
+
+        /// Job ID.
+        #[arg(add = ArgValueCompleter::new(agent_exec::completions::complete_running_jobs))]
+        job_id: String,
+
+        /// Seconds from durable acceptance until the job is abandoned.
+        #[arg(long = "in", value_name = "SECONDS")]
+        r#in: u64,
+
+        /// Acknowledge that the new deadline may permanently lose unfinished results.
+        #[arg(long, default_value = "false", action = clap::ArgAction::SetTrue)]
+        acknowledge_result_loss: bool,
+    },
+
+    /// Remove a running job's abandonment deadline.
+    ///
+    /// Non-destructive: the workload keeps running and is never signaled, so no
+    /// result-loss acknowledgement is required.
+    Clear {
+        /// Override jobs root directory.
+        #[arg(long)]
+        root: Option<String>,
+
+        /// Job ID.
+        #[arg(add = ArgValueCompleter::new(agent_exec::completions::complete_running_jobs))]
+        job_id: String,
     },
 }
 
@@ -1543,6 +1596,41 @@ fn run(cli: Cli) -> Result<()> {
                 all,
                 tags,
             })?;
+        }
+
+        Command::Abandon {
+            subcommand:
+                AbandonSubcommand::Set {
+                    root,
+                    job_id,
+                    r#in,
+                    acknowledge_result_loss,
+                },
+        } => {
+            // Admission first, before the jobs root or any job state is touched,
+            // so a rejected destructive request cannot mutate control state.
+            agent_exec::abandon::require_set_acknowledgement(
+                acknowledge_result_loss,
+                CLI_ABANDON_SET_INPUT,
+                agent_exec::run::CLI_ACKNOWLEDGE_INPUT,
+            )?;
+            agent_exec::abandon::update_response(agent_exec::abandon::AbandonUpdateOpts {
+                job_id: &job_id,
+                root: root.as_deref(),
+                abandon_in_ms: Some(r#in.saturating_mul(1000)),
+            })?
+            .print();
+        }
+
+        Command::Abandon {
+            subcommand: AbandonSubcommand::Clear { root, job_id },
+        } => {
+            agent_exec::abandon::update_response(agent_exec::abandon::AbandonUpdateOpts {
+                job_id: &job_id,
+                root: root.as_deref(),
+                abandon_in_ms: None,
+            })?
+            .print();
         }
 
         Command::Tag {
