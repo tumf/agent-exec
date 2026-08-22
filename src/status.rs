@@ -82,6 +82,10 @@ pub fn status_response(opts: StatusOpts) -> Result<Response<StatusData>> {
     let stdout_log_path = job_dir.stdout_path();
     let stderr_log_path = job_dir.stderr_path();
 
+    // Read-only: a job whose supervisor never authored a control record reports
+    // null abandonment fields rather than having one materialized for it.
+    let abandon = crate::abandon::status_for(&job_dir, &status);
+
     let response = Response::new(
         "status",
         StatusData {
@@ -109,6 +113,11 @@ pub fn status_response(opts: StatusOpts) -> Result<Response<StatusData>> {
             stderr_total_bytes: observed_bytes(&stderr_log_path),
             stdout_log_path: stdout_log_path.display().to_string(),
             stderr_log_path: stderr_log_path.display().to_string(),
+            abandon_job_after_ms: abandon.abandon_job_after_ms,
+            abandon_deadline: abandon.abandon_deadline,
+            abandon_remaining_ms: abandon.abandon_remaining_ms,
+            abandon_revision: abandon.abandon_revision,
+            abandon_configured_by: abandon.abandon_configured_by,
         },
     );
     Ok(response)

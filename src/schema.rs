@@ -327,6 +327,54 @@ pub struct StatusData {
     /// Current stderr.log size from file metadata; `0` when missing or unreadable.
     #[serde(default)]
     pub stderr_total_bytes: u64,
+
+    // --- Effective abandonment control (read-only projection) ---
+    //
+    // Projected from the supervisor-authored control record, never from the
+    // launch definition, so what these report is what the supervisor will act
+    // on. All five are null/absent for a job whose supervisor never authored a
+    // control record. They are diagnostic: firing is decided by the locked
+    // control transition, not by `abandon_remaining_ms`.
+    /// Duration accepted for the current control revision; null when disabled.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub abandon_job_after_ms: Option<u64>,
+    /// Absolute deadline of the current control revision; null when disabled.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub abandon_deadline: Option<String>,
+    /// Response-time remaining milliseconds, clamped to
+    /// `[0, abandon_job_after_ms]`; null when disabled, terminal, or absent.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub abandon_remaining_ms: Option<u64>,
+    /// Durable control revision; null when the control record is absent.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub abandon_revision: Option<u64>,
+    /// `launch` or `update`; null for never-configured unlimited jobs.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub abandon_configured_by: Option<String>,
+}
+
+/// Response for `abandon set` / `abandon clear`.
+///
+/// Reports the revision the operation durably committed, so a caller can tell
+/// its own accepted change apart from a concurrent one.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AbandonData {
+    pub job_id: String,
+    /// Durable control revision this operation committed.
+    pub abandon_revision: u64,
+    /// `active` when a deadline is armed, `disabled` after a clear.
+    pub abandon_phase: String,
+    /// Duration accepted for this revision; null after a clear.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub abandon_job_after_ms: Option<u64>,
+    /// Absolute deadline for this revision; null after a clear.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub abandon_deadline: Option<String>,
+    /// Always `update` for a runtime change.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub abandon_configured_by: Option<String>,
+    /// RFC 3339 acceptance timestamp of this revision.
+    pub updated_at: String,
 }
 
 /// Response for `tail` command.

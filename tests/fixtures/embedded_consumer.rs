@@ -16,6 +16,10 @@
 //! Optional environment knobs, set by the test on this process:
 //! * `AGENT_EXEC_FIXTURE_TAGS`    — comma-separated tags for the launched job.
 //! * `AGENT_EXEC_FIXTURE_NO_WAIT` — launch without bounded inline observation.
+//! * `AGENT_EXEC_FIXTURE_HOLD_ABANDON_LOCK` — job ID whose abandonment control
+//!   lock this process should take and then hold until it is killed. A test
+//!   needs a *separate* process for this because the point being proven is that
+//!   the operating system releases the advisory lock when its holder dies.
 
 use std::process::ExitCode;
 
@@ -35,6 +39,38 @@ fn main() -> ExitCode {
 
     // Step 2: ordinary consumer work, with the consumer's own arguments intact.
     let args: Vec<String> = std::env::args().skip(1).collect();
+
+    // Lock-holder mode: take the job's abandonment control lock and never
+    // release it voluntarily. Announces readiness on stdout so the test can wait
+    // for the lock to actually be held before it does anything else.
+    if let Ok(job_id) = std::env::var("AGENT_EXEC_FIXTURE_HOLD_ABANDON_LOCK") {
+        let Some(root) = args.first() else {
+            eprintln!("usage: agent-exec-embedded-consumer <root> (lock-holder mode)");
+            return ExitCode::from(2);
+        };
+        let job_dir = match agent_exec::jobstore::JobDir::open(std::path::Path::new(root), &job_id)
+        {
+            Ok(job_dir) => job_dir,
+            Err(err) => {
+                eprintln!("open job failed: {err}");
+                return ExitCode::from(3);
+            }
+        };
+        let _lock = match agent_exec::abandon::lock_control(&job_dir) {
+            Ok(lock) => lock,
+            Err(err) => {
+                eprintln!("lock acquisition failed: {err}");
+                return ExitCode::from(3);
+            }
+        };
+        println!("abandon_lock=held");
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+    }
+
     if args.len() < 2 {
         eprintln!("usage: agent-exec-embedded-consumer <root> <command...>");
         return ExitCode::from(2);

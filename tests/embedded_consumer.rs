@@ -790,3 +790,170 @@ fn client_exposes_its_explicit_root_and_supervisor_executable() {
         std::env::current_exe().expect("current exe").as_path()
     );
 }
+
+// ---------------------------------------------------------------------------
+// Mutable running-job abandonment control
+// ---------------------------------------------------------------------------
+
+/// Launch a detached long-running job through the typed embedded API.
+fn mutable_abandonment_launch(client: &EmbeddedClient, abandon_job_after_ms: u64) -> String {
+    let mut request = RunRequest::new(long_running_workload()).no_wait();
+    request.abandon_job_after_ms = abandon_job_after_ms;
+    request.acknowledge_result_loss = abandon_job_after_ms > 0;
+    let launched = serialized(|| client.run(request).expect("launch managed job"));
+    assert_eq!(launched.state, "running");
+    launched.job_id
+}
+
+/// The typed API replaces a running deadline and reports the revision it
+/// committed; `status` reads the same effective control back.
+#[test]
+fn mutable_abandonment_embedded_set_reports_the_committed_revision() {
+    let root = Root::new();
+    let client = root.client();
+    let job_id = mutable_abandonment_launch(&client, 0);
+
+    let accepted = client
+        .set_abandonment(&job_id, 600_000, true)
+        .expect("set abandonment");
+    assert_eq!(accepted.job_id, job_id);
+    assert_eq!(accepted.abandon_revision, 2);
+    assert_eq!(accepted.abandon_phase, "active");
+    assert_eq!(accepted.abandon_job_after_ms, Some(600_000));
+    assert_eq!(accepted.abandon_configured_by.as_deref(), Some("update"));
+
+    let status = client.status(&job_id).expect("status");
+    assert_eq!(status.abandon_revision, Some(2));
+    assert_eq!(status.abandon_deadline, accepted.abandon_deadline);
+    assert_eq!(status.abandon_configured_by.as_deref(), Some("update"));
+    assert!(status.abandon_remaining_ms.is_some_and(|ms| ms <= 600_000));
+
+    cleanup(&client, &job_id);
+}
+
+/// Clearing is non-destructive and needs no acknowledgement.
+#[test]
+fn mutable_abandonment_embedded_clear_disables_the_control() {
+    let root = Root::new();
+    let client = root.client();
+    let job_id = mutable_abandonment_launch(&client, 600_000);
+
+    let cleared = client
+        .clear_abandonment(&job_id)
+        .expect("clear abandonment");
+    assert_eq!(cleared.abandon_phase, "disabled");
+    assert_eq!(cleared.abandon_job_after_ms, None);
+    assert_eq!(cleared.abandon_deadline, None);
+
+    let status = client.status(&job_id).expect("status");
+    assert_eq!(status.abandon_job_after_ms, None);
+    assert_eq!(status.abandon_remaining_ms, None);
+    assert_eq!(status.abandon_revision, Some(2));
+    assert_eq!(status.state, "running");
+
+    cleanup(&client, &job_id);
+}
+
+/// A set without acknowledgement is invalid input and never reaches the control
+/// record.
+#[test]
+fn mutable_abandonment_embedded_set_requires_acknowledgement() {
+    let root = Root::new();
+    let client = root.client();
+    let job_id = mutable_abandonment_launch(&client, 0);
+
+    let err = client
+        .set_abandonment(&job_id, 600_000, false)
+        .expect_err("unacknowledged set must be rejected");
+    assert_eq!(err.kind(), JobErrorKind::InvalidInput);
+    assert!(err.message().contains("permanently lose"), "{err}");
+    assert_eq!(
+        client.status(&job_id).expect("status").abandon_revision,
+        Some(1),
+        "a rejected set must not commit a revision"
+    );
+
+    cleanup(&client, &job_id);
+}
+
+/// A running job with no supervisor-authored control record is rejected with
+/// the same invalid-state contract every other surface reports.
+#[test]
+fn mutable_abandonment_embedded_rejects_a_legacy_supervisor() {
+    let root = Root::new();
+    let client = root.client();
+    let job_id = mutable_abandonment_launch(&client, 0);
+    std::fs::remove_file(root.path.join(&job_id).join("abandon_control.json"))
+        .expect("remove control record");
+
+    let err = client
+        .set_abandonment(&job_id, 600_000, true)
+        .expect_err("legacy supervisor must reject set");
+    assert_eq!(err.kind(), JobErrorKind::InvalidState);
+    assert!(err.message().contains("restart"), "{err}");
+
+    let err = client
+        .clear_abandonment(&job_id)
+        .expect_err("legacy supervisor must reject clear");
+    assert_eq!(err.kind(), JobErrorKind::InvalidState);
+
+    assert!(
+        !root
+            .path
+            .join(&job_id)
+            .join("abandon_control.json")
+            .exists(),
+        "a rejected operation must not materialize a control record"
+    );
+
+    cleanup(&client, &job_id);
+}
+
+/// Job-domain errors keep their kinds on both operations.
+#[test]
+fn mutable_abandonment_embedded_unknown_job_is_a_job_domain_error() {
+    let root = Root::new();
+    let client = root.client();
+
+    assert_eq!(
+        client
+            .set_abandonment("missing", 1_000, true)
+            .expect_err("unknown job")
+            .kind(),
+        JobErrorKind::JobNotFound
+    );
+    assert_eq!(
+        client
+            .clear_abandonment("missing")
+            .expect_err("unknown job")
+            .kind(),
+        JobErrorKind::JobNotFound
+    );
+}
+
+/// The unconditional observer honours a deadline set on a job that was launched
+/// without one, all the way to the terminal abandonment markers.
+#[test]
+fn mutable_abandonment_embedded_set_abandons_an_unlimited_job() {
+    let root = Root::new();
+    let client = root.client();
+    let job_id = mutable_abandonment_launch(&client, 0);
+
+    client
+        .set_abandonment(&job_id, 1_000, true)
+        .expect("set abandonment");
+
+    let abandoned = wait_until(Duration::from_secs(20), || {
+        client
+            .status(&job_id)
+            .map(|status| status.state != "running")
+            .unwrap_or(false)
+    });
+    assert!(abandoned, "the newly set deadline must abandon the job");
+
+    let status = client.status(&job_id).expect("status");
+    assert_eq!(status.abandoned_by.as_deref(), Some("abandon_job_after"));
+    assert_eq!(status.result_loss, Some(true));
+
+    cleanup(&client, &job_id);
+}

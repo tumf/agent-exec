@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$comment": "2026-08-19T00:00:00Z",
+  "$comment": "2026-08-22T00:00:00Z",
   "title": "agent-exec CLI response schema",
   "description": "JSON Schema for all stdout responses produced by agent-exec.",
   "definitions": {
@@ -413,6 +413,31 @@
               "type": "integer",
               "minimum": 0,
               "description": "Optional (schema 0.3). stderr.log size from file metadata; 0 when missing or unreadable."
+            },
+            "abandon_job_after_ms": {
+              "type": ["integer", "null"],
+              "minimum": 0,
+              "description": "Optional (schema 0.3). Duration accepted for the current abandonment control revision, projected from the supervisor-authored control record rather than from the launch definition. Null when the control is disabled or no control record exists."
+            },
+            "abandon_deadline": {
+              "type": ["string", "null"],
+              "format": "date-time",
+              "description": "Optional (schema 0.3). Absolute deadline of the current abandonment control revision. Null when the control is disabled or no control record exists."
+            },
+            "abandon_remaining_ms": {
+              "type": ["integer", "null"],
+              "minimum": 0,
+              "description": "Optional (schema 0.3). Response-time remaining milliseconds, clamped to the inclusive range [0, abandon_job_after_ms]. Null when the control is disabled, the job is terminal, or no control record exists. Advisory only: firing is decided by the supervisor's locked control transition, never by this value."
+            },
+            "abandon_revision": {
+              "type": ["integer", "null"],
+              "minimum": 0,
+              "description": "Optional (schema 0.3). Durable abandonment control revision. Null when no supervisor-authored control record exists, which identifies a running job whose supervisor predates runtime abandonment updates."
+            },
+            "abandon_configured_by": {
+              "type": ["string", "null"],
+              "enum": ["launch", "update", null],
+              "description": "Optional (schema 0.3). Which surface configured the current revision. Null for an unlimited job that was never configured destructively, and for a job with no control record."
             }
           }
         }
@@ -594,6 +619,58 @@
             },
             "signal": {
               "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    "AbandonResponse": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/Envelope"
+        },
+        {
+          "type": "object",
+          "required": [
+            "job_id",
+            "abandon_revision",
+            "abandon_phase",
+            "updated_at"
+          ],
+          "properties": {
+            "type": {
+              "enum": ["abandon_set", "abandon_clear"]
+            },
+            "job_id": {
+              "type": "string"
+            },
+            "abandon_revision": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Durable control revision this operation committed. Lets a caller tell its own accepted change apart from a concurrent one."
+            },
+            "abandon_phase": {
+              "enum": ["active", "disabled"],
+              "description": "\"active\" after a set, \"disabled\" after a clear."
+            },
+            "abandon_job_after_ms": {
+              "type": ["integer", "null"],
+              "minimum": 0,
+              "description": "Duration accepted for this revision, measured from durable acceptance rather than from job start. Null after a clear."
+            },
+            "abandon_deadline": {
+              "type": ["string", "null"],
+              "format": "date-time",
+              "description": "Absolute deadline for this revision. Null after a clear."
+            },
+            "abandon_configured_by": {
+              "type": ["string", "null"],
+              "enum": ["update", null],
+              "description": "Always \"update\" for a runtime change."
+            },
+            "updated_at": {
+              "type": "string",
+              "format": "date-time"
             }
           }
         }
@@ -812,6 +889,9 @@
     },
     {
       "$ref": "#/definitions/KillResponse"
+    },
+    {
+      "$ref": "#/definitions/AbandonResponse"
     },
     {
       "$ref": "#/definitions/ListResponse"
