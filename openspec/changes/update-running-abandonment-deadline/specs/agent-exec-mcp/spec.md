@@ -2,7 +2,7 @@
 
 ### Requirement: MCP exposes mutable abandonment control
 
-MCP MUST expose `set_abandonment(job_id, abandon_in, acknowledge_result_loss)` and `clear_abandonment(job_id)`. Set MUST require true acknowledgement and interpret `abandon_in` relative to durable update acceptance. Both tools MUST use the canonical revisioned, locked update/trigger transition and stable job-domain errors. MCP `status` MUST expose the canonical effective abandonment status fields.
+MCP MUST expose `set_abandonment(job_id, abandon_in, acknowledge_result_loss)` and `clear_abandonment(job_id)`. Set MUST require true acknowledgement and interpret `abandon_in` relative to durable update acceptance. Both tools MUST use the canonical revisioned, fixed-lock-file update/trigger transition, reject running jobs without a compatible supervisor-authored control record and stable job-domain errors. MCP `status` MUST expose the canonical effective abandonment status fields.
 
 #### Scenario: MCP replaces and reports a running deadline
 
