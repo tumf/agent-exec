@@ -32,8 +32,9 @@
 
 ### Requirement: POST /exec によるジョブ起動
 
-`POST /exec` はリクエストボディの `command` フィールド（必須）と任意の `cwd`・`env`・`timeout`（秒、CLI `--timeout` と同じ秒単位契約） を受け取り、`run` サブコマンドと同等のジョブを起動して `RunData` を返さなければならない（MUST）。`wait` を受け付けてはならない（MUST NOT）。
-`POST /exec` のレスポンスは CLI `run` と同じ inline output field（`stdout`/`stderr` と range/total bytes）を返さなければならない（MUST）。
+`POST /exec` はリクエストボディの `command` フィールド（必須、string 配列）と任意の `cwd`・`env`・`timeout`（秒）・`wait`（bool、既定 true）・`until`（秒、既定 10）・`max_bytes`（u64、既定 65536）を受け取り、CLI `run` と同じ既定待機・inline 観測契約でジョブを起動して `RunData` を返さなければならない（MUST）。旧 `timeout_ms` は受け付けてはならない（MUST NOT）。`wait`/`until`/`max_bytes` はクライアントが上書きできなければならない（MUST）。
+
+`POST /exec` のレスポンスは CLI `run` と同じ inline output field（`stdout`/`stderr` と range/total bytes、および終端フィールド）を返さなければならない（MUST）。新規 job の `job_id` は hash-like 小文字 hex ID でなければならない（MUST）。
 
 #### Scenario: ジョブ起動成功
 
@@ -47,6 +48,38 @@
 **When**: `POST /exec` に `{}` を送る
 **Then**: HTTP 400 かつ `ok=false` の JSON が返る
 
+#### Scenario: POST /exec は CLI run と同じ output fields を返す
+
+**Given**: `agent-exec serve` が起動している
+**When**: `POST /exec` に `{"command": ["echo", "hi"]}` を送る
+**Then**: HTTP 200 かつ `job_id`, `stdout`, `stdout_range`, `stdout_total_bytes` を含む JSON が返る
+**And**: 削除済み snapshot-era field 名は含まれない
+
+#### Scenario: POST /exec returns a hash-like job ID
+
+**Given**: `agent-exec serve` が起動している
+**When**: `POST /exec` に `{"command": ["echo", "hi"]}` を送る
+**Then**: HTTP 200 かつ `job_id` を含む JSON が返る
+**And**: `job_id` は `[0-9a-f]` のみで構成される固定長文字列である
+
+#### Scenario: POST /exec accepts until override
+
+**Given**: `agent-exec serve` が起動している
+**When**: `POST /exec` に `{"command":["sh","-c","exit 7"],"until":1}` を送る
+**Then**: HTTP 200 かつ `exit_code=7` を含む JSON が約 1 秒で返る
+
+#### Scenario: POST /exec accepts wait=false
+
+**Given**: `agent-exec serve` が起動している
+**When**: `POST /exec` に `{"command":["sleep","60"],"wait":false}` を送る
+**Then**: HTTP 200 が即座に返る
+**And**: `stdout` は空または省略される
+
+#### Scenario: POST /exec rejects legacy timeout_ms
+
+**Given**: `agent-exec serve` が起動している
+**When**: `POST /exec` に `{"command":["echo","hi"],"timeout_ms":1000}` を送る
+**Then**: HTTP 400 が返る
 ### Requirement: GET /status/:id によるジョブ状態取得
 
 `GET /status/:id` は `status` サブコマンドと同等の応答を HTTP 200 で返さなければならない（MUST）。job_id が存在しない場合は HTTP 404 を返さなければならない（MUST）。
@@ -105,17 +138,6 @@
 **Then**: `schema_version`, `ok`, `type` がすべて含まれる
 
 
-### Requirement: POST /exec によるジョブ起動
-
-`POST /exec` はリクエストボディの `command` フィールド（必須）と任意の `cwd`・`env`・`timeout`（秒、CLI `--timeout` と同じ秒単位契約） を受け取り、CLI の `run` と同等の既定待機・inline output 契約でジョブを起動して返さなければならない（MUST）。`wait` を受け付けてはならない（MUST NOT）。
-
-#### Scenario: POST /exec は CLI run と同じ output fields を返す
-
-Given `agent-exec serve` が起動している
-When `POST /exec` に `{"command": ["echo", "hi"]}` を送る
-Then HTTP 200 かつ `job_id`, `stdout`, `stdout_range`, `stdout_total_bytes` を含む JSON が返る
-And 削除済み snapshot-era field 名は含まれない
-
 ### Requirement: GET /tail/:id によるログ末尾取得
 
 `GET /tail/:id` は CLI の `tail` と同等の応答を返さなければならない（MUST）。末尾本文は `stdout` / `stderr` と range 情報で表現しなければならない（MUST）。
@@ -127,17 +149,6 @@ When `GET /tail/<job_id>` をリクエストする
 Then HTTP 200 かつ `stdout`, `stdout_range`, `stdout_total_bytes` フィールドを含む JSON が返る
 And `stdout_tail` は含まれない
 
-
-### Requirement: POST /exec によるジョブ起動
-
-`POST /exec` はリクエストボディの `command` フィールド（必須）と任意の `cwd`・`env`・`timeout`（秒、CLI `--timeout` と同じ秒単位契約） を受け取り、CLI の `run` と同等の既定待機・inline output 契約でジョブを起動して返さなければならない（MUST）。新規 job の `job_id` は hash-like 小文字 hex ID でなければならない（MUST）。`wait` を受け付けてはならない（MUST NOT）。
-
-#### Scenario: POST /exec returns a hash-like job ID
-
-Given `agent-exec serve` が起動している
-When `POST /exec` に `{"command": ["echo", "hi"]}` を送る
-Then HTTP 200 かつ `job_id` を含む JSON が返る
-And `job_id` は `[0-9a-f]` のみで構成される固定長文字列である
 
 ### Requirement: HTTP エンドポイントの job_id 解決は CLI と共通
 
@@ -211,32 +222,6 @@ serve は既定で `Access-Control-Allow-Origin` を含むどの CORS ヘッダ�
 **Given**: `agent-exec serve --allow-origin https://example.com` で起動している
 **When**: `Origin: https://example.com` ヘッダ付きで `POST /exec` を送る
 **Then**: レスポンスに `Access-Control-Allow-Origin: https://example.com` が含まれる
-
-### Requirement: POST /exec によるジョブ起動
-
-`POST /exec` はリクエストボディの `command` フィールド（必須、string 配列）と任意の `cwd`・`env`・`timeout`（秒）・`wait`（bool、既定 true）・`until`（秒、既定 10）・`max_bytes`（u64、既定 65536）を受け取り、CLI `run` と同じ inline 観測契約でジョブを起動して返さなければならない（MUST）。旧 `timeout_ms` は受け付けてはならない（MUST NOT）。`wait`/`until`/`max_bytes` はクライアントが上書きできなければならない（MUST）。
-
-`POST /exec` のレスポンスは CLI `run` と同じ inline output field（`stdout`/`stderr` と range/total bytes、および終端フィールド）を返さなければならない（MUST）。新規 job の `job_id` は hash-like 小文字 hex ID でなければならない（MUST）。
-
-#### Scenario: POST /exec accepts until override
-
-**Given**: `agent-exec serve` が起動している
-**When**: `POST /exec` に `{"command":["sh","-c","exit 7"],"until":1}` を送る
-**Then**: HTTP 200 かつ `exit_code=7` を含む JSON が約 1 秒で返る
-
-#### Scenario: POST /exec accepts wait=false
-
-**Given**: `agent-exec serve` が起動している
-**When**: `POST /exec` に `{"command":["sleep","60"],"wait":false}` を送る
-**Then**: HTTP 200 が即座に返る
-**And**: `stdout` は空または省略される
-
-#### Scenario: POST /exec rejects legacy timeout_ms
-
-**Given**: `agent-exec serve` が起動している
-**When**: `POST /exec` に `{"command":["echo","hi"],"timeout_ms":1000}` を送る
-**Then**: HTTP 400 が返る
-
 
 ### Requirement: HTTP エンドポイントの job_id 解決は CLI と共通
 

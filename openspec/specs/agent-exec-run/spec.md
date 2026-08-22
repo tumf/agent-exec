@@ -393,23 +393,6 @@ Then `stdout_log_path` と `stderr_log_path` が含まれる
 And `stdout_range` と `stderr_range` が含まれる
 And `stdout_total_bytes` と `stderr_total_bytes` が 0 以上の整数で返る
 
-### Requirement: 人間向け runtime 制御時間は秒単位である
-
-`run`、`create`、および `_supervise` の人間向け runtime 制御時間オプション (`--timeout`, `--kill-after`, `--progress-every`) は秒単位で解釈しなければならない（MUST）。内部実装でミリ秒へ変換してもよいが、help、README、skills、統合テストは秒単位の契約で一致しなければならない（MUST）。
-
-#### Scenario: run timeout is interpreted in seconds
-
-Given `agent-exec run --timeout 30 -- sh -c "sleep 60"` を実行する
-When runtime timeout が適用される
-Then `30` は 30 秒として解釈される
-And 30 ミリ秒として扱われない
-
-#### Scenario: create persists second-based runtime controls
-
-Given `agent-exec create --timeout 30 --kill-after 5 --progress-every 1 -- sh -c "sleep 60"` を実行する
-When job definition が保存される
-Then これらの人間向け runtime 制御値は秒単位契約として保存される
-
 ### Requirement: 旧 snapshot-era field は正規 surface に残さない
 
 `snapshot` / `final_snapshot` / `stdout_tail` / `stderr_tail` / `*_observed_bytes` / `*_included_bytes` は現行 CLI の正規 help、README、skills、統合テストに残してはならない（MUST NOT）。
