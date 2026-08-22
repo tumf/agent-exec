@@ -239,16 +239,32 @@ agent-exec wait "$JOB"
 
 Without `--no-wait`, `run` observes for up to 10 seconds before returning.
 
-### Runtime timeout and force kill
+### Abandoning a job and force killing it
+
+`--abandon-job-after` gives up on the job, terminates it, and may permanently
+lose unfinished results. It is not an observation deadline: to stop waiting
+without stopping the job, use `--until`. Because it is destructive, it requires
+`--acknowledge-result-loss`; without that flag the command fails before a job is
+created.
 
 The following command sends `SIGTERM` after 5 seconds and `SIGKILL` 2 seconds later if necessary:
 
 ```bash
 agent-exec run \
-  --timeout 5 \
+  --abandon-job-after 5 \
+  --acknowledge-result-loss \
   --kill-after 2 \
   -- sleep 60
 ```
+
+The default is no limit. When abandonment actually terminates a workload, the
+terminal state is unchanged, and `abandoned_by="abandon_job_after"` and
+`result_loss=true` are added to `state.json`, `status`, `list`, and the
+`job.finished` completion event so the loss is identifiable after the fact. A
+configured limit that never fires adds neither marker.
+
+The removed `--timeout` spelling always fails with migration guidance and never
+launches a job.
 
 ### Argv-first invocation
 
@@ -368,8 +384,9 @@ Common options:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--timeout <SECONDS>` | `0` | Stop the process after this runtime; `0` disables the limit. |
-| `--kill-after <SECONDS>` | `0` | Delay between `SIGTERM` and `SIGKILL` after timeout. |
+| `--abandon-job-after <SECONDS>` | `0` | **Destructive.** Give up on the job and terminate it after this runtime, possibly losing unfinished results; `0` disables the limit. Requires `--acknowledge-result-loss`. |
+| `--acknowledge-result-loss` | `false` | Acknowledge that `--abandon-job-after` may permanently lose unfinished results. |
+| `--kill-after <SECONDS>` | `0` | Delay between `SIGTERM` and `SIGKILL` after abandonment. |
 | `--cwd <PATH>` | Inherited | Set the child current working directory. |
 | `--env KEY=VALUE` | None | Set an environment variable; repeatable. |
 | `--env-file <FILE>` | None | Load environment variables from a file; repeatable. |
@@ -429,6 +446,9 @@ Schema `0.3` adds execution context and observability derived from data the job 
 - process observation: `pid` when recorded, and `process_alive`
 - timing: `updated_at`, live `elapsed_ms`, persisted terminal `duration_ms`, and `signal`
 - output: `logs_drained`, `stdout_log_path`, `stderr_log_path`, `stdout_total_bytes`, and `stderr_total_bytes`
+- abandonment provenance: `abandoned_by` and `result_loss`, present only when a configured `--abandon-job-after` limit actually terminated the job
+
+`abandoned_by="abandon_job_after"` with `result_loss=true` identifies a job the caller gave up on, whose unfinished results may be lost. The terminal `state` value itself is unchanged, so existing clients keep working; both markers are absent when the limit never fired and for jobs recorded before the markers existed. The same pair appears in `list` and in the `job.finished` completion event.
 
 `state` is the persisted lifecycle state and `status` never rewrites it. `process_alive` is a separate best-effort, same-user-scoped probe that runs only for persisted `running` state; it is omitted otherwise, and omission means no live observation was made. A stale running job therefore appears as `state="running"` with `process_alive=false` here, and as `unknown` in `list`. The probe is not an authoritative liveness guarantee and does not defend against PID reuse.
 
@@ -476,7 +496,7 @@ The response includes bounded `stdout` and `stderr` tails, their raw byte ranges
 agent-exec wait [--until <SECONDS> | --forever] [--poll <SECONDS>] <JOB_ID>
 ```
 
-The default client-side deadline is 30 seconds. Every response includes bounded `stdout` and `stderr`, byte ranges and totals, and `utf-8-lossy` encoding; terminal responses also include the exit code. Reaching the deadline does not stop the job. Use `tail` for later or repeated log retrieval, and `run --timeout` to limit process runtime.
+The default client-side deadline is 30 seconds. Every response includes bounded `stdout` and `stderr`, byte ranges and totals, and `utf-8-lossy` encoding; terminal responses also include the exit code. Reaching the deadline does not stop the job. Use `tail` for later or repeated log retrieval, and `run --abandon-job-after` when the intent is to give up on the job rather than to stop waiting for it.
 
 ### `kill`: send a signal
 
@@ -691,14 +711,15 @@ HTTP responses use the same `schema_version`, `ok`, and `type` envelope fields a
   "command": ["bash", "-c", "echo hello"],
   "cwd": "/tmp",
   "env": {"FOO": "bar"},
-  "timeout": 30,
+  "abandon_job_after": 30,
+  "acknowledge_result_loss": true,
   "wait": true,
   "until": 10,
   "max_bytes": 65536
 }
 ```
 
-Only `command` is required. Pass `timeout` as a nonnegative number of seconds; it may be fractional. `until` must be a nonnegative integer number of seconds. `wait` defaults to `true`, `until` to `10`, and `max_bytes` to `65536`. The obsolete `timeout_ms` field is rejected.
+Only `command` is required. `abandon_job_after` gives up on the job and terminates it, and may permanently lose unfinished results; use `until` to stop waiting without stopping the job. Pass it as a nonnegative number of seconds; it may be fractional, and a non-null value requires `acknowledge_result_loss: true` or the request is rejected with HTTP 400 before a job is created. `until` must be a nonnegative integer number of seconds. `wait` defaults to `true`, `until` to `10`, and `max_bytes` to `65536`. The removed `timeout` and `timeout_ms` fields are rejected with migration guidance.
 
 ### Docker client example
 
@@ -768,7 +789,7 @@ When MCP is unavailable, use `agent-exec run -- <command>` with CLI observation 
 
 | Tool | Parameters | Behavior |
 |------|------------|----------|
-| `run` | `command: string[]`, `cwd?: string`, `env?: object`, `timeout?: integer`, `until?: integer`, `stdin?: string`, `stdin_file?: string`, `notify_command?: string`, `notify_file?: string` | Starts a detached job. `timeout` and `until` are seconds; the legacy omitted `until` is 10 seconds unless configured. |
+| `run` | `command: string[]`, `cwd?: string`, `env?: object`, `abandon_job_after?: integer`, `acknowledge_result_loss?: boolean`, `until?: integer`, `stdin?: string`, `stdin_file?: string`, `notify_command?: string`, `notify_file?: string` | Starts a detached job. `abandon_job_after` and `until` are seconds; the legacy omitted `until` is 10 seconds unless configured. `abandon_job_after` gives up on the job and terminates it, may permanently lose unfinished results, and requires `acknowledge_result_loss: true`; the removed `timeout` and `timeout_ms` fields are rejected with migration guidance. |
 | `status` | `job_id: string` | Returns canonical job status. |
 | `tail` | `job_id: string`, `lines?: integer`, `max_bytes?: integer` | Reads bounded tails; defaults are 50 lines and 65,536 bytes. |
 | `wait` | `job_id: string`, `until?: integer` | Observes for a bounded duration and returns bounded stdout/stderr output metadata; the legacy omitted `until` is 30 seconds unless configured. Indefinite MCP waits are not supported. |
@@ -991,7 +1012,7 @@ instead of spawning the `agent-exec` executable and reparsing JSON. See the
 
 Managed jobs stay managed because supervision runs in a **detached process**,
 never an in-process thread — the supervisor owns the workload's stdout/stderr,
-timeout escalation, notifications, state updates, and process-tree cleanup long
+abandonment escalation, notifications, state updates, and process-tree cleanup long
 after the launching call returns. So embedded launch re-executes a supervisor
 executable, which by default is the consumer's own binary. That is why the
 consumer has to install the startup delegation **before its own argument

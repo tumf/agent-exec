@@ -101,6 +101,10 @@ pub fn status_response(opts: StatusOpts) -> Result<Response<StatusData>> {
             duration_ms: state.duration_ms(),
             signal: state.signal().map(|s| s.to_string()),
             logs_drained: state.logs_drained,
+            // Projected verbatim from persisted state: `status` never synthesizes
+            // abandonment provenance for records that do not carry it.
+            abandoned_by: state.abandoned_by.clone(),
+            result_loss: state.result_loss,
             stdout_total_bytes: observed_bytes(&stdout_log_path),
             stderr_total_bytes: observed_bytes(&stderr_log_path),
             stdout_log_path: stdout_log_path.display().to_string(),

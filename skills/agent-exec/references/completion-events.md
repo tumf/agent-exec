@@ -27,8 +27,11 @@ Possible fields:
 - outcome: `state`, optional `exit_code`, optional `signal`
 - execution context: `command`, optional `cwd`, `started_at`, `finished_at`, optional `duration_ms`
 - artifacts: `stdout_log_path`, `stderr_log_path`
+- abandonment provenance: optional `abandoned_by`, optional `result_loss`
 
 If the job is killed by a signal, expect `state` to become `killed`; `signal` may be present and `exit_code` may be absent.
+
+If a configured `--abandon-job-after` limit actually terminated the job, expect `abandoned_by="abandon_job_after"` and `result_loss=true` alongside the unchanged terminal `state`. Both are absent when the limit never fired, so treat their presence as evidence that unfinished results may be missing.
 
 `schema_version` is the global stdout contract version, so event envelopes track it. Schema `0.3` added optional `status` fields only: the completion and output-match event field shapes are unchanged, and only the reported `schema_version` moved from `"0.2"` to `"0.3"`.
 

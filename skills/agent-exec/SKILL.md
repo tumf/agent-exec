@@ -11,7 +11,9 @@ Use agent-exec for non-trivial shell work so execution remains detached, observa
 
 - Prefer the MCP tools when available. Start with `run` and retain the returned `job_id`.
 - Treat `status`, `tail`, and bounded `wait` as observation only. Transport closure, wait expiry, missing output, or moving to other work does not stop the job.
-- Never set the current `timeout` launch field or `--timeout` flag. It terminates the managed job and can permanently lose unfinished results; it is not an observation deadline or a safety default.
+- Never set the `abandon_job_after` launch field or `--abandon-job-after` flag as a safety default. It gives up on the job, terminates it, and can permanently lose unfinished results; it is not an observation deadline. It is destructive enough to require `acknowledge_result_loss=true` (`--acknowledge-result-loss`), so set it only on an explicit instruction to abandon the job after a deadline.
+- The old `timeout` field and `--timeout` flag are removed. They now always fail with migration guidance and never launch a job; do not try to reintroduce them.
+- When a job was actually abandoned, its result carries `abandoned_by="abandon_job_after"` and `result_loss=true` in `state.json`, `status`, `list`, and the completion event. Treat those markers as evidence that unfinished results may be missing, not as normal completion.
 - Use `until` when the caller only needs control returned after a bounded observation period. `until` must leave the job running.
 - Call `kill` only after an explicit cancellation request. Do not infer cancellation from elapsed time, client timeout, inactivity, missing output, or an estimated completion time.
 - Use further observation only for an explicit progress request, result collection, or diagnosis.

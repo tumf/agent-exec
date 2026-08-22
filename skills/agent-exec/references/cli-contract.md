@@ -89,6 +89,7 @@ Common exit codes:
 - The inline stdout/stderr payload is only a partial view. Use returned log paths and follow-up commands when you need the full output.
 - Use `wait` when terminal state is required and `tail` for tail-side observation.
 - Use `--mask KEY` when secrets are present in `--env`; masked values become `***` in output and persisted metadata.
+- `--abandon-job-after <SECONDS>` gives up on the job, terminates it, and may permanently lose unfinished results. It is not an observation deadline; `--until` bounds observation without stopping the job. It requires `--acknowledge-result-loss`, and the default is no limit. The removed `--timeout` spelling always fails with migration guidance and never creates a job.
 
 ## `status` notes
 
@@ -98,6 +99,7 @@ Common exit codes:
 - `elapsed_ms` is live (response time minus `started_at`) and appears only for non-terminal started jobs; `duration_ms` is the persisted terminal duration.
 - Log byte totals come from file metadata only. `status` never reads log contents; use `tail` for output.
 - `status` never exposes environment values, stdin content, notification secrets, or shell-expanded commands.
+- `abandoned_by="abandon_job_after"` with `result_loss=true` appears only when a configured `--abandon-job-after` limit actually terminated the job. The terminal `state` value is unchanged, and both markers are absent when the limit never fired. `list` reports the same pair.
 
 ## `list` notes
 

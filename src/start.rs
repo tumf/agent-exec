@@ -60,6 +60,12 @@ pub fn execute(opts: StartOpts) -> Result<()> {
 
     info!(job_id = %opts.job_id, "starting created job");
 
+    // Reconcile the persisted runtime-abandonment limit before launching. A
+    // definition whose dual-written fields disagree fails closed rather than
+    // starting under an arbitrarily chosen limit. Result-loss acknowledgement is
+    // not requested again: admission happened when the definition was created.
+    let abandon_job_after_ms = meta.resolve_abandon_job_after_ms()?;
+
     // Determine full.log path.
     let full_log_path = job_dir.full_log_path().display().to_string();
 
@@ -84,7 +90,7 @@ pub fn execute(opts: StartOpts) -> Result<()> {
             job_id: job_dir.job_id.clone(),
             root: root.clone(),
             full_log_path: full_log_path.clone(),
-            timeout_ms: meta.timeout_ms,
+            abandon_job_after_ms,
             kill_after_ms: meta.kill_after_ms,
             cwd: meta.cwd.clone(),
             env_vars: meta.env_vars_runtime.clone(),

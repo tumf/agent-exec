@@ -1094,3 +1094,161 @@ fn mcp_armed_response_explains_next_action() {
         );
     }
 }
+
+// ── abandon-job-after ──────────────────────────────────────────────────────────
+
+/// Extract the generated `run` input schema from `tools/list`.
+fn abandon_job_after_run_schema(mcp: &mut McpProcess) -> Value {
+    let listed = mcp.request(3, "tools/list", json!({}));
+    listed["result"]["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .find(|tool| tool["name"] == "run")
+        .expect("run tool")["inputSchema"]
+        .clone()
+}
+
+fn abandon_job_after_job_dirs(root: &str) -> usize {
+    std::fs::read_dir(root)
+        .expect("read jobs root")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .count()
+}
+
+#[test]
+fn abandon_job_after_mcp_schema_leads_with_the_result_loss_warning() {
+    let harness = TestHarness::new();
+    let mut mcp = McpProcess::start(harness.root());
+    mcp.initialize();
+    let schema = abandon_job_after_run_schema(&mut mcp);
+
+    let description = schema["properties"]["abandon_job_after"]["description"]
+        .as_str()
+        .expect("abandon_job_after description");
+    assert!(
+        description
+            .starts_with("WARNING: Gives up on the job, terminates it, and may permanently lose"),
+        "abandon_job_after must open with the result-loss warning: {description}"
+    );
+    assert!(
+        description.contains("acknowledge_result_loss"),
+        "abandon_job_after must name its acknowledgement: {description}"
+    );
+    assert!(
+        schema["properties"]
+            .get("acknowledge_result_loss")
+            .is_some(),
+        "the acknowledgement must be part of the published schema: {schema}"
+    );
+    assert!(
+        !schema["required"]
+            .as_array()
+            .expect("required")
+            .contains(&json!("abandon_job_after")),
+        "the destructive control must stay optional: {schema}"
+    );
+}
+
+#[test]
+fn abandon_job_after_mcp_rejects_unacknowledged_abandonment() {
+    let harness = TestHarness::new();
+    let mut mcp = McpProcess::start(harness.root());
+    mcp.initialize();
+    for arguments in [
+        json!({ "command": ["sleep", "60"], "abandon_job_after": 1 }),
+        json!({ "command": ["sleep", "60"], "abandon_job_after": 1, "acknowledge_result_loss": false }),
+    ] {
+        let result = mcp.call(3, "run", arguments.clone());
+        assert_eq!(result["isError"], true, "{arguments}: {result}");
+        let message = result["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("may permanently lose unfinished results")
+                && message.contains("acknowledge_result_loss")
+                && message.contains("until"),
+            "{arguments}: message must warn and name both alternatives: {message}"
+        );
+        assert_eq!(
+            abandon_job_after_job_dirs(harness.root()),
+            0,
+            "{arguments} must not create a job"
+        );
+    }
+}
+
+#[test]
+fn abandon_job_after_mcp_legacy_timeout_error_is_actionable() {
+    let harness = TestHarness::new();
+    let mut mcp = McpProcess::start(harness.root());
+    mcp.initialize();
+    for arguments in [
+        json!({ "command": ["echo", "hello"], "timeout": 1 }),
+        json!({ "command": ["echo", "hello"], "timeout_ms": 1000 }),
+    ] {
+        let result = mcp.call(3, "run", arguments.clone());
+        assert_eq!(result["isError"], true, "{arguments}: {result}");
+        let message = result["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("abandon_job_after") && message.contains("until"),
+            "{arguments}: migration error must name both replacements: {message}"
+        );
+        assert_eq!(
+            abandon_job_after_job_dirs(harness.root()),
+            0,
+            "{arguments} must not create a job"
+        );
+    }
+}
+
+#[test]
+fn abandon_job_after_mcp_abandonment_and_observation_remain_distinct() {
+    let harness = TestHarness::new();
+    let mut mcp = McpProcess::start(harness.root());
+    mcp.initialize();
+
+    // Acknowledged abandonment terminates its workload.
+    let abandoned = mcp.call(
+        3,
+        "run",
+        json!({
+            "command": ["sleep", "60"],
+            "abandon_job_after": 1,
+            "acknowledge_result_loss": true,
+            "until": 6
+        }),
+    );
+    assert_envelope(&abandoned, "run", true);
+    let abandoned_id = abandoned["job_id"].as_str().expect("job id").to_string();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let status = loop {
+        let status = mcp.call(4, "status", json!({ "job_id": abandoned_id }));
+        if status["state"] != "running" {
+            break status;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "abandon_job_after never terminated the workload: {status}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    };
+    assert_eq!(status["abandoned_by"], "abandon_job_after", "{status}");
+    assert_eq!(status["result_loss"], true, "{status}");
+
+    // Observation expiry leaves its workload alone.
+    let observed = mcp.call(5, "run", json!({ "command": ["sleep", "30"], "until": 1 }));
+    assert_envelope(&observed, "run", true);
+    assert_eq!(observed["state"], "running", "{observed}");
+    let observed_id = observed["job_id"].as_str().expect("job id").to_string();
+    let observed_status = mcp.call(6, "status", json!({ "job_id": observed_id }));
+    assert_eq!(observed_status["state"], "running", "{observed_status}");
+    assert!(
+        observed_status.get("abandoned_by").is_none(),
+        "observation must never mark abandonment: {observed_status}"
+    );
+    assert_envelope(
+        &mcp.call(7, "kill", json!({ "job_id": observed_id })),
+        "kill",
+        true,
+    );
+}

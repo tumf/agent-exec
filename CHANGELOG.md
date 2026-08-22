@@ -7,6 +7,41 @@ Removals, type changes, meaning changes, and newly required fields bump MAJOR.
 
 ## schema 0.3
 
+- Renamed the destructive launch control from `timeout` to `abandon-job-after`
+  (`--abandon-job-after` on the CLI, `abandon_job_after` in MCP, HTTP `/exec`,
+  and the public Rust request types). The old name did not say which lifetime it
+  limited: `until` only bounds observation and never signals the job, while this
+  control gives up on the job, terminates its process tree, and can permanently
+  lose unfinished results. Every public description now starts with that
+  warning.
+- The control now requires an explicit acknowledgement at each public boundary:
+  CLI `--acknowledge-result-loss`, MCP/HTTP `acknowledge_result_loss: true`, and
+  the equivalent boolean on `run::RunOpts`, `create::CreateOpts`, and
+  `embedded::RunRequest`. A nonzero limit without acknowledgement is rejected
+  before the job is created.
+- Removed the public `timeout` launch input on every surface. CLI `--timeout` is
+  kept hidden purely as an always-failing migration trap, and MCP/HTTP `timeout`
+  and `timeout_ms` return an actionable migration error before job creation.
+  None of them can launch a job. The private `_supervise --timeout` process
+  handoff keeps its wire spelling and is unchanged.
+- Rust callers get compile-time breakage: `RunOpts::timeout_ms`,
+  `SuperviseOpts::timeout_ms`, `CreateOpts::timeout_ms`, and
+  `RunRequest::timeout_ms` are now `abandon_job_after_ms`, joined by the new
+  `acknowledge_result_loss` boolean on the two launch request types.
+- Added optional `abandoned_by` and `result_loss` fields to `state.json`,
+  `status` (`StatusResponse`), `list` (`JobSummary`), and the `job.finished`
+  completion event. They are written only when a configured limit actually
+  terminated a workload; the terminal `state` value is unchanged, and a limit
+  that never fired leaves both absent. Historical records without the fields
+  stay readable and are never given synthesized provenance.
+- Persisted job definitions dual-write equal `abandon_job_after_ms` and
+  `timeout_ms` for one migration release, so an older binary that only reads
+  `timeout_ms` keeps applying the same limit when it starts or restarts a job.
+  Readers accept legacy-only, new-only, and equal dual definitions, and fail
+  closed before start/restart when the two disagree, naming the job ID and both
+  values. Dropping the legacy write requires a later explicit migration change.
+- `--kill-after` is unchanged: it remains the delay between `SIGTERM` and
+  `SIGKILL` after abandonment. The default runtime limit remains unlimited.
 - Added optional execution-diagnostic fields to `status` responses
   (`StatusResponse`): `command`, `cwd`, `tags`, `pid`, `process_alive`,
   `updated_at`, `elapsed_ms`, `duration_ms`, `signal`, `logs_drained`,

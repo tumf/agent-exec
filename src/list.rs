@@ -251,6 +251,10 @@ pub fn list_data(opts: ListOpts) -> Result<ListData> {
             finished_at,
             updated_at,
             tags: meta.tags.clone(),
+            // Projected verbatim from persisted state: `list` never synthesizes
+            // abandonment provenance for records that do not carry it.
+            abandoned_by: state_opt.as_ref().and_then(|s| s.abandoned_by.clone()),
+            result_loss: state_opt.as_ref().and_then(|s| s.result_loss),
         });
     }
 

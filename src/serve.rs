@@ -251,7 +251,19 @@ struct ExecRequest {
     command: Option<Vec<String>>,
     cwd: Option<String>,
     env: Option<HashMap<String, String>>,
-    timeout: Option<f64>,
+    /// WARNING: Gives up on the job, terminates it, and may permanently lose
+    /// unfinished results. Use `until` to stop waiting without stopping the job.
+    ///
+    /// Seconds; omitted or `null` = unlimited. Requires
+    /// `acknowledge_result_loss = true`.
+    abandon_job_after: Option<f64>,
+    /// Explicit acknowledgement that abandonment may lose unfinished results.
+    acknowledge_result_loss: Option<bool>,
+    /// Removed launch input, accepted only so the rejection can carry migration
+    /// guidance instead of a generic unknown-field error. Never launches a job.
+    timeout: Option<serde_json::Value>,
+    /// Removed launch input; see [`ExecRequest::timeout`].
+    timeout_ms: Option<serde_json::Value>,
     wait: Option<bool>,
     until: Option<u64>,
     max_bytes: Option<u64>,
@@ -289,6 +301,27 @@ async fn exec_handler(State(state): State<Arc<AppState>>, request: Request) -> A
         }
     };
 
+    // Legacy launch inputs are rejected before anything is created, and the
+    // error names both replacements so the caller can pick by intent.
+    for legacy in ["timeout", "timeout_ms"] {
+        let supplied = match legacy {
+            "timeout" => req.timeout.is_some(),
+            _ => req.timeout_ms.is_some(),
+        };
+        if supplied {
+            return err_resp(
+                StatusCode::BAD_REQUEST,
+                "removed_option",
+                &crate::run::legacy_timeout_migration_message(
+                    legacy,
+                    crate::run::API_ABANDON_INPUT,
+                    crate::run::API_ACKNOWLEDGE_INPUT,
+                    crate::run::API_UNTIL_INPUT,
+                ),
+            );
+        }
+    }
+
     let command = match req.command {
         Some(c) if !c.is_empty() => c,
         _ => {
@@ -300,6 +333,32 @@ async fn exec_handler(State(state): State<Arc<AppState>>, request: Request) -> A
         }
     };
 
+    let abandon_job_after_ms = match req.abandon_job_after {
+        Some(seconds) if seconds.is_nan() || seconds < 0.0 => {
+            return err_resp(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "abandon_job_after must be a nonnegative number of seconds",
+            );
+        }
+        Some(seconds) => (seconds * 1000.0) as u64,
+        None => 0,
+    };
+    let acknowledge_result_loss = req.acknowledge_result_loss.unwrap_or(false);
+    if let Err(e) = crate::run::validate_result_loss_acknowledgement(
+        abandon_job_after_ms,
+        acknowledge_result_loss,
+        crate::run::API_ABANDON_INPUT,
+        crate::run::API_ACKNOWLEDGE_INPUT,
+        crate::run::API_UNTIL_INPUT,
+    ) {
+        return err_resp(
+            StatusCode::BAD_REQUEST,
+            "result_loss_not_acknowledged",
+            &e.to_string(),
+        );
+    }
+
     let root_opt = state.root.clone();
     let env_vars: Vec<String> = req
         .env
@@ -308,7 +367,6 @@ async fn exec_handler(State(state): State<Arc<AppState>>, request: Request) -> A
         .map(|(k, v)| format!("{k}={v}"))
         .collect();
     let cwd = req.cwd;
-    let timeout_ms = req.timeout.map(|s| (s * 1000.0) as u64).unwrap_or(0);
     let wait = req.wait.unwrap_or(true);
     let until = req.until.unwrap_or(10);
     let max_bytes = req.max_bytes.unwrap_or(65536);
@@ -319,7 +377,7 @@ async fn exec_handler(State(state): State<Arc<AppState>>, request: Request) -> A
             command,
             cwd,
             env_vars,
-            timeout_ms,
+            abandon_job_after_ms,
             wait,
             until,
             max_bytes,
@@ -343,7 +401,8 @@ struct ExecParams {
     command: Vec<String>,
     cwd: Option<String>,
     env_vars: Vec<String>,
-    timeout_ms: u64,
+    /// Already-admitted runtime-abandonment limit in milliseconds; 0 = unlimited.
+    abandon_job_after_ms: u64,
     wait: bool,
     until: u64,
     max_bytes: u64,
@@ -385,7 +444,9 @@ fn run_exec_inner(p: ExecParams) -> Result<serde_json::Value> {
         notification: None,
         inherit_env: true,
         env_files: vec![],
-        timeout_ms: p.timeout_ms,
+        // Dual-written for one migration release; see `JobMeta::set_abandon_job_after_ms`.
+        abandon_job_after_ms: Some(p.abandon_job_after_ms),
+        timeout_ms: Some(p.abandon_job_after_ms),
         kill_after_ms: 0,
         progress_every_ms: 0,
         shell_wrapper: Some(shell_wrapper.clone()),
@@ -405,7 +466,7 @@ fn run_exec_inner(p: ExecParams) -> Result<serde_json::Value> {
             job_id: job_id.clone(),
             root: resolved_root.clone(),
             full_log_path: job_dir.full_log_path().display().to_string(),
-            timeout_ms: p.timeout_ms,
+            abandon_job_after_ms: p.abandon_job_after_ms,
             kill_after_ms: 0,
             cwd: p.cwd.clone(),
             env_vars: p.env_vars.clone(),
@@ -696,13 +757,13 @@ mod tests {
 
     #[test]
     fn exec_request_deserializes_new_fields() {
-        let json =
-            r#"{"command":["echo","hi"],"wait":false,"until":5,"max_bytes":1024,"timeout":30.5}"#;
+        let json = r#"{"command":["echo","hi"],"wait":false,"until":5,"max_bytes":1024,"abandon_job_after":30.5,"acknowledge_result_loss":true}"#;
         let req: ExecRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.wait, Some(false));
         assert_eq!(req.until, Some(5));
         assert_eq!(req.max_bytes, Some(1024));
-        assert!((req.timeout.unwrap() - 30.5).abs() < f64::EPSILON);
+        assert!((req.abandon_job_after.unwrap() - 30.5).abs() < f64::EPSILON);
+        assert_eq!(req.acknowledge_result_loss, Some(true));
     }
 
     #[test]
@@ -712,16 +773,23 @@ mod tests {
         assert_eq!(req.wait, None);
         assert_eq!(req.until, None);
         assert_eq!(req.max_bytes, None);
+        assert_eq!(req.abandon_job_after, None);
+        assert_eq!(req.acknowledge_result_loss, None);
         assert_eq!(req.timeout, None);
+        assert_eq!(req.timeout_ms, None);
     }
 
+    /// Legacy launch inputs stay parseable on purpose: the handler turns them
+    /// into actionable migration errors instead of a generic unknown-field
+    /// rejection, and neither spelling can reach job creation.
     #[test]
-    fn exec_request_rejects_timeout_ms() {
-        let json = r#"{"command":["echo","hi"],"timeout_ms":1000}"#;
-        let result = serde_json::from_str::<ExecRequest>(json);
-        assert!(
-            result.is_err(),
-            "timeout_ms should be rejected as unknown field"
-        );
+    fn exec_request_captures_legacy_launch_inputs_for_migration_errors() {
+        let req: ExecRequest =
+            serde_json::from_str(r#"{"command":["echo","hi"],"timeout":1}"#).unwrap();
+        assert_eq!(req.timeout, Some(serde_json::json!(1)));
+
+        let req: ExecRequest =
+            serde_json::from_str(r#"{"command":["echo","hi"],"timeout_ms":1000}"#).unwrap();
+        assert_eq!(req.timeout_ms, Some(serde_json::json!(1000)));
     }
 }

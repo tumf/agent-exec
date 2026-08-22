@@ -29,8 +29,18 @@ pub struct CreateOpts<'a> {
     pub command: Vec<String>,
     /// Override for jobs root directory.
     pub root: Option<&'a str>,
-    /// Timeout in milliseconds; 0 = no timeout.
-    pub timeout_ms: u64,
+    /// WARNING: Gives up on the job, terminates it, and may permanently lose
+    /// unfinished results. Use `until` observation to stop waiting without
+    /// stopping the job.
+    ///
+    /// Runtime-abandonment limit in milliseconds; `0` = unlimited (the default).
+    /// Any nonzero value requires [`CreateOpts::acknowledge_result_loss`].
+    pub abandon_job_after_ms: u64,
+    /// Explicit acknowledgement that abandonment may lose unfinished results.
+    ///
+    /// Required when [`CreateOpts::abandon_job_after_ms`] is nonzero; the
+    /// definition is rejected before it is persisted otherwise.
+    pub acknowledge_result_loss: bool,
     /// Milliseconds after SIGTERM before SIGKILL; 0 = immediate SIGKILL.
     pub kill_after_ms: u64,
     /// Working directory for the command.
@@ -74,6 +84,16 @@ pub fn execute(opts: CreateOpts) -> Result<()> {
     if opts.command.is_empty() {
         anyhow::bail!("no command specified for create");
     }
+
+    // Admission runs before the jobs root or any job directory is touched, so a
+    // rejected destructive definition leaves nothing persisted behind.
+    crate::run::validate_result_loss_acknowledgement(
+        opts.abandon_job_after_ms,
+        opts.acknowledge_result_loss,
+        crate::run::API_ABANDON_INPUT,
+        crate::run::API_ACKNOWLEDGE_INPUT,
+        crate::run::API_UNTIL_INPUT,
+    )?;
 
     let root = resolve_root(opts.root);
     std::fs::create_dir_all(&root)
@@ -139,7 +159,10 @@ pub fn execute(opts: CreateOpts) -> Result<()> {
         // Execution-definition fields persisted for `start`.
         inherit_env: opts.inherit_env,
         env_files: opts.env_files.clone(),
-        timeout_ms: opts.timeout_ms,
+        // Dual-written for one migration release so an older binary reading only
+        // `timeout_ms` preserves the same limit; see `JobMeta::set_abandon_job_after_ms`.
+        abandon_job_after_ms: Some(opts.abandon_job_after_ms),
+        timeout_ms: Some(opts.abandon_job_after_ms),
         kill_after_ms: opts.kill_after_ms,
         progress_every_ms: opts.progress_every_ms,
         shell_wrapper: Some(opts.shell_wrapper.clone()),

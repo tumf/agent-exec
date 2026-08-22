@@ -60,6 +60,11 @@ pub fn execute(opts: RestartOpts) -> Result<()> {
         ))));
     }
 
+    // Reconcile the persisted runtime-abandonment limit before terminating the
+    // current run: a definition whose dual-written fields disagree must fail
+    // closed without disturbing the job that is already running.
+    let abandon_job_after_ms = meta.resolve_abandon_job_after_ms()?;
+
     let state = job_dir.read_state()?;
     info!(
         job_id = %job_dir.job_id,
@@ -86,7 +91,7 @@ pub fn execute(opts: RestartOpts) -> Result<()> {
             job_id: job_dir.job_id.clone(),
             root: root.clone(),
             full_log_path,
-            timeout_ms: meta.timeout_ms,
+            abandon_job_after_ms,
             kill_after_ms: meta.kill_after_ms,
             cwd: meta.cwd.clone(),
             env_vars: meta.env_vars_runtime.clone(),

@@ -24,7 +24,7 @@ references:
   - tests/serve_integration.rs
 verifications:
   - id: abandon-job-contract-tests
-    requirement: All public launch surfaces name the destructive control abandon-job-after, warn that it gives up on the job and can lose unfinished results, reject the ambiguous timeout spelling with migration guidance, preserve detached observation semantics, mark abandoned results, and retain persisted-job compatibility across one downgrade window
+    requirement: All public launch surfaces name the destructive control abandon-job-after, warn that it gives up on the job and can lose unfinished results, reject the ambiguous timeout spelling with migration guidance, preserve detached observation semantics, mark abandoned results without changing the terminal state value, and retain persisted-job compatibility across one downgrade window
     phase: pre-integration
     owner: conflux-acceptance
     trigger: change-implementation
@@ -65,7 +65,7 @@ The name `timeout` hides which lifetime it limits. In `agent-exec`, observation 
 - Keep `until` as the only bounded observation name and state explicitly that expiry never signals the job.
 - Rename public help, schemas, examples, documentation, bundled skills, public Rust APIs, and tests consistently. Keep the private `_supervise --timeout` wire spelling unchanged so it cannot become a second public migration surface.
 - Preserve restart/read and one-release downgrade compatibility for persisted metadata. During one migration release, writers dual-write equal `abandon_job_after_ms` and `timeout_ms`; readers accept either or both when equal and fail closed when both differ. The following release may stop writing `timeout_ms` after an explicit migration change.
-- Preserve terminal `state="timeout"` for backward compatibility, but add `abandoned_by="abandon_job_after"` and `result_loss=true` to state/status/list/completion output when the configured abandonment actually terminates a workload. Schemas and guidance explain the legacy state mapping.
+- Leave the terminal state value untouched for backward compatibility, but add `abandoned_by="abandon_job_after"` and `result_loss=true` to state/status/list/completion output when the configured abandonment actually terminates a workload. Schemas and guidance explain how to read the pair. (Correction to the original premise: this codebase has no terminal state value `timeout`; abandonment already surfaces through the existing `killed` state and its terminating signal. "Preserve the terminal state" is therefore implemented as "do not change it", and the additive markers carry the provenance.)
 - Keep `kill-after` behavior unchanged; it remains the escalation delay after `abandon-job-after` sends `SIGTERM`.
 
 ## Acceptance Criteria
@@ -77,7 +77,7 @@ The name `timeout` hides which lifetime it limits. In `agent-exec`, observation 
 - `until` expiry still returns a non-terminal observation without signaling or mutating the managed job.
 - Existing persisted jobs containing only `timeout_ms` remain readable, startable, and restartable with identical runtime-limit behavior.
 - Migration-release metadata dual-writes equal old/new fields so an older binary preserves the limit. Readers reject unequal dual fields with a job-specific error.
-- Actual abandonment preserves `state="timeout"` and also emits `abandoned_by="abandon_job_after"` and `result_loss=true` through persisted state, status, list, and completion events.
+- Actual abandonment leaves the terminal state value unchanged and also emits `abandoned_by="abandon_job_after"` and `result_loss=true` through persisted state, status, list, and completion events.
 - Public Rust `RunOpts`, `SuperviseOpts`, `CreateOpts`, and embedded request fields use the new name. The private supervisor parser/handoff remains internally consistent.
 - Current README, changelog, site/docs, bundled skills, examples, schemas, and fixtures contain no live public `timeout` launch example except explicit migration/rejection documentation.
 
@@ -93,7 +93,7 @@ The name `timeout` hides which lifetime it limits. In `agent-exec`, observation 
 
 ## Out of Scope
 
-- Removing or renaming the existing terminal state value `timeout`.
+- Removing or renaming any existing terminal state value. (The `timeout` state value named in the original premise does not exist in this codebase, so there is nothing to remove.)
 - Renaming the private `_supervise --timeout` process handoff.
 - Changing `kill-after` timing or signal escalation behavior.
 - Adding a default runtime limit; the default remains unlimited.

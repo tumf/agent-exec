@@ -308,6 +308,13 @@ pub struct StatusData {
     /// Whether the supervisor finished draining output after terminal state.
     #[serde(default = "default_logs_drained")]
     pub logs_drained: bool,
+    /// Control that abandoned this workload; present only when a configured
+    /// `abandon-job-after` limit actually terminated it.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub abandoned_by: Option<String>,
+    /// `true` when the job was abandoned and unfinished results may be lost.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub result_loss: Option<bool>,
     /// Absolute path to stdout.log for this job.
     #[serde(default)]
     pub stdout_log_path: String,
@@ -417,6 +424,13 @@ pub struct JobSummary {
     /// Tags assigned to this job (always present; empty array when none).
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Control that abandoned this workload; present only when a configured
+    /// `abandon-job-after` limit actually terminated it.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub abandoned_by: Option<String>,
+    /// `true` when the job was abandoned and unfinished results may be lost.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub result_loss: Option<bool>,
 }
 
 /// Response for `tag set` command.
@@ -632,6 +646,13 @@ pub struct CompletionEvent {
     pub exit_code: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signal: Option<String>,
+    /// Control that abandoned this workload; present only when a configured
+    /// `abandon-job-after` limit actually terminated it.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub abandoned_by: Option<String>,
+    /// `true` when the job was abandoned and unfinished results may be lost.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub result_loss: Option<bool>,
     pub stdout_log_path: String,
     pub stderr_log_path: String,
 }
@@ -753,9 +774,23 @@ pub struct JobMeta {
     /// Env-file paths to apply in order at start time (real values read from file on start).
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub env_files: Vec<String>,
-    /// Timeout in milliseconds; 0 = no timeout.
-    #[serde(default)]
-    pub timeout_ms: u64,
+    /// Canonical runtime-abandonment limit in milliseconds; `0` = unlimited.
+    ///
+    /// Absent only in definitions written before this field existed; such
+    /// legacy definitions carry the limit in [`JobMeta::timeout_ms`] instead.
+    /// Resolve both forms with [`JobMeta::resolve_abandon_job_after_ms`]
+    /// rather than reading either field directly.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub abandon_job_after_ms: Option<u64>,
+    /// Legacy mirror of [`JobMeta::abandon_job_after_ms`], dual-written with an
+    /// equal value for one migration release.
+    ///
+    /// The mirror exists so an older binary that only knows `timeout_ms` keeps
+    /// applying the same limit when it starts or restarts a definition created
+    /// by this release. Dropping the write requires a later explicit migration
+    /// change. Never write an unequal pair: readers fail closed on divergence.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub timeout_ms: Option<u64>,
     /// Milliseconds after SIGTERM before SIGKILL; 0 = immediate SIGKILL.
     #[serde(default)]
     pub kill_after_ms: u64,
@@ -778,10 +813,68 @@ fn default_logs_drained() -> bool {
     true
 }
 
+/// Marker identifying the control that abandoned a workload.
+///
+/// Recorded as `abandoned_by` alongside `result_loss=true` when a configured
+/// `abandon-job-after` limit actually terminated a managed job.
+pub const ABANDONED_BY_ABANDON_JOB_AFTER: &str = "abandon_job_after";
+
+/// Persisted metadata carries divergent runtime-abandonment limits.
+///
+/// Raised before start/restart so a definition whose dual-written fields
+/// disagree never launches with an arbitrarily chosen limit.
+#[derive(Debug)]
+pub struct AbandonLimitConflict(pub String);
+
+impl std::fmt::Display for AbandonLimitConflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for AbandonLimitConflict {}
+
 impl JobMeta {
     /// Convenience accessor: returns the job ID.
     pub fn job_id(&self) -> &str {
         &self.job.id
+    }
+
+    /// Dual-write both persisted spellings of the runtime-abandonment limit.
+    ///
+    /// Both fields are always written, including `0`, so an older binary reading
+    /// only `timeout_ms` never defaults a configured limit away to "unlimited".
+    pub fn set_abandon_job_after_ms(&mut self, ms: u64) {
+        self.abandon_job_after_ms = Some(ms);
+        self.timeout_ms = Some(ms);
+    }
+
+    /// Resolve the canonical runtime-abandonment limit from persisted metadata.
+    ///
+    /// Accepts legacy-only (`timeout_ms`), new-only (`abandon_job_after_ms`),
+    /// and equal dual definitions. Fails closed when both are present and
+    /// differ, naming the job and both field/value pairs.
+    pub fn resolve_abandon_job_after_ms(&self) -> Result<u64, AbandonLimitConflict> {
+        resolve_abandon_job_after_ms(self.job_id(), self.abandon_job_after_ms, self.timeout_ms)
+    }
+}
+
+/// Reconciliation rule shared by [`JobMeta::resolve_abandon_job_after_ms`] and
+/// its tests; kept free of I/O so the decision logic is directly unit-testable.
+pub fn resolve_abandon_job_after_ms(
+    job_id: &str,
+    abandon_job_after_ms: Option<u64>,
+    timeout_ms: Option<u64>,
+) -> Result<u64, AbandonLimitConflict> {
+    match (abandon_job_after_ms, timeout_ms) {
+        (Some(new), Some(legacy)) if new != legacy => Err(AbandonLimitConflict(format!(
+            "job {job_id} has conflicting persisted runtime-abandonment limits: \
+             abandon_job_after_ms={new} and timeout_ms={legacy}; rewrite meta.json so both \
+             fields hold the same value before starting or restarting this job"
+        ))),
+        (Some(new), _) => Ok(new),
+        (None, Some(legacy)) => Ok(legacy),
+        (None, None) => Ok(0),
     }
 }
 
@@ -839,6 +932,17 @@ pub struct JobState {
     /// Whether the supervisor has finished draining output after terminal state.
     #[serde(default = "default_logs_drained")]
     pub logs_drained: bool,
+    /// Control that abandoned this workload, e.g. `"abandon_job_after"`.
+    ///
+    /// Written only when a configured abandonment limit actually terminated the
+    /// job. A limit that never fired, and historical state written before this
+    /// field existed, leave it absent rather than synthesizing provenance.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub abandoned_by: Option<String>,
+    /// `true` when the job was abandoned and unfinished results may be lost.
+    /// Absent whenever [`JobState::abandoned_by`] is absent.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub result_loss: Option<bool>,
     /// Windows-only: name of the Job Object used to manage the process tree.
     /// Present only when the supervisor successfully created and assigned a
     /// named Job Object; absent on non-Windows platforms and when creation
@@ -909,6 +1013,58 @@ impl JobStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn abandon_job_after_ms_accepts_legacy_only_metadata() {
+        assert_eq!(
+            resolve_abandon_job_after_ms("job1", None, Some(30_000)).unwrap(),
+            30_000
+        );
+    }
+
+    #[test]
+    fn abandon_job_after_ms_accepts_new_only_metadata() {
+        assert_eq!(
+            resolve_abandon_job_after_ms("job1", Some(30_000), None).unwrap(),
+            30_000
+        );
+    }
+
+    #[test]
+    fn abandon_job_after_ms_accepts_equal_dual_written_metadata() {
+        assert_eq!(
+            resolve_abandon_job_after_ms("job1", Some(0), Some(0)).unwrap(),
+            0
+        );
+        assert_eq!(
+            resolve_abandon_job_after_ms("job1", Some(30_000), Some(30_000)).unwrap(),
+            30_000
+        );
+    }
+
+    #[test]
+    fn abandon_job_after_ms_defaults_to_unlimited_when_both_absent() {
+        assert_eq!(resolve_abandon_job_after_ms("job1", None, None).unwrap(), 0);
+    }
+
+    #[test]
+    fn abandon_job_after_ms_rejects_unequal_dual_fields_with_job_and_values() {
+        let err = resolve_abandon_job_after_ms("job1", Some(30_000), Some(5_000))
+            .expect_err("unequal dual fields must fail closed");
+        let message = err.to_string();
+        assert!(
+            message.contains("job1"),
+            "message must name the job: {message}"
+        );
+        assert!(
+            message.contains("abandon_job_after_ms=30000"),
+            "message must name the new field and value: {message}"
+        );
+        assert!(
+            message.contains("timeout_ms=5000"),
+            "message must name the legacy field and value: {message}"
+        );
+    }
 
     fn sample_run_data(
         exit_code: Option<i32>,
