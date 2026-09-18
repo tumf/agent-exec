@@ -8143,15 +8143,24 @@ fn compression_smaller_output_still_applies() {
 #[test]
 fn compression_expansion_guard_applies_per_stream() {
     let h = TestHarness::new();
-    let v = h.run(&[
+    let run = h.run(&[
         "run",
-        "--compress",
-        "summary",
+        "--no-wait",
         "sh",
         "-c",
         "printf 'ok\\n'; for i in $(seq 1 50); do printf 'line\\n' >&2; done; printf 'tail\\n' >&2",
     ]);
-    assert_envelope(&v, "run", true);
+    let job_id = run["job_id"].as_str().unwrap().to_string();
+    h.run(&["wait", "--forever", &job_id]);
+    let v = h.run(&[
+        "tail",
+        "--tail-lines",
+        "100",
+        "--compress",
+        "summary",
+        &job_id,
+    ]);
+    assert_envelope(&v, "tail", true);
     assert_eq!(v["stdout"].as_str(), Some("ok\n"));
     assert!(v["stderr"].as_str().unwrap_or("").contains("line\n"));
     assert_eq!(v["compression"]["applied"].as_bool(), Some(false));
@@ -8495,8 +8504,11 @@ fn compression_cargo_test_synthetic_fixture_keeps_failure_detail() {
         passing,
         "   1: frame\\n".repeat(40)
     );
-    let v = h.run(&["run", "--rtk", "tests", "--", "sh", "-c", &script]);
-    assert_envelope(&v, "run", true);
+    let run = h.run(&["run", "--no-wait", "--", "sh", "-c", &script]);
+    let job_id = run["job_id"].as_str().unwrap().to_string();
+    h.run(&["wait", "--forever", &job_id]);
+    let v = h.run(&["tail", "--tail-lines", "200", "--rtk", "tests", &job_id]);
+    assert_envelope(&v, "tail", true);
     assert_eq!(v["compression"]["applied"].as_bool(), Some(true));
     let compressed = v["compression"]["stdout"].as_str().unwrap_or("");
     assert!(
