@@ -1183,15 +1183,6 @@ RUST_LOG=debug agent-exec run -- echo hello
 agent-exec -v run -- echo hello
 ```
 
-## Development
+## Contributing
 
-```bash
-cargo build
-cargo test --all
-cargo fmt --all
-cargo clippy --all-targets --all-features -- -D warnings
-```
-
-CI runs the same checks through `prek` (see `prek.toml`). See [AGENTS.md](AGENTS.md) for the repository layout and contribution conventions.
-
-Releases are cut from a `v*` tag. GitHub Actions builds, smoke-tests, and publishes the Linux x86_64 archive; the macOS archive is built on a macOS checkout of the same tag with `scripts/release-macos.sh --tag v<VERSION>` and uploaded with `--upload`.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, quality checks, and release instructions.
