@@ -6,40 +6,18 @@ A durable command runner for AI agents: start a command now, observe it briefly,
 
 Agent harnesses often need to run tests, builds, and deployments whose duration and output size are unknown. A synchronous subprocess can block the agent, while a detached shell command loses structured status and log discovery. `agent-exec` keeps the process running under a stable `job_id` and returns machine-readable JSON for later `status`, `tail`, `wait`, `kill`, or `restart` calls.
 
-## Try it in 30 seconds
+## Quick start
 
-Prebuilt binaries are available for Linux x86_64 and macOS Apple Silicon. This example downloads the latest release, verifies its SHA-256 checksum, and installs it in `~/.local/bin`:
-
-```bash
-case "$(uname -s)-$(uname -m)" in
-  Linux-x86_64) TARGET=x86_64-unknown-linux-gnu ;;
-  Darwin-arm64) TARGET=aarch64-apple-darwin ;;
-  *) echo "No release binary for this platform" >&2; exit 1 ;;
-esac
-
-VERSION=$(curl -fsSL https://api.github.com/repos/tumf/agent-exec/releases/latest | sed -n 's/.*"tag_name": "v\([^"]*\)".*/\1/p')
-ARCHIVE="agent-exec-v${VERSION}-${TARGET}.tar.gz"
-curl -fLO "https://github.com/tumf/agent-exec/releases/download/v${VERSION}/${ARCHIVE}"
-curl -fLO "https://github.com/tumf/agent-exec/releases/download/v${VERSION}/${ARCHIVE}.sha256"
-shasum -a 256 -c "${ARCHIVE}.sha256"
-mkdir -p ~/.local/bin
-tar -xzf "$ARCHIVE"
-install agent-exec ~/.local/bin/agent-exec
-~/.local/bin/agent-exec --version
-```
-
-Start a long-running command without blocking the caller, save its `job_id`, then retrieve its status and final output:
+With a Rust toolchain installed:
 
 ```bash
-AGENT_EXEC=~/.local/bin/agent-exec
-JOB=$($AGENT_EXEC run --no-wait -- sh -c 'sleep 2; echo done' | sed -n 's/.*"job_id":"\([^"]*\)".*/\1/p')
-$AGENT_EXEC status "$JOB"
-$AGENT_EXEC wait "$JOB"
-# Use tail later to reread bounded logs or inspect their paths.
-$AGENT_EXEC tail "$JOB"
+cargo install agent-exec --locked
+agent-exec run -- echo hello
 ```
 
-`run` normally observes a job for up to 10 seconds, which catches many startup failures without blocking indefinitely. Use `--no-wait` when the caller must return immediately. `wait` reports the state, exit code when terminal, and bounded output available at the observation deadline. Use `tail` later to reread bounded logs. Complete logs remain available at the paths in each response.
+Without Rust, download a prebuilt binary from [GitHub Releases](https://github.com/tumf/agent-exec/releases/latest) for Linux x86_64 or macOS Apple Silicon. See [Installation](#installation) for verification and other platforms.
+
+`run` returns a JSON result with a `job_id` and observes the command for up to 10 seconds. For longer commands, use `agent-exec status <job_id>` or `agent-exec wait <job_id>` to retrieve the result. Full logs remain available at the paths in each response.
 
 ## Why not `nohup` or a plain subprocess?
 
