@@ -1,6 +1,6 @@
 # AI agent integrations
 
-`agent-exec mcp` exposes five managed-job tools over stdio: `run`, `status`, `tail`, `wait`, and `kill`.
+`agent-exec mcp` exposes seven managed-job tools over stdio: `run`, `status`, `tail`, `wait`, `kill`, `set_abandonment`, and `clear_abandonment`.
 
 ## Prerequisites
 
@@ -25,7 +25,7 @@ claude mcp add --scope local agent-exec -- "$AGENT_EXEC" mcp
 claude mcp get agent-exec
 ```
 
-Expected result: `Status: Connected` and the five managed-job tools are available as `mcp__agent-exec__*`.
+Expected result: `Status: Connected` and the seven managed-job tools are available as `mcp__agent-exec__*`.
 
 ## Codex CLI
 
@@ -72,7 +72,7 @@ hermes mcp add agent-exec --command "$AGENT_EXEC" --args mcp
 hermes mcp test agent-exec
 ```
 
-Expected result: the connection succeeds and Hermes discovers five tools.
+Expected result: the connection succeeds and Hermes discovers seven tools.
 
 Equivalent `~/.hermes/config.yaml` configuration:
 

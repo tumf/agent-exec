@@ -19,6 +19,8 @@ Without Rust, download a prebuilt binary from [GitHub Releases](https://github.c
 
 `run` returns a JSON result with a `job_id` and observes the command for up to 10 seconds. For longer commands, use `agent-exec status <job_id>` or `agent-exec wait <job_id>` to retrieve the result. Full logs remain available at the paths in each response.
 
+The shell examples in this document use `jq` to extract fields from JSON responses. To see the observation deadline and reconnect behavior end to end, run the [one-minute demo](docs/one-minute-demo.md). If you are integrating through MCP, see [MCP Server](#mcp-server) for the same lifecycle as tools.
+
 ## Why not `nohup` or a plain subprocess?
 
 | Capability | Plain subprocess | `nohup` | `agent-exec` |
@@ -29,54 +31,40 @@ Without Rust, download a prebuilt binary from [GitHub Releases](https://github.c
 | Discoverable stdout/stderr logs | Caller-managed | Caller-managed | Yes |
 | Later wait, tail, kill, and restart | Caller-managed | Caller-managed | Yes |
 
-Pass ordinary commands as `argv` after `--`. Use an explicit shell only when the workload needs pipelines, redirects, expansion, or compound statements.
-
-## Output Contract
-
-Response-producing CLI commands write exactly one JSON object to `stdout` by default. `--yaml` changes those responses to YAML. Diagnostic logs go to `stderr` and are controlled by `RUST_LOG`, `-v`, and `-vv`.
-
-This contract applies to commands such as `run`, `status`, `tail`, `list`, `gc`, and `install-skills`. It does not apply to generated shell completions, the MCP stdio protocol, the HTTP server, MCP startup configuration errors, or Clap help and version output.
-
-## Inline Output Compression
-
-`run`, `start`, `restart`, and `tail` include a compressed view by default while preserving the raw excerpt and byte metadata as the canonical output.
-
-- Default mode: `route`
-- CLI selection: `--compress <MODE>` or `--rtk <MODE>`
-- Modes: `off`, `route`, `errors`, `tests`, `logs`, `git`, `json`, and `summary`
-- Compatibility mode: `--compress off` omits the `compression` field
-- Configuration: `[compression].default = "off"` or another supported mode
-
-Precedence is `--compress` or `--rtk`, `[compression].default`, then the built-in `route` default. If compression would not make either nonempty stream smaller, the expansion guard sets `applied` to `false`, returns empty compressed streams, and records `"expansion-guard"` in `strategy`. The raw `stdout`, `stderr`, ranges, totals, encoding, and log paths remain unchanged.
-
-If you are integrating through MCP, see [MCP Server](#mcp-server) for the same lifecycle as tools. To see the observation deadline and reconnect behavior end to end, run the [one-minute demo](docs/one-minute-demo.md).
-
 ## Installation
 
 ### GitHub Releases
 
-GitHub Actions builds the Linux x86_64 archive for each `v*` release. Download its matching checksum, then verify and install:
+Each `v*` release publishes archives with a matching `.sha256` checksum for these targets:
+
+| Platform | Archive name |
+|---|---|
+| Linux x86_64 | `agent-exec-v<VERSION>-x86_64-unknown-linux-gnu.tar.gz` |
+| macOS Apple Silicon | `agent-exec-v<VERSION>-aarch64-apple-darwin.tar.gz` |
+
+Download the archive and its checksum for your platform, then verify before installing. Set `VERSION` to the tag shown on [GitHub Releases](https://github.com/tumf/agent-exec/releases/latest):
 
 ```bash
-ARCHIVE=agent-exec-v<VERSION>-x86_64-unknown-linux-gnu.tar.gz
-shasum -a 256 -c "$ARCHIVE.sha256"
-mkdir -p ~/.local/bin
-tar -xzf "$ARCHIVE"
-mv agent-exec ~/.local/bin/
-agent-exec --version
-agent-exec run -- echo "release-smoke"
+(
+  set -eu
+  VERSION=0.2.40                  # replace with the release version
+  TARGET=x86_64-unknown-linux-gnu # macOS Apple Silicon: aarch64-apple-darwin
+  ARCHIVE=agent-exec-v$VERSION-$TARGET.tar.gz
+  BASE=https://github.com/tumf/agent-exec/releases/download/v$VERSION
+  curl -fsSLO "$BASE/$ARCHIVE"
+  curl -fsSLO "$BASE/$ARCHIVE.sha256"
+  shasum -a 256 -c "$ARCHIVE.sha256"
+  tar -xzf "$ARCHIVE"
+  mkdir -p ~/.local/bin
+  install agent-exec ~/.local/bin/agent-exec
+  ~/.local/bin/agent-exec --version
+  ~/.local/bin/agent-exec run -- echo "release-smoke"
+)
 ```
 
-macOS artifacts are built locally on the trusted `mini` host after GitHub Actions creates the release. From a checkout at the release tag:
+Make sure `~/.local/bin` is on your `PATH`. On macOS, if Gatekeeper blocks the downloaded binary, review the warning and use System Settings to allow it only if you trust the release.
 
-```bash
-scripts/release-macos.sh --tag v<VERSION>
-scripts/release-macos.sh --tag v<VERSION> --upload
-```
-
-The first command builds, smoke-tests, packages, and checksums the native architecture archive without network mutation. The second uploads it to the existing GitHub Release. Install the resulting macOS archive with the checksum, extraction, version, and managed-command steps above.
-
-Windows release binaries are not provided. ARM, 32-bit, musl Linux, Windows, and other unsupported targets can use crates.io or a source build.
+Windows binaries and other targets (Intel macOS, ARM Linux, 32-bit, musl) are not published. Use crates.io or a source build for them.
 
 ### crates.io
 
@@ -85,7 +73,6 @@ A Rust toolchain can install the published package:
 ```bash
 cargo install agent-exec --locked
 agent-exec --version
-agent-exec run -- echo "release-smoke"
 ```
 
 ### Source build
@@ -96,63 +83,7 @@ For development or unsupported targets, build from a repository checkout:
 cargo install --path . --locked
 ```
 
-## Shell Completions
-
-`agent-exec` generates dynamic completion scripts for Bash, Zsh, Fish, and PowerShell.
-
-### Candidate scope and state filters
-
-All job ID candidates are limited to jobs whose persisted current working directory matches the caller's current working directory. Candidates come from the resolved jobs root. Entries with missing or mismatched current working directory metadata are excluded.
-
-State filters depend on the command:
-
-| Command | Candidate states |
-|---------|------------------|
-| `status`, `tail`, `restart`, `tag set`, `notify set` | All known job IDs; unreadable states may still appear |
-| `start` | `created` |
-| `wait` | `created`, `running` |
-| `kill`, `abandon set`, `abandon clear` | `running` |
-| `delete` | `exited`, `killed`, `failed` |
-
-Completion is advisory. Command implementations still validate the selected job and may support behavior not offered by completion.
-
-### Bash
-
-```bash
-agent-exec completions bash >> ~/.bash_completion
-source ~/.bash_completion
-```
-
-### Zsh
-
-```bash
-mkdir -p ~/.zsh/completions
-agent-exec completions zsh > ~/.zsh/completions/_agent-exec
-fpath=(~/.zsh/completions $fpath)
-autoload -Uz compinit && compinit
-```
-
-### Fish
-
-```bash
-mkdir -p ~/.config/fish/completions
-agent-exec completions fish > ~/.config/fish/completions/agent-exec.fish
-```
-
-### PowerShell
-
-```powershell
-agent-exec completions powershell | Out-String | Invoke-Expression
-```
-
-After registration, job ID completion is available at command arguments such as:
-
-```bash
-agent-exec tail <TAB>
-agent-exec kill <TAB>
-```
-
-## Quick Start
+## Working with jobs
 
 ### Short-lived job
 
@@ -170,6 +101,7 @@ The following is an illustrative complete response for a successful terminal job
   "ok": true,
   "type": "run",
   "job_id": "7f3a9c1e4b2d8a605e7c9f0134ab6d82",
+  "root": "/home/user/.local/share/agent-exec/jobs",
   "state": "exited",
   "tags": [],
   "stdout_log_path": "/home/user/.local/share/agent-exec/jobs/7f3a9c1e4b2d8a605e7c9f0134ab6d82/stdout.log",
@@ -206,7 +138,7 @@ Generated job IDs are 32-character lowercase hexadecimal strings. Commands that 
 
 ### Long-running job
 
-Use `--no-wait` when the launch response must return immediately, then inspect the job separately:
+If the job is still running when the observation deadline passes, `run` returns `state` set to `running` and the job keeps going. Use `--until <SECONDS>` to change the deadline, or `--no-wait` when the launch response must return immediately, then inspect the job separately:
 
 ```bash
 JOB=$(agent-exec run --no-wait -- sleep 30 | jq -r .job_id)
@@ -215,7 +147,25 @@ agent-exec tail "$JOB"
 agent-exec wait "$JOB"
 ```
 
-Without `--no-wait`, `run` observes for up to 10 seconds before returning.
+Reaching an observation deadline never stops the job. Use `kill` for explicit cancellation.
+
+### Argv-first invocation
+
+Pass ordinary commands as `argv` after `--`:
+
+```bash
+agent-exec run -- sleep 8
+agent-exec run -- cargo test --all
+agent-exec run -- npm run build
+```
+
+Use an explicit shell only when the workload requires shell syntax such as pipelines, redirects, expansion, or compound statements:
+
+```bash
+agent-exec run -- sh -lc 'sleep 8; echo done'
+```
+
+See [Command launch modes on Unix](#command-launch-modes-on-unix) for how a single argument differs from several.
 
 ### Abandoning a job and force killing it
 
@@ -236,12 +186,12 @@ agent-exec run \
 ```
 
 The default is no limit. When abandonment actually terminates a workload, the
-terminal state is unchanged, and `abandoned_by="abandon_job_after"` and
+terminal state is unchanged (`killed`), and `abandoned_by="abandon_job_after"` and
 `result_loss=true` are added to `state.json`, `status`, `list`, and the
 `job.finished` completion event so the loss is identifiable after the fact. A
 configured limit that never fires adds neither marker.
 
-The removed `--timeout` spelling always fails with migration guidance and never
+The removed `--timeout` flag is rejected with migration guidance (exit code 2) and never
 launches a job.
 
 ### Changing the deadline of a job that is already running
@@ -269,7 +219,7 @@ through a per-job lock, so the outcome is never ambiguous:
 - once abandonment has begun, a later update fails with `invalid_state` instead
   of claiming it prevented an abandonment that had already started.
 
-A running job launched by a release older than this one has no supervisor-authored
+A running job launched by a release older than this feature has no supervisor-authored
 control record. Both operations reject it with `invalid_state` and tell you to
 `agent-exec restart` it, rather than reporting a change its supervisor will not
 honour. Created and terminal jobs are rejected the same way.
@@ -279,21 +229,25 @@ is re-armed from its configured duration, while a deadline you set or cleared at
 runtime keeps its accepted absolute value and is never overwritten by the
 launch-time one.
 
-### Argv-first invocation
+## Output Contract
 
-Pass ordinary commands as `argv` after `--`:
+Response-producing CLI commands write exactly one JSON object to `stdout` by default. `--yaml` changes those responses to YAML. Diagnostic logs go to `stderr` and are controlled by `RUST_LOG`, `-v`, and `-vv`.
 
-```bash
-agent-exec run -- sleep 8
-agent-exec run -- cargo test --all
-agent-exec run -- npm run build
-```
+This contract applies to commands such as `run`, `status`, `tail`, `list`, `gc`, and `install-skills`. It does not apply to generated shell completions, the MCP stdio protocol, the HTTP server, MCP startup configuration errors, or Clap help and version output.
 
-Use an explicit shell only when the workload requires shell syntax such as pipelines, redirects, expansion, or compound statements:
+Exit codes are `0` for success, `1` for an expected failure reported as a JSON error object (`ok: false`, `error.code`, `error.retryable`), and `2` for usage errors.
 
-```bash
-agent-exec run -- sh -lc 'sleep 8; echo done'
-```
+### Inline output compression
+
+`run`, `start`, `restart`, and `tail` include a compressed view by default while preserving the raw excerpt and byte metadata as the canonical output.
+
+- Default mode: `route`
+- CLI selection: `--compress <MODE>` or its alias `--rtk <MODE>`
+- Modes: `off`, `route`, `errors`, `tests`, `logs`, `git`, `json`, and `summary`
+- Compatibility mode: `--compress off` omits the `compression` field
+- Configuration: `[compression].default = "off"` or another supported mode
+
+Precedence is `--compress` or `--rtk`, `[compression].default`, then the built-in `route` default. If compression would not make either nonempty stream smaller, the expansion guard sets `applied` to `false`, returns empty compressed streams, and records `"expansion-guard"` in `strategy`. The raw `stdout`, `stderr`, ranges, totals, encoding, and log paths remain unchanged.
 
 ## Deferred Job Lifecycle
 
@@ -367,7 +321,7 @@ agent-exec create [OPTIONS] -- <COMMAND> [ARGS...]
 
 Unlike `run`, `create` never captures piped stdin implicitly: a `create` definition stores input only when `--stdin`, `--stdin -`, or `--stdin-file` is given explicitly. Without one of those, the child of a later `start` receives null stdin.
 
-The response includes `job_id`, `state`, `stdout_log_path`, and `stderr_log_path`.
+The response includes `job_id`, `root`, `state`, `stdout_log_path`, and `stderr_log_path`.
 
 ### `start`: launch a created job
 
@@ -383,7 +337,7 @@ Only a job in `created` state can start. By default, `start` observes for up to 
 agent-exec restart [OPTIONS] <JOB_ID>
 ```
 
-`restart` preserves the job ID and persisted definition. If the job is `running`, it sends the signal selected by `--signal` and confirms termination before relaunching. It clears prior-run stream logs, `full.log`, and stale `completion_event.json` so subsequent observation reflects the replacement run.
+`restart` preserves the job ID and persisted definition. If the job is `running`, it sends the signal selected by `--signal` (default `TERM`) and confirms termination before relaunching. It clears prior-run stream logs, `full.log`, and stale `completion_event.json` so subsequent observation reflects the replacement run.
 
 `restart` supports the same inline observation, compression, and automatic GC controls as `start`.
 
@@ -399,7 +353,7 @@ Common options:
 |------|---------|-------------|
 | `--abandon-job-after <SECONDS>` | `0` | **Destructive.** Give up on the job and terminate it after this runtime, possibly losing unfinished results; `0` disables the limit. Requires `--acknowledge-result-loss`. |
 | `--acknowledge-result-loss` | `false` | Acknowledge that `--abandon-job-after` may permanently lose unfinished results. |
-| `--kill-after <SECONDS>` | `0` | Delay between `SIGTERM` and `SIGKILL` after abandonment. |
+| `--kill-after <SECONDS>` | `0` | Delay between `SIGTERM` and `SIGKILL` after abandonment; `0` sends `SIGKILL` immediately. |
 | `--cwd <PATH>` | Inherited | Set the child current working directory. |
 | `--env KEY=VALUE` | None | Set an environment variable; repeatable. |
 | `--env-file <FILE>` | None | Load environment variables from a file; repeatable. |
@@ -427,7 +381,7 @@ Input examples:
 printf 'abc' | agent-exec run -- cat
 agent-exec run -- cat < ./input.txt
 
-# The explicit forms remain available and behave exactly as before.
+# The explicit forms remain available.
 printf 'abc' | agent-exec run --stdin - -- cat
 
 agent-exec run --stdin - -- cat <<'EOF'
@@ -441,7 +395,7 @@ agent-exec run --stdin-file ./input.txt -- cat
 
 When neither `--stdin` nor `--stdin-file` is given, `run` reads its own stdin to EOF only if that stdin is not a terminal. The bytes go through the same path as `--stdin -`: they are materialized into `<job-directory>/stdin.bin`, recorded in `meta.json.stdin_file`, and bounded by `--stdin-max-bytes`. Input above that limit fails before the job launches with `error.code` set to `stdin_too_large`.
 
-`--stdin` and `--stdin-file` are authoritative: when either is present, caller stdin is not read implicitly. When stdin is a terminal and no stdin option is given, `run` does not read it, does not block, and the child receives null stdin. Automatic detection applies to `run` only — `create`, `start`, `restart`, and the MCP surfaces stay explicit-only.
+`--stdin` and `--stdin-file` are authoritative: when either is present, caller stdin is not read implicitly. When stdin is a terminal and no stdin option is given, `run` does not read it, does not block, and the child receives null stdin. Automatic detection applies to `run` only; `create`, `start`, `restart`, and the MCP surfaces stay explicit-only.
 
 If `--stdin -` receives a terminal instead of redirected input, the command fails with `error.code` set to `stdin_required`.
 
@@ -453,7 +407,7 @@ agent-exec status <JOB_ID>
 
 The response can report `created`, `running`, `exited`, `killed`, or `failed`. It always includes `job_id`, `state`, and `created_at`; it includes `started_at`, `finished_at`, and `exit_code` when available.
 
-Schema `0.3` adds execution context and observability derived from data the job already persists:
+It also reports execution context and observability derived from data the job already persists:
 
 - execution context: `command` (persisted argv, never shell-expanded), `cwd` when recorded, and `tags`
 - process observation: `pid` when recorded, and `process_alive`
@@ -464,7 +418,7 @@ Schema `0.3` adds execution context and observability derived from data the job 
 
 `abandoned_by="abandon_job_after"` with `result_loss=true` identifies a job the caller gave up on, whose unfinished results may be lost. The terminal `state` value itself is unchanged, so existing clients keep working; both markers are absent when the limit never fired and for jobs recorded before the markers existed. The same pair appears in `list` and in the `job.finished` completion event.
 
-The `abandon_*` fields report the deadline the supervisor will actually act on, not the one the job was defined with, so they reflect any runtime `abandon set` / `abandon clear`. `abandon_configured_by` is `launch` or `update`. All five are null when the job has no supervisor-authored control record, which is how a running job launched by an older release identifies itself; duration, deadline, and remaining time are also null when the control is disabled, and remaining time is null for terminal jobs. `abandon_remaining_ms` is computed at response time and clamped to the inclusive range `[0, abandon_job_after_ms]`; it is diagnostic, because firing is decided by the supervisor's locked control transition rather than by this value. `status` remains read-only and never creates a control record.
+The `abandon_*` fields report the deadline the supervisor will actually act on, not the one the job was defined with, so they reflect any runtime `abandon set` / `abandon clear`. `abandon_configured_by` is `launch` or `update`, and null for a job that has never had a deadline. All five are null when the job has no supervisor-authored control record, which is how a running job launched by an older release identifies itself; duration, deadline, and remaining time are also null when the control is disabled, and remaining time is null for terminal jobs. `abandon_remaining_ms` is computed at response time and clamped to the inclusive range `[0, abandon_job_after_ms]`; it is diagnostic, because firing is decided by the supervisor's locked control transition rather than by this value. `status` remains read-only and never creates a control record.
 
 `state` is the persisted lifecycle state and `status` never rewrites it. `process_alive` is a separate best-effort, same-user-scoped probe that runs only for persisted `running` state; it is omitted otherwise, and omission means no live observation was made. A stale running job therefore appears as `state="running"` with `process_alive=false` here, and as `unknown` in `list`. The probe is not an authoritative liveness guarantee and does not defend against PID reuse.
 
@@ -504,7 +458,7 @@ The response never includes environment-variable values, stdin content, notifica
 agent-exec tail [--tail-lines <N>] [--max-bytes <N>] [--compress <MODE>] <JOB_ID>
 ```
 
-The response includes bounded `stdout` and `stderr` tails, their raw byte ranges and totals, `encoding`, and both log paths. Defaults are 50 lines and 65,536 bytes per stream.
+The response includes bounded `stdout` and `stderr` tails, their raw byte ranges and totals, `encoding`, and both log paths. It does not include job state; use `status` for that. Defaults are 50 lines and 65,536 bytes per stream. `--lines` is an alias for `--tail-lines`.
 
 ### `wait`: observe until completion or deadline
 
@@ -545,7 +499,7 @@ This is a wait observation failure, not a job result. `wait` never writes job fi
 
 ### Root-bound job references
 
-A successful `run`, `create`, `start`, or `restart` response carries both halves of a job's identity — its `job_id` and the absolute resolved `root` that owns it (schema `0.4`). Saved unchanged, that response is a complete reference, so a job launched through one surface can be observed from another without re-deriving the root:
+A successful `run`, `create`, `start`, or `restart` response carries both halves of a job's identity: its `job_id` and the absolute resolved `root` that owns it. Saved unchanged, that response is a complete reference, so a job launched through one surface can be observed from another without re-deriving the root:
 
 ```bash
 agent-exec run --no-wait -- ./scripts/run-heavy-task.sh > launch.json
@@ -569,7 +523,7 @@ Scope: this is a same-host, same-filesystem handoff. `root` is a path on the pro
 
 Roots are absolutized against the **caller's** working directory (never a workload's `--cwd`) without canonicalization, so symlinks and `..` keep native platform semantics and a not-yet-existing root remains a valid creation destination. A jobs root whose path is not valid UTF-8 cannot be published as a reference and is rejected as `invalid_argument` rather than lossy-encoded.
 
-Rust API compatibility: `RunData` and `CreateData` gained a `root: String` field. It is `#[serde(default)]`, so older launch JSON still deserializes, but embedded callers that construct either struct with a literal must add the field.
+Rust API note: `RunData` and `CreateData` carry a `root: String` field marked `#[serde(default)]`, so older launch JSON still deserializes, but embedded callers that construct either struct with a literal must set the field.
 
 ### `kill`: send a signal
 
@@ -577,7 +531,16 @@ Rust API compatibility: `RunData` and `CreateData` gained a `root: String` field
 agent-exec kill [--signal <NAME>] [--no-wait] <JOB_ID>
 ```
 
-The default signal is `TERM`. By default, `kill` briefly observes the result; `--no-wait` skips that observation.
+The default signal is `TERM`; accepted names are `TERM`, `INT`, `KILL`, `HUP`, `USR1`, and `USR2`. By default, `kill` briefly observes the result; `--no-wait` skips that observation.
+
+### `abandon set` / `abandon clear`: change a running job's deadline
+
+```bash
+agent-exec abandon set --in <SECONDS> --acknowledge-result-loss <JOB_ID>
+agent-exec abandon clear <JOB_ID>
+```
+
+Both operate only on `running` jobs. See [Changing the deadline of a job that is already running](#changing-the-deadline-of-a-job-that-is-already-running) for semantics. The response (`type` set to `abandon_set` or `abandon_clear`) reports the committed `abandon_revision`.
 
 ### `list`: list jobs
 
@@ -585,13 +548,13 @@ The default signal is `TERM`. By default, `kill` briefly observes the result; `-
 agent-exec list [--state <STATE>] [--limit <N>] [--cwd <PATH> | --all] [--tag <PATTERN>]...
 ```
 
-By default, `list` returns jobs whose persisted current working directory matches the caller's current working directory. `--cwd` selects another directory, and `--all` disables current working directory filtering. States are `created`, `running`, `exited`, `killed`, `failed`, and `unknown`.
+By default, `list` returns jobs whose persisted current working directory matches the caller's current working directory. `--cwd` selects another directory, and `--all` disables current working directory filtering. States are `created`, `running`, `exited`, `killed`, `failed`, and `unknown`. `--limit` defaults to 50; `0` removes the limit.
 
-Repeated `--tag` filters use logical AND. An exact pattern such as `ci` matches that tag only. A namespace pattern such as `project.build.*` matches tags below that namespace.
+Repeated `--tag` filters use logical AND. An exact pattern such as `ci` matches that tag only. A namespace pattern such as `project.build.*` matches tags below that namespace. Quote namespace patterns so the shell does not expand them.
 
 ```bash
 agent-exec list --all --tag ci
-agent-exec list --all --tag project.build.*
+agent-exec list --all --tag 'project.build.*'
 agent-exec list --tag ci --tag release
 ```
 
@@ -657,13 +620,13 @@ Output-match settings apply only to lines observed after the configuration becom
 agent-exec gc [--older-than <DURATION>] [--max-jobs <N>] [--max-bytes <BYTES>] [--dry-run]
 ```
 
-`gc` scans the entire jobs root, regardless of the current working directory. In the current implementation, it first builds an oldest-first pool of terminal jobs older than `--older-than`; `--max-jobs` and `--max-bytes` apply only within that pool and never select newer terminal jobs. Jobs in `created` or `running` state and jobs with unreadable state are preserved.
+`gc` scans the entire jobs root, regardless of the current working directory. It first builds an oldest-first pool of terminal jobs older than `--older-than`; `--max-jobs` and `--max-bytes` apply only within that pool and never select newer terminal jobs. Jobs in `created` or `running` state and jobs with unreadable state are preserved.
 
 Selection is order-dependent: age eligibility is established first, `--max-jobs` removes age-only selection from the newest `N` pool entries, and `--max-bytes` may then select oldest pool entries until their removal would bring pool storage within the limit.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--older-than <DURATION>` | `30d` | Build the age-eligible terminal pool. Accepted suffixes include `d`, `h`, `m`, and `s`. |
+| `--older-than <DURATION>` | `30d` | Build the age-eligible terminal pool. Accepted suffixes are `d`, `h`, `m`, and `s`. |
 | `--max-jobs <N>` | None | Apply count policy within the age-eligible pool. |
 | `--max-bytes <BYTES>` | None | Apply oldest-first byte policy within the age-eligible pool. |
 | `--dry-run` | `false` | Report aggregate effects without deleting directories. |
@@ -723,6 +686,16 @@ agent-exec schema
 
 The response contains the JSON Schema document for CLI response types, its schema format, and generation timestamp.
 
+### `install-skills`: install the embedded skill
+
+`install-skills` installs only the embedded `agent-exec` skill into `.agents/skills/` or `.claude/skills/` and updates the corresponding `.skill-lock.json`. It is not a general skill installer and does not accept external sources.
+
+```bash
+agent-exec install-skills
+agent-exec install-skills --claude
+agent-exec install-skills --claude --global
+```
+
 ## Automatic Cleanup
 
 After a successful launch, `run`, `start`, and `restart` perform bounded, best-effort automatic GC by default.
@@ -732,19 +705,63 @@ After a successful launch, `run`, `start`, and `restart` perform bounded, best-e
 - Cleanup failure does not fail the launch command.
 - Scan and deletion limits bound launch-time work.
 
-Per-invocation controls are `--no-auto-gc`, `--auto-gc-older-than`, `--auto-gc-max-jobs`, and `--auto-gc-max-bytes`.
+Per-invocation controls are `--no-auto-gc`, `--auto-gc-older-than`, `--auto-gc-max-jobs`, and `--auto-gc-max-bytes`. The `[gc]` section of the configuration file sets the defaults; see [Configuration](#configuration). CLI values override configuration for that invocation.
 
-```toml
-[gc]
-auto = true
-older_than = "30d"
-max_jobs = 200
-max_bytes = 1073741824
-scan_limit = 200
-delete_limit = 20
+## Shell Completions
+
+`agent-exec completions <SHELL>` generates dynamic completion scripts for Bash, Zsh, Fish, and PowerShell. The generated script calls back into `agent-exec` at completion time, so job ID completion stays in sync with the current binary.
+
+### Bash
+
+```bash
+agent-exec completions bash >> ~/.bash_completion
+source ~/.bash_completion
 ```
 
-CLI values override configuration for that invocation.
+### Zsh
+
+```bash
+mkdir -p ~/.zsh/completions
+agent-exec completions zsh > ~/.zsh/completions/_agent-exec
+fpath=(~/.zsh/completions $fpath)
+autoload -Uz compinit && compinit
+```
+
+### Fish
+
+```bash
+mkdir -p ~/.config/fish/completions
+agent-exec completions fish > ~/.config/fish/completions/agent-exec.fish
+```
+
+### PowerShell
+
+```powershell
+agent-exec completions powershell | Out-String | Invoke-Expression
+```
+
+After registration, job ID completion is available at command arguments such as:
+
+```bash
+agent-exec tail <TAB>
+agent-exec kill <TAB>
+```
+
+### Candidate scope and state filters
+
+All job ID candidates are limited to jobs whose persisted current working directory matches the caller's current working directory. Candidates come from the resolved jobs root. Entries with missing or mismatched current working directory metadata are excluded.
+
+State filters depend on the command:
+
+| Command | Candidate states |
+|---------|------------------|
+| `status`, `tail`, `restart`, `tag set`, `notify set` | All known job IDs; unreadable states may still appear |
+| `start` | `created` |
+| `wait` | `created`, `running` |
+| `kill`, `abandon set`, `abandon clear` | `running` |
+| `delete` | `exited`, `killed`, `failed` |
+
+Completion is advisory. Command implementations still validate the selected job and may support behavior not offered by completion.
 
 ## HTTP Server
 
@@ -754,11 +771,11 @@ CLI values override configuration for that invocation.
 agent-exec serve [--bind <HOST:PORT> | --port <PORT>] [--allow-origin <ORIGIN>]
 ```
 
-The default address is `127.0.0.1:19263`. `--port` changes the loopback port. A non-loopback bind requires both `--insecure` and a nonempty `AGENT_EXEC_SERVE_TOKEN`.
+The default address is `127.0.0.1:19263`. `--port` changes the loopback port. A non-loopback bind requires both `--insecure` and a nonempty `AGENT_EXEC_SERVE_TOKEN`; without either, `serve` exits with `serve_unsafe_bind` before listening.
 
 ### Security model
 
-`AGENT_EXEC_SERVE_TOKEN` enables bearer authentication only for the mutating endpoints `POST /exec` and `POST /kill/{id}`. It does not protect `GET /health`, `GET /status/{id}`, `GET /tail/{id}`, or `GET /wait/{id}`. Those read endpoints can expose job state and output.
+`POST /exec` runs arbitrary commands as the server's user. `AGENT_EXEC_SERVE_TOKEN` enables bearer authentication only for the mutating endpoints `POST /exec`, `POST /kill/{id}`, `PUT /abandon/{id}`, and `DELETE /abandon/{id}`. It does not protect `GET /health`, `GET /status/{id}`, `GET /tail/{id}`, or `GET /wait/{id}`. Those read endpoints can expose job state and output.
 
 Keep the default loopback bind unless remote access is required. For non-loopback access, restrict the port with a firewall, private network, or authenticating reverse proxy. Do not expose the server directly to the public internet. The required `--insecure` flag acknowledges that the built-in token does not secure read endpoints.
 
@@ -769,7 +786,7 @@ Keep the default loopback bind unless remote access is required. For non-loopbac
 | Method | Path | CLI equivalent | Behavior |
 |--------|------|----------------|----------|
 | `GET` | `/health` | None | Returns `schema_version`, `ok`, and `type` set to `health`. |
-| `POST` | `/exec` | `run` | Starts a job and returns `RunData`. |
+| `POST` | `/exec` | `run` | Starts a job and returns the same response as `run`. |
 | `GET` | `/status/{id}` | `status` | Returns job status. |
 | `GET` | `/tail/{id}` | `tail` | Returns bounded `stdout` and `stderr` tails. |
 | `GET` | `/wait/{id}` | `wait --forever` | Blocks until a terminal state and returns bounded stdout/stderr output metadata. Returns HTTP 409 with `job_observation_inconsistent` when saved running state conflicts with process observation. |
@@ -853,6 +870,8 @@ command: agent-exec
 args: ["mcp"]
 ```
 
+MCP clients may not inherit your interactive shell's `PATH`; use the absolute path from `command -v agent-exec` when in doubt.
+
 Set observation limits in the MCP server process environment:
 
 ```text
@@ -860,7 +879,7 @@ AGENT_EXEC_MCP_DEFAULT_UNTIL_SECONDS=10
 AGENT_EXEC_MCP_MAX_UNTIL_SECONDS=55
 ```
 
-`AGENT_EXEC_MCP_DEFAULT_UNTIL_SECONDS` supplies an omitted `until` for MCP `run` and `wait`. `AGENT_EXEC_MCP_MAX_UNTIL_SECONDS` caps every MCP observation duration. Set the maximum below the MCP client's request timeout. An over-limit request uses the cap; it does not fail or stop the job.
+`AGENT_EXEC_MCP_DEFAULT_UNTIL_SECONDS` supplies an omitted `until` for MCP `run` and `wait`. `AGENT_EXEC_MCP_MAX_UNTIL_SECONDS` caps every MCP observation duration. Set the maximum below the MCP client's request timeout: for a host with a 60-second request deadline, a maximum of 55 seconds leaves time for the response to return. An over-limit request uses the cap; it does not fail or stop the job.
 
 Use a nondefault jobs root only when needed:
 
@@ -869,28 +888,16 @@ command: agent-exec
 args: ["--root", "/path/to/jobs", "mcp"]
 ```
 
-### Hermes Native MCP configuration
-
-```yaml
-mcp_servers:
-  agent-exec:
-    command: agent-exec
-    args: ["mcp"]
-    env:
-      AGENT_EXEC_MCP_DEFAULT_UNTIL_SECONDS: "10"
-      AGENT_EXEC_MCP_MAX_UNTIL_SECONDS: "55"
-```
-
 When MCP is unavailable, use `agent-exec run -- <command>` with CLI observation commands.
 
 ### MCP tools
 
 | Tool | Parameters | Behavior |
 |------|------------|----------|
-| `run` | `command: string[]`, `cwd?: string`, `env?: object`, `abandon_job_after?: integer`, `acknowledge_result_loss?: boolean`, `until?: integer`, `stdin?: string`, `stdin_file?: string`, `notify_command?: string`, `notify_file?: string` | Starts a detached job. `abandon_job_after` and `until` are seconds; the legacy omitted `until` is 10 seconds unless configured. `abandon_job_after` gives up on the job and terminates it, may permanently lose unfinished results, and requires `acknowledge_result_loss: true`; the removed `timeout` and `timeout_ms` fields are rejected with migration guidance. |
+| `run` | `command: string[]`, `cwd?: string`, `env?: object`, `abandon_job_after?: number`, `acknowledge_result_loss?: boolean`, `until?: number`, `stdin?: string`, `stdin_file?: string`, `notify_command?: string`, `notify_file?: string` | Starts a detached job. `abandon_job_after` and `until` are seconds; an omitted `until` is 10 seconds unless configured. `abandon_job_after` gives up on the job and terminates it, may permanently lose unfinished results, and requires `acknowledge_result_loss: true`; the removed `timeout` and `timeout_ms` fields are rejected with migration guidance. |
 | `status` | `job_id: string` | Returns canonical job status. |
 | `tail` | `job_id: string`, `lines?: integer`, `max_bytes?: integer` | Reads bounded tails; defaults are 50 lines and 65,536 bytes. |
-| `wait` | `job_id: string`, `until?: integer` | Observes for a bounded duration and returns bounded stdout/stderr output metadata; the legacy omitted `until` is 30 seconds unless configured. Indefinite MCP waits are not supported. |
+| `wait` | `job_id: string`, `until?: number` | Observes for a bounded duration and returns bounded stdout/stderr output metadata; an omitted `until` is 30 seconds unless configured. Indefinite MCP waits are not supported. |
 | `kill` | `job_id: string` | Sends `TERM`. |
 | `set_abandonment` | `job_id: string`, `abandon_in: number`, `acknowledge_result_loss?: boolean` | Replaces a running job's abandonment deadline. `abandon_in` is seconds from durable acceptance of the update, not from job start. Gives up on the job and terminates it at that point, may permanently lose unfinished results, and requires `acknowledge_result_loss: true`. |
 | `clear_abandonment` | `job_id: string` | Removes a running job's abandonment deadline. Non-destructive: the job is never signaled, so no acknowledgement is required. |
@@ -899,7 +906,7 @@ Retain the job ID returned by `run`. Closing the MCP transport, reaching an obse
 
 MCP `run` accepts job stdin through the same materialization as the CLI. Supply `stdin` for inline UTF-8 bytes or `stdin_file` for a path readable by the MCP server process; the two are mutually exclusive and a conflicting call fails without creating a job. `stdin_file` is snapshotted into the job directory before launch, so later edits to the source file do not change a running job's input. Unlike CLI `--stdin`, `stdin: "-"` is one literal dash byte: the MCP stdio transport carries protocol frames and is never read as job stdin. When both are omitted the child receives null stdin. Input above the 64 MiB limit, or an unreadable `stdin_file`, fails before the child launches.
 
-For an MCP host with a 60-second request deadline, a maximum of 55 seconds leaves time for the response to return. The default can remain shorter, such as 10 seconds.
+The MCP `run` tool intentionally omits CLI-only masking, tag, compression, and shell-wrapper controls.
 
 ### MCP completion notification
 
@@ -921,8 +928,6 @@ When a sink was persisted and the job is still running, the `run` response adds 
 An agent that receives `state="armed"` can stop observing immediately and rely on the configured sink. The object is client-independent: `sinks` names only the generic sink classes (`command`, `file`), never a session, chat, or originating client. `armed` means terminal dispatch metadata was persisted, not that downstream delivery is guaranteed.
 
 The object is omitted whenever the response asserts nothing: no sink supplied, admission failed, or the job already reached a terminal state. `wait`, `status`, and `tail` stay available for explicit progress requests and diagnosis in every case. A host-specific adapter may build a sink before calling `run`; it owns the destination identity, while the server only validates, persists, and reports it.
-
-The MCP `run` tool intentionally omits CLI-only masking, tag, compression, and shell-wrapper controls.
 
 ## Configuration
 
@@ -1018,14 +1023,28 @@ Example payload:
 
 For signal termination, `state` is `killed`, `exit_code` may be absent, and `signal` is present when available.
 
-## Install Embedded Skill
+### Output-match events
 
-`install-skills` installs only the embedded `agent-exec` skill into `.agents/skills/` or `.claude/skills/` and updates the corresponding `.skill-lock.json`. It is not a general skill installer and does not accept external sources.
+When output-match notification metadata is active, the supervisor evaluates newly observed lines from `stdout`, `stderr`, or either stream and emits `job.output.matched` for every match.
 
-```bash
-agent-exec install-skills
-agent-exec install-skills --claude
-agent-exec install-skills --claude --global
+- `contains` performs substring matching.
+- `regex` uses Rust regular-expression syntax.
+- Earlier output is not replayed after `notify set`.
+- Sink failure is recorded in `notification_events.ndjson` and does not affect job state.
+- `completion_event.json` remains reserved for `job.finished` delivery results.
+
+```json
+{
+  "schema_version": "0.5",
+  "event_type": "job.output.matched",
+  "job_id": "7f3a9c1e4b2d8a605e7c9f0134ab6d82",
+  "pattern": "ERROR",
+  "match_type": "contains",
+  "stream": "stdout",
+  "line": "ERROR: connection refused",
+  "stdout_log_path": "/jobs/7f3a9c1e4b2d8a605e7c9f0134ab6d82/stdout.log",
+  "stderr_log_path": "/jobs/7f3a9c1e4b2d8a605e7c9f0134ab6d82/stderr.log"
+}
 ```
 
 ## OpenClaw Integration
@@ -1080,38 +1099,14 @@ It uses only the existing notification and completion-event contracts: no runtim
 
 See [examples/integrations/opencode-auto-resume/README.md](examples/integrations/opencode-auto-resume/README.md) for installation, configuration, security boundaries, limitations, and uninstall steps.
 
-## Output-Match Events
-
-When output-match notification metadata is active, the supervisor evaluates newly observed lines from `stdout`, `stderr`, or either stream and emits `job.output.matched` for every match.
-
-- `contains` performs substring matching.
-- `regex` uses Rust regular-expression syntax.
-- Earlier output is not replayed after `notify set`.
-- Sink failure is recorded in `notification_events.ndjson` and does not affect job state.
-- `completion_event.json` remains reserved for `job.finished` delivery results.
-
-```json
-{
-  "schema_version": "0.5",
-  "event_type": "job.output.matched",
-  "job_id": "7f3a9c1e4b2d8a605e7c9f0134ab6d82",
-  "pattern": "ERROR",
-  "match_type": "contains",
-  "stream": "stdout",
-  "line": "ERROR: connection refused",
-  "stdout_log_path": "/jobs/7f3a9c1e4b2d8a605e7c9f0134ab6d82/stdout.log",
-  "stderr_log_path": "/jobs/7f3a9c1e4b2d8a605e7c9f0134ab6d82/stderr.log"
-}
-```
-
 ## Embedding in a Rust program
 
 A Rust program that links `agent-exec` can manage jobs through a typed API
 instead of spawning the `agent-exec` executable and reparsing JSON. See the
-`agent_exec::embedded` module docs for the full contract.
+`agent_exec::embedded` module docs on [docs.rs](https://docs.rs/agent-exec) for the full contract.
 
 Managed jobs stay managed because supervision runs in a **detached process**,
-never an in-process thread — the supervisor owns the workload's stdout/stderr,
+never an in-process thread: the supervisor owns the workload's stdout/stderr,
 abandonment escalation, notifications, state updates, and process-tree cleanup long
 after the launching call returns. So embedded launch re-executes a supervisor
 executable, which by default is the consumer's own binary. That is why the
@@ -1133,7 +1128,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //    AGENT_EXEC_ROOT / XDG fallback is applied.
     let client = EmbeddedClient::new("/var/lib/my-app/agent-exec-jobs")?;
 
-    // 3. Typed calls only — no JSON, no stdout writes, no CLI subprocess.
+    // 3. Typed calls only: no JSON, no stdout writes, no CLI subprocess.
     let launched = client.run(RunRequest::new(vec!["echo hello".to_string()]))?;
     let status = client.status(&launched.job_id)?;
     let tail = client.tail(TailRequest::new(&launched.job_id))?;
@@ -1161,9 +1156,9 @@ install the same delegation.
 **Lifecycle guarantees.** `run` returns only after the delegated supervisor
 acknowledges startup within a fixed five-second deadline, so a `running` result
 means supervision really claimed the job and will outlive the launching process.
-A launch that never produced validated supervision — missing delegation,
+A launch that never produced validated supervision (missing delegation,
 malformed delegated arguments, an unusable supervisor executable, or an expired
-deadline — persists terminal `failed` with no intermediate `running`
+deadline) persists terminal `failed` with no intermediate `running`
 transition, launches no workload, and emits no completion notification. The
 deadline is a launch-integrity check rather than workload observation, so it
 also applies to no-wait launches, and the inline observation budget starts only
@@ -1196,3 +1191,7 @@ cargo test --all
 cargo fmt --all
 cargo clippy --all-targets --all-features -- -D warnings
 ```
+
+CI runs the same checks through `prek` (see `prek.toml`). See [AGENTS.md](AGENTS.md) for the repository layout and contribution conventions.
+
+Releases are cut from a `v*` tag. GitHub Actions builds, smoke-tests, and publishes the Linux x86_64 archive; the macOS archive is built on a macOS checkout of the same tag with `scripts/release-macos.sh --tag v<VERSION>` and uploaded with `--upload`.
